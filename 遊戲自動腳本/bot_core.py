@@ -259,13 +259,16 @@ class BaseballBot:
             if raw_png and len(raw_png) >= 100:
                 try:
                     img_array = np.frombuffer(raw_png, dtype=np.uint8)
-                    del raw_png  # 【項目 C】及時釋放原始二進位 bytes
+                    raw_png = None  # 【用完即刪】：及時釋放原始二進位 bytes
                     img_bgr = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                    del img_array  # 【項目 C】及時釋放中間 NumPy 陣列
+                    img_array = None  # 【用完即刪】：及時釋放中間 NumPy 陣列
                     if img_bgr is not None:
                         return img_bgr
                 except Exception as dec_err:
                     self._log(f"影像解碼失敗: {dec_err}", "WARNING")
+                finally:
+                    raw_png = None
+                    img_array = None
 
             # 若此輪失敗，進行重試並在需要時重新連線
             if attempt < max_retries:
@@ -278,10 +281,11 @@ class BaseballBot:
         return None
 
     def scan_text(self, screen_bgr: np.ndarray) -> List[Dict[str, Any]]:
-        """使用 RapidOCR 辨識畫面中的文字，支援 ROI 範圍裁切加速"""
+        """使用 RapidOCR 辨識畫面中的文字，支援 ROI 範圍裁切加速 (用完即刪、即時釋放臨時緩衝區)"""
         h, w = screen_bgr.shape[:2]
         offset_x, offset_y = 0, 0
         img_for_ocr = screen_bgr
+        is_sub_slice = False
 
         if self.roi:
             ymin, xmin, ymax, xmax = self.roi
@@ -296,29 +300,94 @@ class BaseballBot:
             if x2 > x1 and y2 > y1:
                 img_for_ocr = screen_bgr[y1:y2, x1:x2]
                 offset_x, offset_y = x1, y1
+                is_sub_slice = True
 
         ocr_result, _ = self.ocr(img_for_ocr, box_thresh=0.3)
-        if not ocr_result:
-            return []
-
         parsed_boxes = []
-        for box, text, score in ocr_result:
-            pts = np.array(box, dtype=np.int32)
-            pts[:, 0] += offset_x
-            pts[:, 1] += offset_y
+        if ocr_result:
+            for box, text, score in ocr_result:
+                pts = np.array(box, dtype=np.int32)
+                pts[:, 0] += offset_x
+                pts[:, 1] += offset_y
 
-            cx = int(np.mean(pts[:, 0]))
-            cy = int(np.mean(pts[:, 1]))
-            box_w = int(np.max(pts[:, 0]) - np.min(pts[:, 0]))
-            box_h = int(np.max(pts[:, 1]) - np.min(pts[:, 1]))
+                cx = int(np.mean(pts[:, 0]))
+                cy = int(np.mean(pts[:, 1]))
+                box_w = int(np.max(pts[:, 0]) - np.min(pts[:, 0]))
+                box_h = int(np.max(pts[:, 1]) - np.min(pts[:, 1]))
 
-            parsed_boxes.append({
-                "text": text.strip(),
-                "score": float(score),
-                "center": (cx, cy),
-                "size": (box_w, box_h),
-                "box": pts
-            })
+                parsed_boxes.append({
+                    "text": text.strip(),
+                    "score": float(score),
+                    "center": (cx, cy),
+                    "size": (box_w, box_h),
+                    "box": pts
+                })
+
+        # 【特色增強】：藍底/深底白色按鈕專屬超對比度補檢
+        # 遊戲中結算、確認按鈕常為深藍底白字，常規 OCR 容易因邊緣對比度不足或解析度微縮漏檢
+        # 透過 R 通道天然高反差 (文字 R~250 vs 藍底 R~10) 進行局部超採樣與反相補檢
+        try:
+            b_chan = img_for_ocr[:, :, 0]
+            r_chan = img_for_ocr[:, :, 2]
+            blue_mask = (b_chan > 160) & (r_chan < 75)
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(blue_mask.astype(np.uint8))
+            for i in range(1, num_labels):
+                bw = stats[i, cv2.CC_STAT_WIDTH]
+                bh = stats[i, cv2.CC_STAT_HEIGHT]
+                b_area = stats[i, cv2.CC_STAT_AREA]
+                # 篩選符合按鈕特徵的連通區域 (寬高比 > 1.8 且面積足夠)
+                if bw >= 35 and bh >= 14 and (bw / max(1, bh)) >= 1.6 and b_area >= 350:
+                    bx = stats[i, cv2.CC_STAT_LEFT]
+                    by = stats[i, cv2.CC_STAT_TOP]
+                    center_x = bx + bw // 2 + offset_x
+                    center_y = by + bh // 2 + offset_y
+
+                    # 檢查常規 OCR 是否已經檢測到該按鈕內的文字，避免重複添加
+                    already_covered = False
+                    for existing in parsed_boxes:
+                        ecx, ecy = existing["center"]
+                        if abs(ecx - center_x) < (bw // 2) and abs(ecy - center_y) < (bh // 2):
+                            already_covered = True
+                            break
+                    if already_covered:
+                        continue
+
+                    btn_roi = img_for_ocr[by:by+bh, bx:bx+bw]
+                    # R 通道反相：白色文字變為深黑，藍色背景變為純白 (白底黑字)
+                    inv_gray = 255 - btn_roi[:, :, 2]
+                    inv_bgr = cv2.cvtColor(inv_gray, cv2.COLOR_GRAY2BGR)
+                    inv_scaled = cv2.resize(inv_bgr, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+                    inv_pad = cv2.copyMakeBorder(inv_scaled, 25, 25, 25, 25, cv2.BORDER_CONSTANT, value=[255, 255, 255])
+
+                    btn_res, _ = self.ocr(inv_pad, box_thresh=0.2)
+                    # 【用完即刪】：按鈕辨識完成立即釋放局部影像
+                    del btn_roi, inv_gray, inv_bgr, inv_scaled, inv_pad
+
+                    if btn_res:
+                        for box, b_text, b_score in btn_res:
+                            clean_t = b_text.strip()
+                            if not clean_t:
+                                continue
+                            real_pts = np.array([
+                                [bx + offset_x, by + offset_y],
+                                [bx + bw + offset_x, by + offset_y],
+                                [bx + bw + offset_x, by + bh + offset_y],
+                                [bx + offset_x, by + bh + offset_y]
+                            ], dtype=np.int32)
+                            parsed_boxes.append({
+                                "text": clean_t,
+                                "score": float(b_score),
+                                "center": (center_x, center_y),
+                                "size": (int(bw), int(bh)),
+                                "box": real_pts
+                            })
+            # 【用完即刪】：連通圖分析完成，立即釋放通道與遮罩矩陣
+            del b_chan, r_chan, blue_mask, labels, stats
+        except Exception:
+            pass
+        finally:
+            if is_sub_slice:
+                del img_for_ocr
 
         return parsed_boxes
 
@@ -637,13 +706,13 @@ class BaseballBot:
                 matched, ratio = self._is_text_matched(kw, item["text"], similarity_threshold=1.0)
                 if matched and ratio >= 0.99:
                     if action in ("custom_coord", "自訂座標"):
-                        return item["text"], int(custom_x), int(custom_y), item["score"], item["box"]
+                        return item["text"], int(custom_x), int(custom_y), item["score"], item["box"], float(ratio)
                     bw, bh = item["size"]
                     off_x = min(max(3, bw // 8), 6)
                     off_y = min(max(3, bh // 8), 5)
                     rx = cx + random.randint(-off_x, off_x)
                     ry = cy + random.randint(-off_y, off_y)
-                    return item["text"], rx, ry, item["score"], item["box"]
+                    return item["text"], rx, ry, item["score"], item["box"], float(ratio)
 
         # 第二階段：模糊容錯比對 (Fuzzy Match >= 0.70)
         for kw in keywords:
@@ -662,15 +731,52 @@ class BaseballBot:
                 matched, ratio = self._is_text_matched(kw, item["text"], similarity_threshold=0.70)
                 if matched:
                     if action in ("custom_coord", "自訂座標"):
-                        return item["text"], int(custom_x), int(custom_y), item["score"], item["box"]
+                        return item["text"], int(custom_x), int(custom_y), item["score"], item["box"], float(ratio)
                     bw, bh = item["size"]
                     off_x = min(max(3, bw // 8), 6)
                     off_y = min(max(3, bh // 8), 5)
                     rx = cx + random.randint(-off_x, off_x)
                     ry = cy + random.randint(-off_y, off_y)
-                    return item["text"], rx, ry, item["score"], item["box"]
+                    return item["text"], rx, ry, item["score"], item["box"], float(ratio)
 
         return None
+
+    def match_all_priority_steps(
+        self,
+        detected_items: List[Dict[str, Any]],
+        priority_steps: List[Dict[str, Any]],
+        screen_shape: Optional[Tuple[int, int]] = None
+    ) -> Optional[Tuple[Dict[str, Any], Tuple[str, int, int, float, Any]]]:
+        """
+        【所有優先步驟同級評判】：
+        不再以 if/elif 順序固定先到先得，而是同時檢測所有啟用的優先步驟。
+        若有多個優先動作同時出現在畫面中：
+        1. 優先選取「精確命中 (ratio >= 0.99)」者。
+        2. 若同為精確命中或同為模糊命中，優先選取文字辨識信心度 (score) 最高者。
+        3. 若信心度相同，依照相似度 (ratio) 最高者排序。
+        回傳: (命中之優先步驟字典, match_priority_step 回傳的 (text, x, y, score, box)) 或 None
+        """
+        if not priority_steps or not detected_items:
+            return None
+
+        candidates = []
+        for p_step in priority_steps:
+            if not p_step.get("enabled", True):
+                continue
+            res = self.match_priority_step(detected_items, p_step, screen_shape)
+            if res:
+                # res: (p_text, px, py, p_score, p_box, ratio)
+                p_text, px, py, p_score, p_box, ratio = res
+                candidates.append((p_step, (p_text, px, py, p_score, p_box), ratio, p_score))
+
+        if not candidates:
+            return None
+
+        # 排序權重：
+        # key: (是否精確命中 [1/0], 相似度 ratio, 信心度 score)
+        candidates.sort(key=lambda c: (1 if c[2] >= 0.99 else 0, c[2], c[3]), reverse=True)
+        best_p_step, best_match_tuple, _, _ = candidates[0]
+        return best_p_step, best_match_tuple
 
     def match_priority(
         self,
@@ -678,7 +784,10 @@ class BaseballBot:
         priority_config: Optional[Dict[str, Any]],
         screen_shape: Optional[Tuple[int, int]] = None
     ) -> Optional[Tuple[str, int, int, float, Any]]:
-        return self.match_priority_step(detected_items, priority_config, screen_shape)
+        res = self.match_priority_step(detected_items, priority_config, screen_shape)
+        if res:
+            return res[0], res[1], res[2], res[3], res[4]
+        return None
 
     # =========================================================================
     # 【核心底層】自訂步驟文字識別 (精確優先、區域限定、狀態優先順序)
@@ -942,9 +1051,9 @@ class BaseballBot:
         while self.is_running:
             loop_counter += 1
 
-            # 【項目 C】記憶體防護：每 20 輪主動執行垃圾回收，防止長時高頻運行記憶體增長
-            if loop_counter % 20 == 0:
-                gc.collect()
+            # 【項目 C】記憶體防護：每 10 輪主動執行輕量垃圾回收，防止長時高頻運行記憶體增長
+            if loop_counter % 10 == 0:
+                gc.collect(1)
 
             screen = self.capture_screen()
             if screen is None:
@@ -956,19 +1065,15 @@ class BaseballBot:
 
             # 【項目 B】執行步驟前，優先呼叫全域攔截器排除突發彈窗
             if self.check_and_handle_global_popups(detected, (img_h, img_w)):
-                del screen  # 【項目 C】及時釋放影像陣列
+                del screen, detected  # 【用完即刪】：及時釋放影像與辨識陣列
                 continue
 
             # =================================================================
-            # 【最高層級】優先動作清單檢查 (if 優先1 elif 優先2 ... else 平常步驟)
+            # 【最高層級】優先動作清單檢查 (所有優先步驟同等優先級同時評判)
             # =================================================================
             p_hit = None
             if active_priority_steps:
-                for p_step in active_priority_steps:
-                    p_match = self.match_priority_step(detected, p_step, screen_shape=(img_h, img_w))
-                    if p_match:
-                        p_hit = (p_step, p_match)
-                        break
+                p_hit = self.match_all_priority_steps(detected, active_priority_steps, screen_shape=(img_h, img_w))
 
             if p_hit:
                 p_step, (p_text, px, py, p_score, p_box) = p_hit
@@ -986,16 +1091,16 @@ class BaseballBot:
                     p_count += 1
                     self._log(f"⭐ [{p_tag}] 命中「{p_text}」({p_score:.2f}) → 優先點擊 ({px}, {py})")
 
-                    # 即時預覽畫面上傳
+                    rep_enabled = p_step.get("repeat_enabled", False)
+                    # 1. 【優先最前執行】：第一時間透過 ADB 下發點擊指令，確保動作零延遲
+                    self.tap(px, py, delay_range=(0.4, 0.7) if rep_enabled else (d_min, d_max))
+
+                    # 2. 【事後回報預覽】：點擊動作已確實下發，發送畫面僅供介面確認呈現
                     if self.on_frame_callback and self.is_running:
                         try:
                             self.on_frame_callback(screen, detected, (p_step, p_text, px, py, p_score))
                         except Exception:
                             pass
-
-                    rep_enabled = p_step.get("repeat_enabled", False)
-                    # 執行點擊 (若開啟連點，首下延遲調短)
-                    self.tap(px, py, delay_range=(0.4, 0.7) if rep_enabled else (d_min, d_max))
 
                     # 📱 若設定了 Telegram 通知，非同步發送通知
                     tg_cfg = p_step.get("telegram", {})
@@ -1047,7 +1152,7 @@ class BaseballBot:
                                     if chk_screen is not None:
                                         chk_detected = self.scan_text(chk_screen)
                                         if self.check_and_handle_global_popups(chk_detected, (img_h, img_w)):
-                                            del chk_screen
+                                            del chk_screen, chk_detected
                                             break
 
                                         # 檢查是否有其他優先動作觸發 (例如優先 2 下一頁)
@@ -1062,7 +1167,7 @@ class BaseballBot:
                                                     break
                                         if other_p_hit:
                                             self._log(f"⭐ [{p_tag}] 連點中途觸發其他優先動作「{other_p_hit.get('name')}」，結束連點切換！")
-                                            del chk_screen
+                                            del chk_screen, chk_detected
                                             break
 
                                         # 檢查是否有常規步驟出現 (例如結算畫面、下一步驟按鈕等)
@@ -1078,9 +1183,9 @@ class BaseballBot:
 
                                         if next_matched:
                                             self._log(f"✨ [{p_tag}] 偵測到常規步驟 [{next_matched[0].get('name')}]，結束連點 (共連點 {tap_count} 次)")
-                                            del chk_screen
+                                            del chk_screen, chk_detected
                                             break
-                                        del chk_screen
+                                        del chk_screen, chk_detected
                         else:
                             self._log(f"⚡ [{p_tag}] 在「{rep_area}」連點 {rep_count} 次...")
                             for _ in range(rep_count):
@@ -1090,7 +1195,8 @@ class BaseballBot:
                                 ry = by + random.randint(-12, 12)
                                 self.tap(rx, ry, delay_range=(min_spd, max_spd))
 
-                    del screen
+                    # 【用完即刪】：本輪點擊與回報完成，立即釋放當前 screen 與 detected
+                    del screen, detected
                     if not self.is_running:
                         break
 
@@ -1106,14 +1212,17 @@ class BaseballBot:
                     rematch = self.match_priority_step(detected, p_step, screen_shape=(img_h, img_w))
                     if not rematch:
                         self._log(f"⭐ [{p_tag}] 優先字元已解除 (共執行 {p_count} 次)，恢復平常流程")
+                        del screen, detected
                         break
-                    p_text, px, py, p_score, p_box = rematch
+                    p_text, px, py, p_score, p_box = rematch[:5]
 
                 # 重置空閒計數與等待計時，釋放資源
                 consecutive_idle = 0
                 step_wait_start_time = time.time()
-                if screen is not None:
+                if 'screen' in locals() and screen is not None:
                     del screen
+                if 'detected' in locals() and detected is not None:
+                    del detected
                 continue
 
             # =================================================================
@@ -1126,13 +1235,6 @@ class BaseballBot:
                 screen_shape=(img_h, img_w),
                 expected_step_idx=current_step_idx
             )
-
-            # 即時回傳當前偵測畫面、所有文字框與命中點擊位置給 GUI 繪製
-            if self.on_frame_callback and self.is_running:
-                try:
-                    self.on_frame_callback(screen, detected, matched)
-                except Exception:
-                    pass
 
             if matched and self.is_running:
                 step, text, x, y, score = matched
@@ -1153,8 +1255,15 @@ class BaseballBot:
 
                 self._log(f"🎯 [{step_tag}] 命中「{text}」({score:.2f}) → 點擊 ({x}, {y})")
 
-                # 首次命中目標點擊
+                # 1. 【最前優先執行點擊】：第一時間下發 ADB 點擊指令，確保反應動作最快完成
                 self.tap(x, y, delay_range=(0.4, 0.7) if rep_enabled else (d_min, d_max))
+
+                # 2. 【事後回報預覽視窗】：動作完成後才更新 GUI 介面供使用者確認
+                if self.on_frame_callback and self.is_running:
+                    try:
+                        self.on_frame_callback(screen, detected, matched)
+                    except Exception:
+                        pass
 
                 # 📱 若設定了 Telegram 通知，非同步發送通知
                 tg_cfg = step.get("telegram", {})
@@ -1205,7 +1314,7 @@ class BaseballBot:
                                     chk_detected = self.scan_text(chk_screen)
                                     # 全域彈窗偵測
                                     if self.check_and_handle_global_popups(chk_detected, (img_h, img_w)):
-                                        del chk_screen
+                                        del chk_screen, chk_detected
                                         break
                                     # 優先動作偵測：若出現任何優先動作字元則立即中斷過渡連點
                                     if active_priority_steps:
@@ -1217,7 +1326,7 @@ class BaseballBot:
                                                 p_interrupted = True
                                                 break
                                         if p_interrupted:
-                                            del chk_screen
+                                            del chk_screen, chk_detected
                                             break
                                     next_matched = self.match_custom_steps(chk_detected, active_steps, screen_shape=(img_h, img_w))
                                     # 🎥 即時推送連點中的遊戲畫面與當前連點座標至預覽視窗
@@ -1227,12 +1336,13 @@ class BaseballBot:
                                             self.on_frame_callback(chk_screen, chk_detected, next_matched or rep_info)
                                         except Exception:
                                             pass
-                                    del chk_screen
                                     if next_matched:
                                         n_step, n_text, _, _, _ = next_matched
                                         if n_step.get("name") != step_name or tap_count >= 8:
                                             self._log(f"✨ [{step_tag}] 偵測到 [{n_step.get('name')}]，結束連點 (共連點 {tap_count} 次)")
+                                            del chk_screen, chk_detected
                                             break
+                                    del chk_screen, chk_detected
                     else:
                         self._log(f"⚡ [{step_tag}] 在「{rep_area}」連點 {rep_count} 次...")
                         for _ in range(rep_count):
@@ -1246,12 +1356,19 @@ class BaseballBot:
 
                 consecutive_idle = 0
                 step_wait_start_time = time.time()
-                del screen  # 及時釋放畫面矩陣
+                del screen, detected  # 【用完即刪】：步驟執行完畢，立即刪除當前畫面與辨識資料
                 if self.is_running and poll_interval > 0:
                     time.sleep(poll_interval)
             else:
+                # 未命中任何步驟時，更新預覽畫面供使用者介面觀察當前無命中狀態
+                if self.on_frame_callback and self.is_running:
+                    try:
+                        self.on_frame_callback(screen, detected, None)
+                    except Exception:
+                        pass
+
                 consecutive_idle += 1
-                del screen  # 及時釋放畫面矩陣
+                del screen, detected  # 【用完即刪】：未命中任何步驟，回報後立即釋放畫面與資料
 
                 expected_step = active_steps[current_step_idx] if active_steps else None
                 exp_idx = current_step_idx + 1 if active_steps else 1

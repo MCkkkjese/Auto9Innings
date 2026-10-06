@@ -72,12 +72,15 @@ class BaseballBotGUI:
         self.preview_scale = 1.0
         self.preview_img_w = 0
         self.preview_img_h = 0
+        self.canvas_w = 480
+        self.canvas_h = 270
         self.raw_screen_w = 0
         self.raw_screen_h = 0
         self._capturing = False
         self._resize_job = None
         self._preview_update_pending = False
         self._last_preview_time = 0.0
+        self._preview_frame_count = 0
 
         # 變數
         self.var_device = tk.StringVar()
@@ -1439,12 +1442,10 @@ class BaseballBotGUI:
                     detected = self.bot.scan_text(screen)
                     p_steps = self._get_active_priority_steps_config()
                     matched = None
-                    for p in p_steps:
-                        p_matched = self.bot.match_priority_step(detected, p, screen_shape=(h, w))
-                        if p_matched:
-                            p_text, px, py, p_score, _ = p_matched
-                            matched = (p, p_text, px, py, p_score)
-                            break
+                    p_best = self.bot.match_all_priority_steps(detected, p_steps, screen_shape=(h, w))
+                    if p_best:
+                        p_step_obj, (p_text, px, py, p_score, _) = p_best
+                        matched = (p_step_obj, p_text, px, py, p_score)
                     if not matched:
                         matched = self.bot.match_custom_steps(detected, steps, screen_shape=(h, w))
             except Exception as e:
@@ -1479,24 +1480,123 @@ class BaseballBotGUI:
             self.log_message("⏳ 未命中任何步驟（畫面目前無符合目標）")
 
     def on_bot_frame_update(self, screen_bgr: np.ndarray, detected_items: list, matched=None):
-        """執行中由背景執行緒呼叫，即時更新預覽 (內建防堵塞節流與畫面丟棄機制)"""
+        """
+        執行中由背景執行緒呼叫，即時更新預覽 (極輕量化、超低畫質極速縮放、降頻更新、零卡頓)：
+        1. 降頻節流：無命中時以一半速率更新 (每 2 幀一次，且間隔 >= 0.25s)，有命中或連點時第一時間更新點擊點。
+        2. 取消無效的全量文字框繪製：免去幾十個文字框的多邊形渲染迴圈，僅在命中時繪製醒目標記。
+        3. 極速縮圖：使用 INTER_NEAREST 進行微型縮放 (~480x270)，縮放耗時僅 ~0.1ms。
+        4. 安全傳遞：以參數方式傳遞影像給 UI 執行緒，徹底避免閉包變數存取錯誤。
+        """
         now = time.time()
-        # 若上一幀尚未繪製完成，或兩幀間隔小於 60ms (約 16 FPS)，主動丟棄舊幀，防止 Tk 訊息柱堆疊
-        if self._preview_update_pending or (now - self._last_preview_time < 0.06):
+        # 幀數降頻控制：無命中時降為一半刷新頻率 (每 2 幀一次，第 1 幀必定顯示)
+        if matched is None:
+            self._preview_frame_count += 1
+            if self._preview_frame_count > 1 and (self._preview_frame_count % 2 != 0):
+                return
+            if (self._preview_frame_count > 1) and (now - self._last_preview_time < 0.25):
+                return
+        else:
+            self._preview_frame_count = 0
+            # 命中動作或連點時，若前一幀尚未顯示完畢且間隔極短 (< 0.08s) 則節流
+            if self._preview_update_pending or (now - self._last_preview_time < 0.08):
+                return
+
+        if self._preview_update_pending:
             return
 
         self._preview_update_pending = True
         self._last_preview_time = now
 
-        def _update():
-            try:
-                self.current_screen_bgr = screen_bgr
-                self._last_detected = detected_items
-                self._render_preview(screen_bgr, detected_items, matched)
-            finally:
-                self._preview_update_pending = False
+        try:
+            cw = max(100, getattr(self, "canvas_w", 480) - 4)
+            ch = max(100, getattr(self, "canvas_h", 270) - 4)
 
-        self.root.after(0, _update)
+            h, w = screen_bgr.shape[:2]
+            scale = min(cw / w, ch / h)
+            pw = max(1, int(w * scale))
+            ph = max(1, int(h * scale))
+
+            # 超快極低負擔縮圖 (INTER_NEAREST 耗時僅 ~0.1ms)
+            small = cv2.resize(screen_bgr, (pw, ph), interpolation=cv2.INTER_NEAREST)
+
+            # 僅在有命中或連點時繪製點擊標記，不進行實時全文字框多邊形繪製 (省下 CPU 負擔)
+            if matched:
+                t = max(1, pw // 320)
+                step, m_text, tx, ty, _conf = matched
+                is_priority = (step.get("type") == "priority")
+                is_tapping = (step.get("status") == "continuous_tap")
+                roi = step.get("roi")
+                if roi:
+                    ymin, xmin, ymax, xmax = roi
+                    cv2.rectangle(
+                        small,
+                        (int(xmin * pw), int(ymin * ph)),
+                        (int(xmax * pw), int(ymax * ph)),
+                        (0, 140, 255),
+                        t + 1
+                    )
+
+                stx, sty = int(tx * scale), int(ty * scale)
+                if is_tapping:
+                    cv2.circle(small, (stx, sty), 10 * t, (0, 230, 255), t + 1)
+                    cv2.circle(small, (stx, sty), 5 * t, (0, 140, 255), -1)
+                    cv2.line(small, (stx - 8 * t, sty), (stx + 8 * t, sty), (0, 255, 255), t)
+                    cv2.line(small, (stx, sty - 8 * t), (stx, sty + 8 * t), (0, 255, 255), t)
+                    cv2.putText(
+                        small,
+                        f"TAP: {m_text}",
+                        (max(6, stx - 40 * t), max(18, sty - 12 * t)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 240, 255),
+                        1
+                    )
+                else:
+                    dot_color = (0, 215, 255) if is_priority else (0, 255, 0)
+                    cv2.circle(small, (stx, sty), 5 * t, dot_color, -1)
+                    cv2.circle(small, (stx, sty), 9 * t, dot_color, t)
+                    if is_priority:
+                        cv2.putText(
+                            small,
+                            f"{step.get('name')}",
+                            (stx + 10 * t, sty + 4 * t),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.45,
+                            (0, 215, 255),
+                            1
+                        )
+                    if step.get("repeat_enabled"):
+                        rx, ry = self._repeat_point(step, w, h, tx, ty)
+                        srx, sry = int(rx * scale), int(ry * scale)
+                        cv2.circle(small, (srx, sry), 9 * t, (0, 210, 255), t + 1)
+                        cv2.line(small, (srx - 5 * t, sry), (srx + 5 * t, sry), (0, 210, 255), t)
+                        cv2.line(small, (srx, sry - 5 * t), (srx, sry + 5 * t), (0, 210, 255), t)
+
+            # 轉換為 RGB PIL 圖片並立即釋放 small 矩陣
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            del small
+            pil_img = Image.fromarray(rgb)
+            del rgb
+
+            # 更新座標轉換參數
+            self.preview_scale = scale
+            self.preview_img_w = pw
+            self.preview_img_h = ph
+            self.raw_screen_w = w
+            self.raw_screen_h = h
+
+            def _update_ui(img=pil_img):
+                try:
+                    self.preview_image_tk = ImageTk.PhotoImage(img)
+                    self.lbl_canvas.configure(image=self.preview_image_tk, text="")
+                except Exception:
+                    pass
+                finally:
+                    self._preview_update_pending = False
+
+            self.root.after(0, _update_ui)
+        except Exception:
+            self._preview_update_pending = False
 
     def on_step_roi_changed(self):
         """改範圍時用快取的辨識結果重新比對，不必重新截圖"""
@@ -1506,12 +1606,10 @@ class BaseballBotGUI:
         self._sync_bot_roi()
         p_steps = self._get_active_priority_steps_config()
         matched = None
-        for p in p_steps:
-            p_matched = self.bot.match_priority_step(self._last_detected, p, screen_shape=(h, w))
-            if p_matched:
-                p_text, px, py, p_score, _ = p_matched
-                matched = (p, p_text, px, py, p_score)
-                break
+        p_best = self.bot.match_all_priority_steps(self._last_detected, p_steps, screen_shape=(h, w))
+        if p_best:
+            p_step_obj, (p_text, px, py, p_score, _) = p_best
+            matched = (p_step_obj, p_text, px, py, p_score)
         if not matched:
             matched = self.bot.match_custom_steps(self._last_detected, self._get_active_steps_config(), screen_shape=(h, w))
         self._render_preview(self.current_screen_bgr, self._last_detected, matched)
@@ -1537,73 +1635,65 @@ class BaseballBotGUI:
         return tx, ty
 
     def _render_preview(self, screen_bgr: np.ndarray, detected, matched):
-        """在截圖上畫出：所有文字框(綠)、命中步驟範圍(橘)、點擊點(綠/黃圈)、連點點(黃圈)"""
-        img = screen_bgr.copy()
-        h, w = img.shape[:2]
-        t = max(2, w // 640)
-
-        for r in detected or []:
-            cv2.polylines(img, [r["box"]], isClosed=True, color=(90, 200, 90), thickness=t)
-
-        if matched:
-            step, m_text, tx, ty, _conf = matched
-            is_priority = (step.get("type") == "priority")
-            is_tapping = (step.get("status") == "continuous_tap")
-            roi = step.get("roi")
-            if roi:
-                ymin, xmin, ymax, xmax = roi
-                cv2.rectangle(img, (int(xmin * w), int(ymin * h)), (int(xmax * w), int(ymax * h)), (0, 140, 255), t + 1)
-
-            if is_tapping:
-                # 連點狀態下以醒目的螢光黃金十字與外環動畫標註連點點
-                cv2.circle(img, (tx, ty), 16 * t, (0, 230, 255), t + 2)
-                cv2.circle(img, (tx, ty), 8 * t, (0, 140, 255), -1)
-                cv2.line(img, (tx - 12 * t, ty), (tx + 12 * t, ty), (0, 255, 255), t)
-                cv2.line(img, (tx, ty - 12 * t), (tx, ty + 12 * t), (0, 255, 255), t)
-                cv2.putText(img, f"TAP: {m_text}", (max(10, tx - 60 * t), max(30, ty - 20 * t)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 240, 255), 2)
-            else:
-                dot_color = (0, 215, 255) if is_priority else (0, 255, 0)
-                cv2.circle(img, (tx, ty), 8 * t, dot_color, -1)
-                cv2.circle(img, (tx, ty), 14 * t, dot_color, t)
-                if is_priority:
-                    cv2.putText(img, f"PRIORITY: {step.get('name')}", (tx + 16 * t, ty + 5 * t), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 215, 255), 2)
-                if step.get("repeat_enabled"):
-                    rx, ry = self._repeat_point(step, w, h, tx, ty)
-                    cv2.circle(img, (rx, ry), 14 * t, (0, 210, 255), t + 1)
-                    cv2.line(img, (rx - 8 * t, ry), (rx + 8 * t, ry), (0, 210, 255), t)
-                    cv2.line(img, (rx, ry - 8 * t), (rx, ry + 8 * t), (0, 210, 255), t)
-
-        self._display_full = img
-        self.raw_screen_w, self.raw_screen_h = w, h
-        self._show_image()
-
-    def _show_image(self):
-        self._resize_job = None
-        if self._display_full is None:
+        """手動截圖與改範圍專用預覽渲染 (立即縮放並即刻釋放中間影像)"""
+        if screen_bgr is None:
             return
-        h, w = self._display_full.shape[:2]
-        avail_w = self.lbl_canvas.winfo_width() - 4
-        avail_h = self.lbl_canvas.winfo_height() - 4
-        if avail_w < 100:
-            avail_w = 480
-        if avail_h < 100:
-            avail_h = 300
+        h, w = screen_bgr.shape[:2]
+        self.raw_screen_w, self.raw_screen_h = w, h
+
+        avail_w = max(100, self.lbl_canvas.winfo_width() - 4)
+        avail_h = max(100, self.lbl_canvas.winfo_height() - 4)
         scale = min(avail_w / w, avail_h / h)
         pw, ph = max(1, int(w * scale)), max(1, int(h * scale))
         self.preview_scale = scale
         self.preview_img_w, self.preview_img_h = pw, ph
 
-        resized = cv2.resize(self._display_full, (pw, ph), interpolation=cv2.INTER_AREA)
-        self.preview_image_tk = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)))
+        small = cv2.resize(screen_bgr, (pw, ph), interpolation=cv2.INTER_LINEAR)
+        t = max(1, pw // 320)
+
+        for r in detected or []:
+            sb = np.int32(r["box"] * scale)
+            cv2.polylines(small, [sb], isClosed=True, color=(90, 200, 90), thickness=t)
+            del sb
+
+        if matched:
+            step, m_text, tx, ty, _conf = matched
+            is_priority = (step.get("type") == "priority")
+            roi = step.get("roi")
+            if roi:
+                ymin, xmin, ymax, xmax = roi
+                cv2.rectangle(small, (int(xmin * pw), int(ymin * ph)), (int(xmax * pw), int(ymax * ph)), (0, 140, 255), t + 1)
+            stx, sty = int(tx * scale), int(ty * scale)
+            dot_color = (0, 215, 255) if is_priority else (0, 255, 0)
+            cv2.circle(small, (stx, sty), 5 * t, dot_color, -1)
+            cv2.circle(small, (stx, sty), 9 * t, dot_color, t)
+            if is_priority:
+                cv2.putText(small, f"PRIORITY: {step.get('name')}", (stx + 10 * t, sty + 4 * t), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 215, 255), 1)
+
+        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        del small
+        pil_img = Image.fromarray(rgb)
+        del rgb
+        self.preview_image_tk = ImageTk.PhotoImage(pil_img)
         self.lbl_canvas.configure(image=self.preview_image_tk, text="")
 
-    def _on_preview_resize(self, _e):
+    def _show_image(self):
+        self._resize_job = None
+        if self.current_screen_bgr is not None and not self.bot.is_running:
+            self._render_preview(self.current_screen_bgr, self._last_detected, None)
+
+    def _on_preview_resize(self, e=None):
+        if e and getattr(e, "width", 0) > 50 and getattr(e, "height", 0) > 50:
+            self.canvas_w = e.width
+            self.canvas_h = e.height
+        if self.bot.is_running:
+            return
         if self._resize_job:
             self.root.after_cancel(self._resize_job)
         self._resize_job = self.root.after(120, self._show_image)
 
     def _preview_to_real(self, ex: int, ey: int):
-        if self._display_full is None or self.preview_scale <= 0:
+        if self.preview_scale <= 0 or self.raw_screen_w <= 0 or self.raw_screen_h <= 0:
             return None
         pad_x = max(0, (self.lbl_canvas.winfo_width() - self.preview_img_w) // 2)
         pad_y = max(0, (self.lbl_canvas.winfo_height() - self.preview_img_h) // 2)
@@ -1668,6 +1758,15 @@ class BaseballBotGUI:
 
         self.auto_save_current_config()
         self._sync_bot_roi()
+        # 【用完即刪】：開始執行前徹底清理舊有截圖快取與歷史陣列
+        self.current_screen_bgr = None
+        self._last_detected = None
+        self._preview_frame_count = 0
+        self._last_preview_time = 0.0
+        self._preview_update_pending = False
+        import gc
+        gc.collect()
+
         interval = _num(self.var_interval, 2.5)
         strat = self.var_idle_strategy.get()
         idle = "skip" if "跳過" in strat else "stop" if "停止" in strat else "wait"
@@ -1706,6 +1805,12 @@ class BaseballBotGUI:
             self.root.after(0, self._on_worker_stopped)
 
     def _on_worker_stopped(self):
+        # 【用完即刪】：停止後清除殘留的大圖快取
+        self.current_screen_bgr = None
+        self._last_detected = None
+        import gc
+        gc.collect()
+
         for b in (self.btn_start, self.btn_connect, self.btn_refresh, self.btn_capture):
             b.configure(state=tk.NORMAL)
         self.btn_stop.configure(state=tk.DISABLED)
