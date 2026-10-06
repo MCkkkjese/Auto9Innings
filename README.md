@@ -1,6 +1,6 @@
 # Auto9Innings
 
-Auto9Innings 是一款專為棒球手遊（MLB 9局職棒系列）設計的高效、輕量化、基於電腦視覺與狀態機架構的全自動聯賽掛機系統。系統透過 Android Debug Bridge (ADB) 底層通訊協定與本地神經網絡 OCR 引擎（RapidOCR ONNX Runtime），在不修改遊戲本體與記憶體的前提下，實現完全非侵入式、跨解析度適應的智慧自動化流程。
+##Auto9Innings 是一款專為棒球手遊（MLB 9局職棒系列）設計的高效、輕量化、基於電腦視覺與狀態機架構的全自動聯賽掛機系統。系統透過 Android Debug Bridge (ADB) 底層通訊協定與本地神經網絡 OCR 引擎（RapidOCR ONNX Runtime），在不修改遊戲本體與記憶體的前提下，實現完全非侵入式、跨解析度適應的智慧自動化流程。
 
 ---
 
