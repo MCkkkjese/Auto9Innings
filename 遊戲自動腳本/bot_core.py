@@ -507,25 +507,22 @@ class BaseballBot:
                 if matched and ratio >= 0.75:
                     return True, ex_kw_str
 
-        # 3. 檢查鄰近項目或同一按鈕範圍是否出現排除關鍵字（避免 OCR 將 AUTO 與 PLAYING 拆成兩個鄰近方塊）
+        # 3. 檢查水平緊密相鄰文字（僅處理同一按鈕被 OCR 橫向拆分為兩段的情況，例如「AUTO」與「PLAY」）
         if detected_items:
             icx, icy = item.get("center", (0, 0))
             bw, bh = item.get("size", (50, 30))
-            near_x_dist = max(bw * 3, 250)
-            near_y_dist = max(bh * 2, 80)
 
             for other in detected_items:
                 if other is item:
                     continue
                 ocx, ocy = other.get("center", (0, 0))
-                is_nearby = abs(icx - ocx) <= near_x_dist and abs(icy - ocy) <= near_y_dist
-                is_in_roi = False
-                if roi_box:
-                    rx1, ry1, rx2, ry2 = roi_box
-                    if (rx2 - rx1 < 1800 or ry2 - ry1 < 1000) and (rx1 <= ocx <= rx2 and ry1 <= ocy <= ry2):
-                        is_in_roi = True
+                obw, obh = other.get("size", (50, 30))
 
-                if is_nearby or is_in_roi:
+                # 垂直方向必須幾乎在同一水平線（字高範圍內），且水平相隔極近（同一行被切開）
+                vert_overlap = abs(icy - ocy) <= max(bh, obh) * 0.6
+                horiz_close = abs(icx - ocx) <= (bw // 2 + obw // 2 + 35)
+
+                if vert_overlap and horiz_close:
                     raw_other = other.get("text", "")
                     clean_other = self._clean_str(raw_other)
                     for ex_kw in exclude_keywords:
@@ -573,9 +570,10 @@ class BaseballBot:
     # =========================================================================
     # 【項目 D】點擊通訊強韌化 (3 次重試、斷線自動重連)
     # =========================================================================
-    def tap(self, x: int, y: int, delay_range: Tuple[float, float] = (2.0, 3.5), max_retries: int = 3) -> bool:
+    def tap(self, x: int, y: int, delay_range: Tuple[float, float] = (0.04, 0.08), max_retries: int = 3) -> bool:
         """
-        後台發送點擊並加入動態隨機延遲。
+        後台發送點擊並加入微量動態隨機防抖延遲 (預設 40ms ~ 80ms)。
+        注意：步驟的換頁冷卻時間由步驟邏輯負責，tap() 僅負責底層物理點擊，做到 0 毫秒極速反應。
         【項目 D - 強化】：遭遇 Socket 斷開時自動重試最多 3 次，並自動恢復 ADB 裝置連線。
         """
         if not self.device:
@@ -628,6 +626,53 @@ class BaseballBot:
     # =========================================================================
     # 【最高層級】優先字元檢查 (Top-Priority Override)
     # =========================================================================
+    def _calc_action_coord(
+        self,
+        action: str,
+        item: Dict[str, Any],
+        step: Dict[str, Any],
+        screen_shape: Tuple[int, int]
+    ) -> Tuple[int, int]:
+        """
+        根據步驟設定的動作模式計算最終點擊座標：
+        - 點擊詞條 / 點擊字元 (預設)：點擊辨識文字中心 (含微隨機防作弊防抖)
+        - 自訂座標 / 自訂特定區塊：點擊自訂的 (custom_x, custom_y)
+        - 右下角區域：點擊螢幕 (86%, 86%)
+        - 中央區域：點擊螢幕 (50%, 50%)
+        - 右上角 (Skip)：點擊螢幕 (90%, 12%)
+        - 右半側中央：點擊螢幕 (82%, 50%)
+        """
+        img_h, img_w = screen_shape
+        act = str(action).strip() if action else "點擊詞條"
+        custom_x = int(step.get("custom_x", step.get("repeat_custom_x", 0)))
+        custom_y = int(step.get("custom_y", step.get("repeat_custom_y", 0)))
+
+        if act in ("custom_coord", "自訂座標", "自訂特定區塊"):
+            if custom_x > 0 and custom_y > 0:
+                return custom_x + random.randint(-4, 4), custom_y + random.randint(-4, 4)
+            return custom_x, custom_y
+        elif act == "右下角區域":
+            bx, by = int(img_w * 0.86), int(img_h * 0.86)
+            return bx + random.randint(-6, 6), by + random.randint(-6, 6)
+        elif act == "中央區域":
+            bx, by = int(img_w * 0.50), int(img_h * 0.50)
+            return bx + random.randint(-6, 6), by + random.randint(-6, 6)
+        elif act == "右上角 (Skip)":
+            bx, by = int(img_w * 0.90), int(img_h * 0.12)
+            return bx + random.randint(-6, 6), by + random.randint(-6, 6)
+        elif act == "右半側中央":
+            bx, by = int(img_w * 0.82), int(img_h * 0.50)
+            return bx + random.randint(-6, 6), by + random.randint(-6, 6)
+        else:
+            # 點擊詞條 / 點擊字元 (預設)
+            cx, cy = item["center"]
+            bw, bh = item.get("size", (40, 20))
+            off_x = min(max(3, bw // 8), 6)
+            off_y = min(max(3, bh // 8), 5)
+            rx = cx + random.randint(-off_x, off_x)
+            ry = cy + random.randint(-off_y, off_y)
+            return rx, ry
+
     def match_priority_step(
         self,
         detected_items: List[Dict[str, Any]],
@@ -636,8 +681,8 @@ class BaseballBot:
     ) -> Optional[Tuple[str, int, int, float, Any]]:
         """
         比對單一優先動作是否命中畫面上的文字。
-        支援 ROI 區域過濾、精確匹配、模糊匹配、點擊字元或自訂座標。
-        若命中，回傳 (命中文字, 點擊X, 點擊Y, 信心度, 文字框)
+        支援 ROI 區域過濾、精確匹配、模糊匹配、點擊詞條或自訂特定區塊/座標。
+        若命中，回傳 (命中文字, 點擊X, 點擊Y, 信心度, 文字框, 相似度)
         """
         if not step or not step.get("enabled", True):
             return None
@@ -666,8 +711,6 @@ class BaseballBot:
         else:
             img_h, img_w = 1080, 1920
         action = step.get("action", "click_text")
-        custom_x = step.get("custom_x", step.get("repeat_custom_x", 0))
-        custom_y = step.get("custom_y", step.get("repeat_custom_y", 0))
 
         step_roi = step.get("roi", None)
         if isinstance(step_roi, str):
@@ -705,14 +748,8 @@ class BaseballBot:
 
                 matched, ratio = self._is_text_matched(kw, item["text"], similarity_threshold=1.0)
                 if matched and ratio >= 0.99:
-                    if action in ("custom_coord", "自訂座標"):
-                        return item["text"], int(custom_x), int(custom_y), item["score"], item["box"], float(ratio)
-                    bw, bh = item["size"]
-                    off_x = min(max(3, bw // 8), 6)
-                    off_y = min(max(3, bh // 8), 5)
-                    rx = cx + random.randint(-off_x, off_x)
-                    ry = cy + random.randint(-off_y, off_y)
-                    return item["text"], rx, ry, item["score"], item["box"], float(ratio)
+                    tx, ty = self._calc_action_coord(action, item, step, (img_h, img_w))
+                    return item["text"], tx, ty, item["score"], item["box"], float(ratio)
 
         # 第二階段：模糊容錯比對 (Fuzzy Match >= 0.70)
         for kw in keywords:
@@ -730,14 +767,8 @@ class BaseballBot:
 
                 matched, ratio = self._is_text_matched(kw, item["text"], similarity_threshold=0.70)
                 if matched:
-                    if action in ("custom_coord", "自訂座標"):
-                        return item["text"], int(custom_x), int(custom_y), item["score"], item["box"], float(ratio)
-                    bw, bh = item["size"]
-                    off_x = min(max(3, bw // 8), 6)
-                    off_y = min(max(3, bh // 8), 5)
-                    rx = cx + random.randint(-off_x, off_x)
-                    ry = cy + random.randint(-off_y, off_y)
-                    return item["text"], rx, ry, item["score"], item["box"], float(ratio)
+                    tx, ty = self._calc_action_coord(action, item, step, (img_h, img_w))
+                    return item["text"], tx, ty, item["score"], item["box"], float(ratio)
 
         return None
 
@@ -881,12 +912,9 @@ class BaseballBot:
 
                     matched, ratio = self._is_text_matched(kw, item["text"], similarity_threshold=1.0)
                     if matched and ratio >= 0.99:  # 精確命中
-                        bw, bh = item["size"]
-                        off_x = min(max(3, bw // 8), 6)
-                        off_y = min(max(3, bh // 8), 5)
-                        rand_x = cx + random.randint(-off_x, off_x)
-                        rand_y = cy + random.randint(-off_y, off_y)
-                        return step, item["text"], rand_x, rand_y, item["score"]
+                        action = step.get("action", "click_text")
+                        tx, ty = self._calc_action_coord(action, item, step, (img_h, img_w))
+                        return step, item["text"], tx, ty, item["score"]
 
         # --- 第二階段：模糊容錯比對 (Fuzzy Match >= 0.70) ---
         for step in ordered_steps:
@@ -942,12 +970,9 @@ class BaseballBot:
 
                     matched, ratio = self._is_text_matched(kw, item["text"], similarity_threshold=0.70)
                     if matched:
-                        bw, bh = item["size"]
-                        off_x = min(max(3, bw // 8), 6)
-                        off_y = min(max(3, bh // 8), 5)
-                        rand_x = cx + random.randint(-off_x, off_x)
-                        rand_y = cy + random.randint(-off_y, off_y)
-                        return step, item["text"], rand_x, rand_y, item["score"]
+                        action = step.get("action", "click_text")
+                        tx, ty = self._calc_action_coord(action, item, step, (img_h, img_w))
+                        return step, item["text"], tx, ty, item["score"]
 
         return None
 
@@ -1018,15 +1043,28 @@ class BaseballBot:
         fallback_coord: Optional[Tuple[int, int]] = None,
         idle_tap_config: Optional[Dict[str, Any]] = None,
         priority_config: Optional[Dict[str, Any]] = None,
-        priority_steps: Optional[List[Dict[str, Any]]] = None
+        priority_steps: Optional[List[Dict[str, Any]]] = None,
+        watchdog_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         循環主邏輯，支援使用者完全自訂的動作步驟列表與未偵測到動作時的處理策略。
         priority_steps: 最高層級優先動作清單 (依序判斷 if 優先1 elif 優先2 ... else 平常動作)
         idle_tap_config: 等待時執行連續點擊特定區塊
+        watchdog_config: 進階看門狗防卡死設定 {"enabled": True, "seconds": 60}
         """
         self.is_running = True
+        self._watchdog_triggered = False
         self._log(f"【自訂步驟流程】自動刷關任務開始運行！(無動作策略: {idle_strategy})")
+
+        # 看門狗防卡死守護設定
+        wd_enabled = False
+        wd_seconds = 60
+        if watchdog_config and watchdog_config.get("enabled", False):
+            wd_enabled = True
+            wd_seconds = max(10, int(watchdog_config.get("seconds", 60)))
+            self._log(f"🛡️ [防卡死守護] 已啟動！若連續 {wd_seconds} 秒無任何動作，將自動停止並重新開啟腳本。")
+
+        last_active_time = time.time()
 
         # 整合優先動作清單 (支援多個優先條件 if / elif / ...)
         p_list = []
@@ -1065,6 +1103,7 @@ class BaseballBot:
 
             # 【項目 B】執行步驟前，優先呼叫全域攔截器排除突發彈窗
             if self.check_and_handle_global_popups(detected, (img_h, img_w)):
+                last_active_time = time.time()
                 del screen, detected  # 【用完即刪】：及時釋放影像與辨識陣列
                 continue
 
@@ -1076,6 +1115,7 @@ class BaseballBot:
                 p_hit = self.match_all_priority_steps(detected, active_priority_steps, screen_shape=(img_h, img_w))
 
             if p_hit:
+                last_active_time = time.time()
                 p_step, (p_text, px, py, p_score, p_box) = p_hit
                 p_name = p_step.get("name", "優先動作")
                 p_idx = (active_priority_steps.index(p_step) + 1) if p_step in active_priority_steps else 1
@@ -1092,10 +1132,10 @@ class BaseballBot:
                     self._log(f"⭐ [{p_tag}] 命中「{p_text}」({p_score:.2f}) → 優先點擊 ({px}, {py})")
 
                     rep_enabled = p_step.get("repeat_enabled", False)
-                    # 1. 【優先最前執行】：第一時間透過 ADB 下發點擊指令，確保動作零延遲
-                    self.tap(px, py, delay_range=(0.4, 0.7) if rep_enabled else (d_min, d_max))
+                    # 1. 【0ms 極速下發 ADB 指令】：偵測到優先字元第一時間秒按！
+                    self.tap(px, py, delay_range=(0.04, 0.08))
 
-                    # 2. 【事後回報預覽】：點擊動作已確實下發，發送畫面僅供介面確認呈現
+                    # 2. 【0ms 立即同步呈現】：點擊下發瞬間，GUI 預覽視窗同步標記呈現
                     if self.on_frame_callback and self.is_running:
                         try:
                             self.on_frame_callback(screen, detected, (p_step, p_text, px, py, p_score))
@@ -1110,7 +1150,7 @@ class BaseballBot:
                         tg_msg = tg_cfg.get("message", "")
                         self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=p_tag, hit_text=p_text)
 
-                    # 命中後連點過渡動作 (與一般步驟規格完全一致)
+                    # 命中後連點過渡動作 或 步驟自訂換頁延遲
                     if rep_enabled and self.is_running:
                         rep_mode = p_step.get("repeat_mode", "until_next")
                         rep_area = p_step.get("repeat_area", "右下角區域")
@@ -1194,6 +1234,11 @@ class BaseballBot:
                                 rx = bx + random.randint(-12, 12)
                                 ry = by + random.randint(-12, 12)
                                 self.tap(rx, ry, delay_range=(min_spd, max_spd))
+                            time.sleep(max(0.05, random.uniform(d_min, d_max)))
+                    else:
+                        # 單次點擊：依據優先動作設定的自訂換頁延遲進行冷卻等待
+                        wait_time = max(0.05, random.uniform(d_min, d_max))
+                        time.sleep(wait_time)
 
                     # 【用完即刪】：本輪點擊與回報完成，立即釋放當前 screen 與 detected
                     del screen, detected
@@ -1237,6 +1282,7 @@ class BaseballBot:
             )
 
             if matched and self.is_running:
+                last_active_time = time.time()
                 step, text, x, y, score = matched
                 step_name = step.get("name", "自訂步驟")
                 d_min = step.get("delay_min", 2.0)
@@ -1255,10 +1301,10 @@ class BaseballBot:
 
                 self._log(f"🎯 [{step_tag}] 命中「{text}」({score:.2f}) → 點擊 ({x}, {y})")
 
-                # 1. 【最前優先執行點擊】：第一時間下發 ADB 點擊指令，確保反應動作最快完成
-                self.tap(x, y, delay_range=(0.4, 0.7) if rep_enabled else (d_min, d_max))
+                # 1. 【0ms 極速下發 ADB 指令】：第一時間下發點擊指令，確保反應動作零延遲
+                self.tap(x, y, delay_range=(0.04, 0.08))
 
-                # 2. 【事後回報預覽視窗】：動作完成後才更新 GUI 介面供使用者確認
+                # 2. 【0ms 立即同步呈現】：點擊下發瞬間，GUI 預覽視窗同步標記呈現
                 if self.on_frame_callback and self.is_running:
                     try:
                         self.on_frame_callback(screen, detected, matched)
@@ -1273,7 +1319,7 @@ class BaseballBot:
                     tg_msg = tg_cfg.get("message", "")
                     self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=step_tag, hit_text=text)
 
-                # 【步驟間過渡動作】：支援持續連點直至下一動作，或指定次數
+                # 【步驟換頁冷卻 / 過渡連點】：點擊與預覽呈現皆完成後，才進行遊戲過場或換頁冷卻
                 if rep_enabled and self.is_running:
                     rep_mode = step.get("repeat_mode", "until_next")
                     rep_speed = float(step.get("repeat_speed", 0.3))
@@ -1351,14 +1397,19 @@ class BaseballBot:
                             rx = bx + random.randint(-12, 12)
                             ry = by + random.randint(-12, 12)
                             self.tap(rx, ry, delay_range=(min_spd, max_spd))
-
-                    time.sleep(d_min)
+                        time.sleep(max(0.05, random.uniform(d_min, d_max)))
+                else:
+                    # 單次點擊：根據步驟自訂的延遲時間進行換頁冷卻 (遊戲讀取等待)
+                    wait_time = max(0.05, random.uniform(d_min, d_max))
+                    time.sleep(wait_time)
 
                 consecutive_idle = 0
                 step_wait_start_time = time.time()
                 del screen, detected  # 【用完即刪】：步驟執行完畢，立即刪除當前畫面與辨識資料
-                if self.is_running and poll_interval > 0:
-                    time.sleep(poll_interval)
+
+                # 🚨【關鍵優化】：本步驟已完成使用者設定的自訂換頁延遲，絕不再疊加 poll_interval！
+                # 換頁時間一結束，立刻進行下一輪截圖辨識！
+                continue
             else:
                 # 未命中任何步驟時，更新預覽畫面供使用者介面觀察當前無命中狀態
                 if self.on_frame_callback and self.is_running:
@@ -1369,6 +1420,15 @@ class BaseballBot:
 
                 consecutive_idle += 1
                 del screen, detected  # 【用完即刪】：未命中任何步驟，回報後立即釋放畫面與資料
+
+                # 🛡️【看門狗防卡死檢查】：超過設定時間未命中任何動作時自動停止並重新開啟
+                if wd_enabled and self.is_running:
+                    idle_duration = time.time() - last_active_time
+                    if idle_duration >= wd_seconds:
+                        self._log(f"🚨 [防卡死守護] 已連續 {int(idle_duration)} 秒無任何動作，觸發自動停止並重新開啟腳本！", "WARNING")
+                        self.is_running = False
+                        self._watchdog_triggered = True
+                        break
 
                 expected_step = active_steps[current_step_idx] if active_steps else None
                 exp_idx = current_step_idx + 1 if active_steps else 1

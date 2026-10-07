@@ -21,6 +21,7 @@ from bot_core import BaseballBot
 ROI_OPTIONS = ["右下角區域", "右半側螢幕", "下半部區域", "中央區域", "全畫面比對"]
 REPEAT_MODES = ["持續連點", "指定次數"]
 REPEAT_AREAS = ["右下角區域", "中央區域", "右上角 (Skip)", "右半側中央", "跟隨命中目標", "自訂座標"]
+ACTION_OPTIONS = ["點擊詞條", "自訂座標", "右下角區域", "中央區域", "右上角 (Skip)", "右半側中央"]
 IDLE_STRATEGIES = ["常規等待", "快速跳過", "自動停止"]
 
 # 每個步驟卡片專屬邊框色 (拖曳時顏色跟著卡片走)
@@ -88,9 +89,14 @@ class BaseballBotGUI:
         self.var_interval = tk.DoubleVar(value=2.5)
         self.var_confidence = tk.DoubleVar(value=0.65)
         self.var_idle_strategy = tk.StringVar(value=IDLE_STRATEGIES[0])
-        self.var_auto_refresh = tk.BooleanVar(value=False)
+        self.var_auto_refresh = tk.BooleanVar(value=True)
         self.var_preview_coords = tk.StringVar(value="")
         self.auto_refresh_job = None
+
+        # 看門狗防卡死守護參數 (可於進階面板設定)
+        self.var_watchdog_enabled = tk.BooleanVar(value=False)
+        self.var_watchdog_seconds = tk.IntVar(value=60)
+        self._watchdog_restart_job = None
 
         # 等待時連點參數 (可於進階面板設定)
         self.var_idle_tap_enabled = tk.BooleanVar(value=False)
@@ -302,6 +308,12 @@ class BaseballBotGUI:
         card.pack(fill=tk.X, pady=4, padx=4)
 
         # 舊版設定檔相容
+        if action in ("點擊字元", "click_text"):
+            action = "點擊詞條"
+        elif action in ("custom_coord", "自訂特定區塊"):
+            action = "自訂座標"
+        elif action not in ACTION_OPTIONS:
+            action = "點擊詞條"
         repeat_mode = "指定次數" if ("次數" in str(repeat_mode) or repeat_mode == "count") else "持續連點"
         repeat_area = "自訂座標" if "自訂" in str(repeat_area) else repeat_area
         if repeat_area not in REPEAT_AREAS:
@@ -358,7 +370,7 @@ class BaseballBotGUI:
         ra = tk.Frame(detail, bg="#fffbeb")
         ra.pack(fill=tk.X, pady=(6, 0))
         tk.Label(ra, text="動作", bg="#fffbeb", fg="#78350f").pack(side=tk.LEFT)
-        combo_act = ttk.Combobox(ra, textvariable=p["action"], values=["點擊字元", "自訂座標"], state="readonly", width=8)
+        combo_act = ttk.Combobox(ra, textvariable=p["action"], values=ACTION_OPTIONS, state="readonly", width=10)
         combo_act.pack(side=tk.LEFT, padx=(4, 8))
 
         box_xy = tk.Frame(ra, bg="#fffbeb")
@@ -367,9 +379,20 @@ class BaseballBotGUI:
         tk.Label(box_xy, text="Y", bg="#fffbeb", fg="#78350f").pack(side=tk.LEFT)
         ttk.Entry(box_xy, textvariable=p["custom_y"], width=5).pack(side=tk.LEFT, padx=(2, 8))
 
-        tk.Label(ra, text="範圍", bg="#fffbeb", fg="#78350f").pack(side=tk.LEFT)
+        lbl_roi = tk.Label(ra, text="範圍", bg="#fffbeb", fg="#78350f")
+        lbl_roi.pack(side=tk.LEFT)
         combo_roi = ttk.Combobox(ra, textvariable=p["roi"], values=ROI_OPTIONS, state="readonly", width=9)
         combo_roi.pack(side=tk.LEFT, padx=(4, 8))
+
+        def _refresh_priority_act_ui(*_):
+            act_val = p["action"].get()
+            if act_val in ("自訂座標", "自訂特定區塊"):
+                box_xy.pack(side=tk.LEFT, padx=(0, 8), before=lbl_roi)
+            else:
+                box_xy.pack_forget()
+
+        p["action"].trace_add("write", _refresh_priority_act_ui)
+        _refresh_priority_act_ui()
 
         tk.Label(ra, text="延遲", bg="#fffbeb", fg="#78350f").pack(side=tk.LEFT)
         ttk.Spinbox(ra, from_=0.2, to=10.0, increment=0.2, textvariable=p["delay"], width=4).pack(side=tk.LEFT, padx=(4, 0))
@@ -419,7 +442,7 @@ class BaseballBotGUI:
 
         def summary() -> str:
             act = p["action"].get()
-            if act == "自訂座標":
+            if act in ("自訂座標", "自訂特定區塊"):
                 act += f" ({p['custom_x'].get()}, {p['custom_y'].get()})"
             parts = [act, p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
             if p["while_condition"].get():
@@ -543,7 +566,7 @@ class BaseballBotGUI:
                 "name": p["name"].get().strip() or "優先動作",
                 "keywords": kws,
                 "exclude_keywords": ex_kws,
-                "action": "custom_coord" if p["action"].get() == "自訂座標" else "click_text",
+                "action": "custom_coord" if p["action"].get() in ("自訂座標", "自訂特定區塊") else p["action"].get(),
                 "custom_x": _num(p["custom_x"], 0, int),
                 "custom_y": _num(p["custom_y"], 0, int),
                 "delay": _num(p["delay"], 1.0),
@@ -633,24 +656,34 @@ class BaseballBotGUI:
             else:
                 box_it_xy.pack_forget()
 
-        self.var_idle_tap_area.trace_add("write", _refresh_it_ui)
-        _refresh_it_ui()
-
-        # Telegram 通知全域設定
+        # 看門狗防卡死守護設定 (超時自動停止並重新開啟)
         ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=6, column=0, columnspan=3, sticky="ew", pady=(6, 4))
 
+        row_wd = ttk.Frame(f)
+        row_wd.grid(row=7, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Checkbutton(row_wd, text="🔄 無動作自動重啟 (防卡死守護)", variable=self.var_watchdog_enabled).pack(side=tk.LEFT)
+
+        row_wd_detail = ttk.Frame(f)
+        row_wd_detail.grid(row=8, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Label(row_wd_detail, text="超過").pack(side=tk.LEFT)
+        ttk.Spinbox(row_wd_detail, from_=10, to=1800, increment=10, textvariable=self.var_watchdog_seconds, width=5).pack(side=tk.LEFT, padx=4)
+        ttk.Label(row_wd_detail, text="秒無動作時，自動停止並重新開啟腳本").pack(side=tk.LEFT)
+
+        # Telegram 通知全域設定
+        ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=9, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+
         row_tg_hdr = ttk.Frame(f)
-        row_tg_hdr.grid(row=7, column=0, columnspan=3, sticky="w", pady=2)
+        row_tg_hdr.grid(row=10, column=0, columnspan=3, sticky="w", pady=2)
         tk.Label(row_tg_hdr, text="📱 Telegram 推播通知設定", font=("Arial", 10, "bold"), fg="#0284c7").pack(side=tk.LEFT)
         ttk.Button(row_tg_hdr, text="發送測試訊息", width=12, command=self.on_test_telegram_message).pack(side=tk.RIGHT, padx=4)
 
         row_tg_1 = ttk.Frame(f)
-        row_tg_1.grid(row=8, column=0, columnspan=3, sticky="ew", pady=1)
+        row_tg_1.grid(row=11, column=0, columnspan=3, sticky="ew", pady=1)
         ttk.Label(row_tg_1, text="Bot Token:").pack(side=tk.LEFT)
         ttk.Entry(row_tg_1, textvariable=self.var_tg_token, width=28).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
         row_tg_2 = ttk.Frame(f)
-        row_tg_2.grid(row=9, column=0, columnspan=3, sticky="ew", pady=1)
+        row_tg_2.grid(row=12, column=0, columnspan=3, sticky="ew", pady=1)
         ttk.Label(row_tg_2, text="Chat ID:   ").pack(side=tk.LEFT)
         ttk.Entry(row_tg_2, textvariable=self.var_tg_chat_id, width=16).pack(side=tk.LEFT, padx=(4, 0))
 
@@ -729,6 +762,9 @@ class BaseballBotGUI:
         name: str,
         keywords: str,
         exclude_keywords: str = "",
+        action: str = "點擊詞條",
+        custom_x: int = 0,
+        custom_y: int = 0,
         delay: float = 2.5,
         enabled: bool = True,
         roi_name: str = "右下角區域",
@@ -749,6 +785,12 @@ class BaseballBotGUI:
         color = STEP_COLORS[len(self.steps_list) % len(STEP_COLORS)]
 
         # 舊版設定檔相容
+        if action in ("點擊字元", "click_text"):
+            action = "點擊詞條"
+        elif action in ("custom_coord", "自訂特定區塊"):
+            action = "自訂座標"
+        elif action not in ACTION_OPTIONS:
+            action = "點擊詞條"
         repeat_mode = "指定次數" if ("次數" in str(repeat_mode) or repeat_mode == "count") else "持續連點"
         repeat_area = "自訂座標" if "自訂" in str(repeat_area) else repeat_area
         if repeat_area not in REPEAT_AREAS:
@@ -767,6 +809,9 @@ class BaseballBotGUI:
             "name": tk.StringVar(value=name),
             "keywords": tk.StringVar(value=keywords),
             "exclude_keywords": tk.StringVar(value=exclude_keywords),
+            "action": tk.StringVar(value=action),
+            "custom_x": tk.IntVar(value=custom_x),
+            "custom_y": tk.IntVar(value=custom_y),
             "delay": tk.DoubleVar(value=delay),
             "roi": tk.StringVar(value=roi_name),
             "repeat_enabled": tk.BooleanVar(value=repeat_enabled),
@@ -810,10 +855,33 @@ class BaseballBotGUI:
 
         ra = tk.Frame(detail)
         ra.pack(fill=tk.X, pady=(8, 0))
-        ttk.Label(ra, text="範圍").pack(side=tk.LEFT)
+
+        ttk.Label(ra, text="動作").pack(side=tk.LEFT)
+        combo_act = ttk.Combobox(ra, textvariable=s["action"], values=ACTION_OPTIONS, state="readonly", width=10)
+        combo_act.pack(side=tk.LEFT, padx=(4, 8))
+
+        box_act_xy = tk.Frame(ra)
+        ttk.Label(box_act_xy, text="X").pack(side=tk.LEFT)
+        ttk.Entry(box_act_xy, textvariable=s["custom_x"], width=5).pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(box_act_xy, text="Y").pack(side=tk.LEFT)
+        ttk.Entry(box_act_xy, textvariable=s["custom_y"], width=5).pack(side=tk.LEFT, padx=(2, 8))
+
+        lbl_step_roi = ttk.Label(ra, text="範圍")
+        lbl_step_roi.pack(side=tk.LEFT)
         combo_roi = ttk.Combobox(ra, textvariable=s["roi"], values=ROI_OPTIONS, state="readonly", width=9)
         combo_roi.pack(side=tk.LEFT, padx=(4, 14))
         combo_roi.bind("<<ComboboxSelected>>", lambda e: self.on_step_roi_changed())
+
+        def _refresh_step_act_ui(*_):
+            act_val = s["action"].get()
+            if act_val in ("自訂座標", "自訂特定區塊"):
+                box_act_xy.pack(side=tk.LEFT, padx=(0, 8), before=lbl_step_roi)
+            else:
+                box_act_xy.pack_forget()
+
+        s["action"].trace_add("write", _refresh_step_act_ui)
+        _refresh_step_act_ui()
+
         ttk.Label(ra, text="延遲").pack(side=tk.LEFT)
         ttk.Spinbox(ra, from_=0.5, to=15.0, increment=0.5, textvariable=s["delay"], width=4).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Label(ra, text="秒").pack(side=tk.LEFT, padx=(2, 14))
@@ -862,7 +930,10 @@ class BaseballBotGUI:
         ttk.Entry(rtg_msg, textvariable=s["tg_message"]).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         def summary() -> str:
-            parts = [s["roi"].get(), f"延遲 {_num(s['delay'], 0):g}s"]
+            act = s["action"].get()
+            if act in ("自訂座標", "自訂特定區塊"):
+                act += f" ({s['custom_x'].get()}, {s['custom_y'].get()})"
+            parts = [act, s["roi"].get(), f"延遲 {_num(s['delay'], 0):g}s"]
             ex = s["exclude_keywords"].get().strip()
             if ex:
                 parts.append(f"排除: {ex}")
@@ -919,7 +990,7 @@ class BaseballBotGUI:
             else:
                 rtg_msg.pack_forget()
 
-        for key in ("enabled", "expanded", "roi", "delay", "timeout_enabled", "timeout_seconds",
+        for key in ("enabled", "expanded", "action", "custom_x", "custom_y", "roi", "delay", "timeout_enabled", "timeout_seconds",
                     "repeat_enabled", "repeat_mode", "repeat_count", "repeat_area",
                     "repeat_custom_x", "repeat_custom_y", "exclude_keywords",
                     "tg_enabled", "tg_message"):
@@ -1052,8 +1123,12 @@ class BaseballBotGUI:
                 "name": s["name"].get().strip() or "步驟",
                 "keywords": kws,
                 "exclude_keywords": ex_kws,
-                "delay_min": max(0.5, delay - 0.5),
-                "delay_max": delay + 0.5,
+                "action": "custom_coord" if s["action"].get() in ("自訂座標", "自訂特定區塊") else s["action"].get(),
+                "custom_x": _num(s["custom_x"], 0, int),
+                "custom_y": _num(s["custom_y"], 0, int),
+                "delay": delay,
+                "delay_min": max(0.05, delay - 0.15),
+                "delay_max": delay + 0.15,
                 "enabled": s["enabled"].get() and bool(kws),
                 "roi": self._map_roi_name_to_tuple(s["roi"].get()),
                 "roi_name": s["roi"].get(),
@@ -1108,6 +1183,9 @@ class BaseballBotGUI:
                 "name": s["name"].get(),
                 "keywords": s["keywords"].get(),
                 "exclude_keywords": s["exclude_keywords"].get(),
+                "action": s["action"].get(),
+                "custom_x": _num(s["custom_x"], 0, int),
+                "custom_y": _num(s["custom_y"], 0, int),
                 "delay": _num(s["delay"], 2.5),
                 "enabled": s["enabled"].get(),
                 "roi": s["roi"].get(),
@@ -1128,6 +1206,11 @@ class BaseballBotGUI:
             "interval": _num(self.var_interval, 2.5),
             "confidence": _num(self.var_confidence, 0.65),
             "idle_strategy": self.var_idle_strategy.get(),
+            "auto_refresh": bool(self.var_auto_refresh.get()),
+            "watchdog": {
+                "enabled": bool(self.var_watchdog_enabled.get()),
+                "seconds": _num(self.var_watchdog_seconds, 60, int),
+            },
             "telegram_global": {
                 "token": self.var_tg_token.get().strip(),
                 "chat_id": self.var_tg_chat_id.get().strip(),
@@ -1153,6 +1236,12 @@ class BaseballBotGUI:
         if "idle_strategy" in cfg:
             v = str(cfg["idle_strategy"])
             self.var_idle_strategy.set("快速跳過" if "跳過" in v else "自動停止" if "停止" in v else "常規等待")
+        if "auto_refresh" in cfg:
+            self.var_auto_refresh.set(bool(cfg["auto_refresh"]))
+        if "watchdog" in cfg and isinstance(cfg["watchdog"], dict):
+            wd = cfg["watchdog"]
+            self.var_watchdog_enabled.set(bool(wd.get("enabled", False)))
+            self.var_watchdog_seconds.set(int(wd.get("seconds", 60)))
         if "idle_tap" in cfg and isinstance(cfg["idle_tap"], dict):
             it = cfg["idle_tap"]
             self.var_idle_tap_enabled.set(it.get("enabled", False))
@@ -1227,6 +1316,9 @@ class BaseballBotGUI:
                     name=s.get("name", "步驟"),
                     keywords=s.get("keywords", ""),
                     exclude_keywords=s.get("exclude_keywords", ""),
+                    action=s.get("action", "點擊詞條"),
+                    custom_x=s.get("custom_x", 0),
+                    custom_y=s.get("custom_y", 0),
                     delay=s.get("delay", 2.5),
                     enabled=s.get("enabled", True),
                     roi_name=s.get("roi", "右下角區域"),
@@ -1403,6 +1495,8 @@ class BaseballBotGUI:
             self._set_status(f"● 已連線  {self.bot.device.serial}", COLOR_OK)
             self.btn_start.configure(state=tk.NORMAL)
             self._capture_async(announce=True)
+            if self.var_auto_refresh.get() and not self.auto_refresh_job:
+                self._schedule_next_refresh(delay_ms=600)
         else:
             self._set_status("● 連線失敗", COLOR_BAD)
             messagebox.showerror("連線失敗", "無法連線模擬器，請確認模擬器已完全開機。")
@@ -1495,14 +1589,13 @@ class BaseballBotGUI:
                 return
             if (self._preview_frame_count > 1) and (now - self._last_preview_time < 0.25):
                 return
+            if self._preview_update_pending:
+                return
         else:
             self._preview_frame_count = 0
-            # 命中動作或連點時，若前一幀尚未顯示完畢且間隔極短 (< 0.08s) 則節流
-            if self._preview_update_pending or (now - self._last_preview_time < 0.08):
+            # 命中動作或連點具最高優先權，若連續多幀命中則保留至少 0.05s 防撕裂
+            if now - self._last_preview_time < 0.05:
                 return
-
-        if self._preview_update_pending:
-            return
 
         self._preview_update_pending = True
         self._last_preview_time = now
@@ -1779,6 +1872,10 @@ class BaseballBotGUI:
             "custom_y": _num(self.var_idle_tap_custom_y, 1023, int),
             "custom_coord": (_num(self.var_idle_tap_custom_x, 983, int), _num(self.var_idle_tap_custom_y, 1023, int)),
         }
+        watchdog_cfg = {
+            "enabled": self.var_watchdog_enabled.get(),
+            "seconds": _num(self.var_watchdog_seconds, 60, int),
+        }
 
         for b in (self.btn_start, self.btn_connect, self.btn_refresh, self.btn_capture):
             b.configure(state=tk.DISABLED)
@@ -1786,11 +1883,11 @@ class BaseballBotGUI:
         self._set_status("● 執行中", COLOR_OK)
 
         self.worker_thread = threading.Thread(
-            target=self._run_worker, args=(interval, steps, idle, idle_tap_cfg, priority_steps), daemon=True
+            target=self._run_worker, args=(interval, steps, idle, idle_tap_cfg, priority_steps, watchdog_cfg), daemon=True
         )
         self.worker_thread.start()
 
-    def _run_worker(self, interval: float, steps, idle: str, idle_tap_cfg: dict, priority_steps: list):
+    def _run_worker(self, interval: float, steps, idle: str, idle_tap_cfg: dict, priority_steps: list, watchdog_cfg: dict = None):
         try:
             self.bot.run_loop(
                 poll_interval=interval,
@@ -1798,6 +1895,7 @@ class BaseballBotGUI:
                 idle_strategy=idle,
                 idle_tap_config=idle_tap_cfg,
                 priority_steps=priority_steps,
+                watchdog_config=watchdog_cfg,
             )
         except Exception as e:
             self.log_message(f"❌ 執行中斷: {e}")
@@ -1811,6 +1909,18 @@ class BaseballBotGUI:
         import gc
         gc.collect()
 
+        was_watchdog = getattr(self.bot, "_watchdog_triggered", False)
+        self.bot._watchdog_triggered = False
+
+        if was_watchdog:
+            self.log_message("🔄 [防卡死守護] 腳本已由守護程式停止，將於 1.5 秒後自動重新開啟...")
+            self._set_status("● 防卡死重新啟動中...", COLOR_WARN)
+            for b in (self.btn_start, self.btn_connect, self.btn_refresh, self.btn_capture):
+                b.configure(state=tk.DISABLED)
+            self.btn_stop.configure(state=tk.NORMAL)
+            self._watchdog_restart_job = self.root.after(1500, self._restart_worker_after_watchdog)
+            return
+
         for b in (self.btn_start, self.btn_connect, self.btn_refresh, self.btn_capture):
             b.configure(state=tk.NORMAL)
         self.btn_stop.configure(state=tk.DISABLED)
@@ -1819,7 +1929,22 @@ class BaseballBotGUI:
         else:
             self._set_status("● 已停止", COLOR_IDLE)
 
+        if self.var_auto_refresh.get() and not self.auto_refresh_job:
+            self._schedule_next_refresh(delay_ms=500)
+
+    def _restart_worker_after_watchdog(self):
+        self._watchdog_restart_job = None
+        if not self.bot.device:
+            self.log_message("⚠️ 模擬器連線已中斷，無法自動重啟")
+            self._on_worker_stopped()
+            return
+        self.log_message("🚀 [防卡死守護] 自動重新開啟腳本！")
+        self.on_start_bot()
+
     def on_stop_bot(self):
+        if getattr(self, "_watchdog_restart_job", None):
+            self.root.after_cancel(self._watchdog_restart_job)
+            self._watchdog_restart_job = None
         self.bot.stop()
 
     def on_run_diagnostics(self):
