@@ -172,84 +172,8 @@ BLOCK_TYPES = {
     }
 }
 
-# 每日任務預設範本
-DAILY_PRESETS = {
-    "daily_mailbox": {
-        "title": "📦 每日簽到與信箱領取",
-        "desc": "自動點擊主頁信箱 ➜ 全部領取 ➜ 確認 ➜ 返回 ➜ 發送通知",
-        "blocks": [
-            {"type": "comment", "name": "流程說明", "enabled": True, "params": {"note": "每日信箱自動領取所有禮物與體力"}},
-            {"type": "tap_coord", "name": "點擊右上信箱圖示", "enabled": True, "params": {"x": 1780, "y": 75, "delay": 2.0, "repeat": 1}},
-            {"type": "detect_click", "name": "點擊全部領取", "enabled": True, "params": {"target_type": "📝 僅文字", "keywords": "全部領取, 領取全部, 領取", "timeout": 8, "click_mode": "click_text", "custom_x": 0, "custom_y": 0, "delay": 1.8, "on_timeout": "continue"}},
-            {"type": "detect_click", "name": "確認彈窗領取", "enabled": True, "params": {"target_type": "📝 僅文字", "keywords": "確認, 確定, OK", "timeout": 6, "click_mode": "click_text", "custom_x": 0, "custom_y": 0, "delay": 1.5, "on_timeout": "continue"}},
-            {"type": "back_key", "name": "關閉信箱返回主頁", "enabled": True, "params": {"delay": 1.2}},
-            {"type": "send_telegram", "name": "發送領取完成通知", "enabled": True, "params": {"message": "📬 每日信箱所有禮物與體力已領取完畢！", "attach_screenshot": True, "use_custom": False, "delay_after": 0.5}}
-        ]
-    },
-    "friend_hearts": {
-        "title": "🤝 好友送心與點數",
-        "desc": "進入好友選單 ➜ 一鍵送出友情點數 ➜ 確認 ➜ 返回",
-        "blocks": [
-            {"type": "tap_coord", "name": "點擊好友選單", "enabled": True, "params": {"x": 1620, "y": 75, "delay": 2.2, "repeat": 1}},
-            {"type": "detect_click", "name": "點擊一併贈送/全部發送", "enabled": True, "params": {"target_type": "📝 僅文字", "keywords": "一併贈送, 全部贈送, 全部發送, 送點數", "timeout": 8, "click_mode": "click_text", "custom_x": 0, "custom_y": 0, "delay": 1.8, "on_timeout": "continue"}},
-            {"type": "detect_click", "name": "確認贈送完畢", "enabled": True, "params": {"target_type": "📝 僅文字", "keywords": "確認, 確定", "timeout": 6, "click_mode": "click_text", "custom_x": 0, "custom_y": 0, "delay": 1.5, "on_timeout": "continue"}},
-            {"type": "back_key", "name": "返回主選單", "enabled": True, "params": {"delay": 1.2}}
-        ]
-    },
-    "branch_example": {
-        "title": "🔀 勝負判斷分支範本",
-        "desc": "判斷勝負畫面：若勝利點擊領取，若失敗點擊退出",
-        "blocks": [
-            {"type": "wait_sec", "name": "等待結算畫面載入", "enabled": True, "params": {"seconds": 3.0}},
-            {"type": "branch_if", "name": "判斷勝負並點擊對應座標", "enabled": True, "params": {
-                "timeout": 10, "delay": 2.0,
-                "else_action": "skip", "else_x": 960, "else_y": 950,
-                "branches": [
-                    {"name": "If", "keywords": "勝利, 挑戰成功, 獲勝", "x": 1650, "y": 950},
-                    {"name": "Else If", "keywords": "失敗, 挑戰失敗", "x": 960, "y": 950}
-                ]
-            }},
-            {"type": "detect_click", "name": "點擊下一步或確認", "enabled": True, "params": {"target_type": "📝 僅文字", "keywords": "下一步, 確定, 確認", "timeout": 8, "click_mode": "click_text", "custom_x": 0, "custom_y": 0, "delay": 1.5, "on_timeout": "continue"}}
-        ]
-    },
-    "league_cycle": {
-        "title": "🏆 每日聯賽刷關循環 (3場)",
-        "desc": "循環執行準備比賽 ➜ 開始比賽 ➜ 結算確認",
-        "blocks": [
-            {"type": "detect_click", "name": "準備進入比賽", "enabled": True, "params": {"target_type": "📝 僅文字", "keywords": "準備, 挑戰, 出戰", "timeout": 12, "click_mode": "click_text", "custom_x": 0, "custom_y": 0, "delay": 2.5, "on_timeout": "continue"}},
-            {"type": "detect_click", "name": "點擊開始比賽", "enabled": True, "params": {"target_type": "📝 僅文字", "keywords": "開始, 比賽開始", "timeout": 10, "click_mode": "click_text", "custom_x": 0, "custom_y": 0, "delay": 3.5, "on_timeout": "continue"}},
-            {"type": "wait_condition", "name": "等待比賽結束進入結算", "enabled": True, "params": {
-                "cond_mode": "出現 (Wait Appear)", "target_type": "📝 僅文字", "keywords": "勝利, 失敗, 挑戰成功, 結算, 確定",
-                "interval": 2.0, "timeout": 120, "delay_after": 1.0, "on_timeout": "continue"
-            }},
-            {"type": "detect_click", "name": "結算領取獎勵", "enabled": True, "params": {"target_type": "📝 僅文字", "keywords": "確認, 確定, 領取, 下一步", "timeout": 25, "click_mode": "click_text", "custom_x": 0, "custom_y": 0, "delay": 2.5, "on_timeout": "continue"}}
-        ]
-    },
-    "repeat_upgrade_example": {
-        "title": "🔁 迴圈連續強化範本 (While 條件)",
-        "desc": "迴圈重複強化，直到偵測到完成文字或滿 10 次退出",
-        "blocks": [
-            {"type": "comment", "name": "流程說明", "enabled": True, "params": {"note": "示範在迴圈容器內設定 While 停止條件 (文字出現/最多10次)"}},
-            {"type": "loop", "name": "重複強化 (直到升級完成)", "enabled": True, "params": {
-                "stop_mode": "偵測到文字出現",
-                "keywords": "強化成功, 等級上限, MAX, 完成",
-                "count": 10,
-                "check_timing": "每輪開始與結束",
-                "delay_after": 0.5,
-                "inner_blocks": [
-                    {"type": "multi_tap", "name": "連續點擊強化鈕", "enabled": True, "params": {
-                        "x": 1600, "y": 800, "count": 6, "interval": 0.25,
-                        "stop_mode": "無 (僅點滿次數)", "stop_keywords": "", "check_every": 2, "delay_after": 0.5
-                    }},
-                    {"type": "detect_click", "name": "確認彈窗", "enabled": True, "params": {
-                        "target_type": "📝 僅文字", "keywords": "確認, 確定", "timeout": 4, "click_mode": "click_text", "custom_x": 0, "custom_y": 0, "delay": 1.0, "on_timeout": "continue"
-                    }},
-                    {"type": "wait_sec", "name": "冷卻緩衝", "enabled": True, "params": {"seconds": 1.0}}
-                ]
-            }}
-        ]
-    }
-}
+# 常用任務範本字典 (動態從 task_presets/ 資料夾載入，支援使用者自訂新增與修改)
+DAILY_PRESETS: Dict[str, Dict[str, Any]] = {}
 
 
 def _safe_float(val, default=0.0):
@@ -400,6 +324,81 @@ class TaskEngine:
             self._stop_event.set()
             self.is_running = False
             self._log("已發送停止信號，等待當前動作結束...")
+
+    def run_sync(
+        self,
+        blocks_data: List[Dict[str, Any]],
+        loop_count: int = 1,
+        on_step_change: Optional[Callable[[int, int, int], None]] = None,
+        global_settings: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        同步執行任務清單 (專供聯賽事件跳轉或單步呼叫使用，執行完成後回傳)
+        """
+        if global_settings:
+            self.global_settings.update(global_settings)
+
+        if self.bot and hasattr(self.bot, "set_allowed_languages"):
+            self.bot.set_allowed_languages(
+                allow_tc=bool(self.global_settings.get("lang_tc", True)),
+                allow_sc=bool(self.global_settings.get("lang_sc", False)),
+                allow_en=bool(self.global_settings.get("lang_en", True))
+            )
+
+        if not self.bot or not self.bot.device:
+            if not self.bot or not self.bot.connect():
+                self._log("❌ 無法執行任務清單：尚未連線至模擬器裝置！")
+                return False
+
+        self._stop_event.clear()
+        self.is_running = True
+        success = True
+        total = loop_count
+
+        try:
+            for cycle in range(1, total + 1):
+                if self._stop_event.is_set():
+                    break
+                self._log(f"📋 [任務跳轉] 開始執行第 {cycle}/{total} 輪 (共 {len(blocks_data)} 個步驟)...")
+
+                for idx, block in enumerate(blocks_data):
+                    if self._stop_event.is_set():
+                        break
+                    if not block.get("enabled", True):
+                        continue
+
+                    self.current_block_idx = idx
+                    if on_step_change:
+                        on_step_change(idx, cycle, total)
+
+                    b_name = block.get("name", "未命名步驟")
+                    b_type = block.get("type", "tap_coord")
+                    params = block.get("params", {})
+
+                    self._log(f"👉 步驟 #{idx + 1} [{b_name}] ({BLOCK_TYPES.get(b_type, {}).get('title', b_type)})")
+                    step_ok = self.execute_block(b_type, params)
+
+                    if not step_ok and params.get("on_timeout") == "stop":
+                        self._log(f"⚠️ 步驟 #{idx + 1} 觸發超時終止設定，任務停止。")
+                        success = False
+                        self._stop_event.set()
+                        break
+
+                if self._stop_event.is_set():
+                    break
+                if cycle < total:
+                    time.sleep(0.5)
+
+        except Exception as e:
+            self._log(f"❌ 任務跳轉執行異常: {e}")
+            success = False
+        finally:
+            self.is_running = False
+            self.current_block_idx = -1
+            if on_step_change:
+                on_step_change(-1, 0, 0)
+
+        return success
 
     def execute_block(self, b_type: str, params: Dict[str, Any]) -> bool:
         """執行單個積木動作"""
@@ -1052,9 +1051,13 @@ class TaskFlowTab:
         self._drag_data = None
 
         self.config_dir = os.path.dirname(os.path.abspath(__file__))
+        self.presets_dir = os.path.join(self.config_dir, "task_presets")
+        os.makedirs(self.presets_dir, exist_ok=True)
+        self.presets: Dict[str, Dict[str, Any]] = {}
         self.save_file = os.path.join(self.config_dir, "tasks_flow.json")
 
         self._build_ui()
+        self.reload_presets()
         self.load_config_auto()
 
     def get_global_settings(self) -> Dict[str, Any]:
@@ -1100,8 +1103,9 @@ class TaskFlowTab:
     # 左側：積木工具庫 (Block Palette)
     # -------------------------------------------------------------------------
     def _build_palette_panel(self, parent):
+        # 1. Scratch 積木工具庫
         box_hdr = ttk.LabelFrame(parent, text="🧩 Scratch 積木庫", padding=6)
-        box_hdr.pack(fill=tk.BOTH, expand=True)
+        box_hdr.pack(fill=tk.X, pady=(0, 6))
 
         lbl_tip = ttk.Label(
             box_hdr,
@@ -1125,22 +1129,111 @@ class TaskFlowTab:
             lbl_add = tk.Label(btn_f, text="＋", bg=info["color"], fg="#ffffff", font=("Arial", 11, "bold"))
             lbl_add.pack(side=tk.RIGHT, padx=6)
 
-            # 點擊加入事件
             for w in (btn_f, lbl_badge, lbl_name, lbl_add):
                 w.bind("<Button-1>", lambda e, bt=b_type: self.add_block(bt))
 
-        ttk.Separator(box_hdr, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(12, 8))
+        # 2. 常用日常任務範本 (task_presets 資料夾)
+        box_presets = ttk.LabelFrame(parent, text="💡 常用日常任務範本", padding=6)
+        box_presets.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
 
-        lbl_preset = ttk.Label(box_hdr, text="💡 常用日常任務範本：", font=("Microsoft JhengHei", 9, "bold"), foreground="#475569")
-        lbl_preset.pack(anchor="w", pady=(0, 4))
+        tool_pre = ttk.Frame(box_presets)
+        tool_pre.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(tool_pre, text="📁 task_presets", font=("Arial", 8), foreground="#64748b").pack(side=tk.LEFT)
+        ttk.Button(tool_pre, text="🔄", width=3, command=self.reload_presets).pack(side=tk.RIGHT)
+        ttk.Button(tool_pre, text="＋存為範本", width=8, command=self.on_save_config_dialog).pack(side=tk.RIGHT, padx=2)
 
-        for p_key, p_val in DAILY_PRESETS.items():
-            btn_p = ttk.Button(
-                box_hdr,
-                text=p_val["title"],
+        self.frame_preset_buttons = ttk.Frame(box_presets)
+        self.frame_preset_buttons.pack(fill=tk.BOTH, expand=True)
+
+    def reload_presets(self):
+        """重新讀取 task_presets 資料夾中的所有任務範本檔案"""
+        global DAILY_PRESETS
+        DAILY_PRESETS.clear()
+        self.presets = {}
+        if not os.path.exists(self.presets_dir):
+            os.makedirs(self.presets_dir, exist_ok=True)
+            self._render_preset_buttons()
+            return
+
+        for fname in sorted(os.listdir(self.presets_dir)):
+            if not fname.endswith(".json"):
+                continue
+            fpath = os.path.join(self.presets_dir, fname)
+            key = os.path.splitext(fname)[0]
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                title = data.get("title") or data.get("name") or key
+                desc = data.get("desc", "")
+                blocks = data.get("blocks", [])
+                preset_obj = {
+                    "key": key,
+                    "title": title,
+                    "desc": desc,
+                    "blocks": blocks,
+                    "loop_count": data.get("loop_count", 1),
+                    "global_settings": data.get("global_settings", {}),
+                    "file_path": fpath,
+                }
+                DAILY_PRESETS[key] = preset_obj
+                self.presets[key] = preset_obj
+            except Exception as e:
+                self._log(f"⚠️ 讀取範本檔案 {fname} 失敗: {e}")
+
+        self._render_preset_buttons()
+
+    def _render_preset_buttons(self):
+        """渲染左側常用任務範本按鈕清單"""
+        if not hasattr(self, "frame_preset_buttons") or not self.frame_preset_buttons:
+            return
+        for w in self.frame_preset_buttons.winfo_children():
+            w.destroy()
+
+        if not self.presets:
+            lbl_empty = ttk.Label(
+                self.frame_preset_buttons,
+                text="（目前尚無常用範本）\n編輯積木後點擊「存檔」\n即可新增儲存至 task_presets",
+                font=("Microsoft JhengHei", 8),
+                foreground="#94a3b8",
+                justify=tk.LEFT
+            )
+            lbl_empty.pack(anchor="w", padx=2, pady=6)
+            return
+
+        for p_key, p_val in list(self.presets.items()):
+            row = ttk.Frame(self.frame_preset_buttons)
+            row.pack(fill=tk.X, pady=2)
+
+            title_str = p_val.get("title", p_key)
+            btn_load = ttk.Button(
+                row,
+                text=title_str,
                 command=lambda pk=p_key: self.load_preset(pk)
             )
-            btn_p.pack(fill=tk.X, pady=2)
+            btn_load.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            btn_del = ttk.Button(
+                row,
+                text="✕",
+                width=2,
+                command=lambda pk=p_key: self.delete_preset(pk)
+            )
+            btn_del.pack(side=tk.RIGHT, padx=(2, 0))
+
+    def delete_preset(self, preset_key: str):
+        """刪除指定常用任務範本檔案"""
+        preset = self.presets.get(preset_key)
+        title = preset.get("title", preset_key) if preset else preset_key
+        if not messagebox.askyesno("確認刪除", f"確定要刪除常用任務範本「{title}」嗎？\n(檔案將從 task_presets 移除)"):
+            return
+        fpath = os.path.join(self.presets_dir, f"{preset_key}.json")
+        try:
+            if os.path.exists(fpath):
+                os.remove(fpath)
+            self._log(f"已刪除任務範本: {title}")
+            self.reload_presets()
+        except Exception as e:
+            messagebox.showerror("錯誤", f"刪除範本失敗: {e}")
 
     # -------------------------------------------------------------------------
     # 中間：程式積木工作區 (Program Script Area)
@@ -2686,10 +2779,21 @@ class TaskFlowTab:
         self.auto_save_config()
 
     def load_preset(self, preset_key: str):
-        preset = DAILY_PRESETS.get(preset_key)
+        preset = self.presets.get(preset_key) or DAILY_PRESETS.get(preset_key)
         if not preset:
+            fpath = os.path.join(self.presets_dir, f"{preset_key}.json")
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        preset = json.load(f)
+                except Exception:
+                    pass
+        if not preset:
+            messagebox.showwarning("提示", f"找不到指定範本：{preset_key}")
             return
-        if self.blocks_list and not messagebox.askyesno("載入範本", f"載入「{preset['title']}」將取代目前積木清單，是否繼續？"):
+
+        preset_title = preset.get("title", preset_key)
+        if self.blocks_list and not messagebox.askyesno("載入範本", f"載入範本「{preset_title}」將取代目前積木清單，是否繼續？"):
             return
 
         for b in self.blocks_list:
@@ -2699,15 +2803,20 @@ class TaskFlowTab:
             if b.get("frame"):
                 b["frame"].destroy()
         self.blocks_list.clear()
+        self.selected_block_target = None
 
-        for bd in preset["blocks"]:
+        if "loop_count" in preset:
+            self.var_loop_count.set(preset.get("loop_count", 1))
+
+        for bd in preset.get("blocks", []):
             self.add_block(
                 b_type=bd["type"],
                 params=dict(bd.get("params", {})),
                 name=bd.get("name", ""),
                 enabled=bd.get("enabled", True)
             )
-        self._log(f"已成功載入範本: {preset['title']}")
+        self._log(f"已成功載入範本: {preset_title} (共 {len(self.blocks_list)} 個步驟)")
+        self.auto_save_config()
 
     def auto_save_config(self):
         try:
@@ -2726,8 +2835,6 @@ class TaskFlowTab:
 
     def load_config_auto(self):
         if not os.path.exists(self.save_file):
-            # 預設載入日常範本
-            self.load_preset("daily_mailbox")
             return
         try:
             with open(self.save_file, "r", encoding="utf-8") as f:
@@ -2771,31 +2878,203 @@ class TaskFlowTab:
         except Exception as e:
             self._log(f"讀取上次任務清單失敗: {e}")
 
-    def on_save_config_dialog(self):
-        path = filedialog.asksaveasfilename(
-            initialdir=self.config_dir,
-            title="儲存任務清單",
-            defaultextension=".json",
-            filetypes=[("JSON 設定檔", "*.json"), ("所有檔案", "*.*")]
-        )
-        if not path:
-            return
-        try:
-            data = {
-                "version": "1.0",
-                "loop_count": self.var_loop_count.get(),
-                "global_settings": self.get_global_settings(),
-                "blocks": self._serialize_all_blocks()
-            }
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            messagebox.showinfo("成功", f"任務清單已儲存至:\n{os.path.basename(path)}")
-        except Exception as e:
-            messagebox.showerror("錯誤", f"存檔失敗: {e}")
+    def save_as_new_preset(self):
+        """點擊左側常用任務範本的「＋存為範本」按鈕"""
+        self.on_save_config_dialog(default_mode="new")
+
+    def on_save_config_dialog(self, default_mode: str = "new"):
+        """跳出儲存對話框：選擇新增常用任務範本、覆蓋既有範本、或另存自訂 JSON 檔案"""
+        if not self.blocks_list:
+            if not messagebox.askyesno("提示", "目前任務清單是空的，確定要儲存空的任務嗎？"):
+                return
+
+        dlg = tk.Toplevel(self.parent)
+        dlg.title("💾 儲存任務清單 / 範本")
+        dlg.geometry("520x460")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.transient(self.parent)
+
+        # 頂部提示與資料夾路徑
+        f_top = tk.Frame(dlg, bg="#f3f4f6", padx=12, pady=10)
+        f_top.pack(fill=tk.X)
+        tk.Label(f_top, text="💾 選擇儲存方式", font=("Microsoft JhengHei", 11, "bold"), bg="#f3f4f6", fg="#1f2937").pack(anchor="w")
+
+        row_dir = tk.Frame(f_top, bg="#f3f4f6")
+        row_dir.pack(fill=tk.X, pady=(4, 0))
+        folder_name = os.path.basename(self.presets_dir)
+        tk.Label(row_dir, text=f"📁 範本儲存資料夾：{folder_name}/", font=("Microsoft JhengHei", 9), bg="#f3f4f6", fg="#4b5563").pack(side=tk.LEFT)
+
+        def _open_folder():
+            try:
+                os.makedirs(self.presets_dir, exist_ok=True)
+                os.startfile(self.presets_dir)
+            except Exception as ex:
+                messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=dlg)
+
+        btn_open = ttk.Button(row_dir, text="📂 打開資料夾", width=12, command=_open_folder)
+        btn_open.pack(side=tk.RIGHT)
+
+        # 儲存模式變數
+        mode_var = tk.StringVar(value="new" if (default_mode == "new" or not self.presets) else "existing")
+        name_var = tk.StringVar(value=f"自訂任務_{len(self.presets) + 1}")
+        desc_var = tk.StringVar(value="")
+        existing_var = tk.StringVar()
+        preset_keys = list(self.presets.keys())
+        if preset_keys:
+            existing_var.set(f"{preset_keys[0]}: {self.presets[preset_keys[0]].get('title', preset_keys[0])}")
+
+        f_body = tk.Frame(dlg, padx=16, pady=10)
+        f_body.pack(fill=tk.BOTH, expand=True)
+
+        # 模式 1: 新增常用日常範本
+        rb1 = ttk.Radiobutton(f_body, text="＋ 新增為常用任務範本 (儲存至 task_presets 資料夾)", value="new", variable=mode_var)
+        rb1.pack(anchor="w", pady=(2, 2))
+
+        f_new = tk.LabelFrame(f_body, text=" 新增範本資訊 ", padx=10, pady=6)
+        f_new.pack(fill=tk.X, padx=16, pady=(0, 8))
+
+        row_name = tk.Frame(f_new)
+        row_name.pack(fill=tk.X, pady=2)
+        tk.Label(row_name, text="範本名稱:", width=9, anchor="w").pack(side=tk.LEFT)
+        ent_name = ttk.Entry(row_name, textvariable=name_var)
+        ent_name.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        row_desc = tk.Frame(f_new)
+        row_desc.pack(fill=tk.X, pady=2)
+        tk.Label(row_desc, text="說明備註:", width=9, anchor="w").pack(side=tk.LEFT)
+        ent_desc = ttk.Entry(row_desc, textvariable=desc_var)
+        ent_desc.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 模式 2: 覆蓋現有範本
+        rb2 = ttk.Radiobutton(f_body, text="🔄 儲存 / 覆蓋至已有的任務範本", value="existing", variable=mode_var)
+        rb2.pack(anchor="w", pady=(2, 2))
+
+        f_exist = tk.LabelFrame(f_body, text=" 選擇要覆蓋的既有範本 ", padx=10, pady=6)
+        f_exist.pack(fill=tk.X, padx=16, pady=(0, 8))
+
+        row_sel = tk.Frame(f_exist)
+        row_sel.pack(fill=tk.X, pady=2)
+        tk.Label(row_sel, text="現有範本:", width=9, anchor="w").pack(side=tk.LEFT)
+        combo_exist = ttk.Combobox(row_sel, textvariable=existing_var, state="readonly" if preset_keys else "disabled")
+        combo_exist["values"] = [f"{k}: {v.get('title', k)}" for k, v in self.presets.items()]
+        combo_exist.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 模式 3: 另存新檔為任意路徑 JSON
+        rb3 = ttk.Radiobutton(f_body, text="📁 另存為自訂 JSON 檔案... (自由選擇存放路徑)", value="custom", variable=mode_var)
+        rb3.pack(anchor="w", pady=(2, 2))
+
+        def _update_ui_state(*_):
+            m = mode_var.get()
+            ent_name.config(state=tk.NORMAL if m == "new" else tk.DISABLED)
+            ent_desc.config(state=tk.NORMAL if m == "new" else tk.DISABLED)
+            combo_exist.config(state="readonly" if (m == "existing" and preset_keys) else "disabled")
+
+        mode_var.trace_add("write", _update_ui_state)
+        _update_ui_state()
+
+        # 底部按鈕
+        f_bottom = tk.Frame(dlg, padx=16, pady=10)
+        f_bottom.pack(fill=tk.X, side=tk.BOTTOM)
+
+        def _do_save():
+            m = mode_var.get()
+            if m == "new":
+                name = name_var.get().strip()
+                if not name:
+                    messagebox.showwarning("提示", "請輸入範本名稱！", parent=dlg)
+                    return
+                safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_", " ", "（", "）", "(", ")")).strip()
+                if not safe_name:
+                    safe_name = "custom_preset"
+                target_path = os.path.join(self.presets_dir, f"{safe_name}.json")
+                if os.path.exists(target_path):
+                    if not messagebox.askyesno("覆蓋確認", f"範本檔案「{safe_name}.json」已存在，是否確認覆蓋？", parent=dlg):
+                        return
+                data = {
+                    "key": safe_name,
+                    "title": name,
+                    "desc": desc_var.get().strip(),
+                    "version": "1.0",
+                    "loop_count": self.var_loop_count.get(),
+                    "global_settings": self.get_global_settings(),
+                    "blocks": self._serialize_all_blocks()
+                }
+                try:
+                    os.makedirs(self.presets_dir, exist_ok=True)
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    self.reload_presets()
+                    self.auto_save_config()
+                    messagebox.showinfo("成功", f"常用任務範本已新增至:\n{os.path.basename(target_path)}", parent=dlg)
+                    dlg.destroy()
+                except Exception as ex:
+                    messagebox.showerror("錯誤", f"存檔失敗: {ex}", parent=dlg)
+
+            elif m == "existing":
+                if not preset_keys:
+                    messagebox.showwarning("提示", "目前沒有任何既有範本可覆蓋！請選擇「新增為常用任務範本」。", parent=dlg)
+                    return
+                sel_str = existing_var.get().strip()
+                sel_key = sel_str.split(":")[0].strip() if ":" in sel_str else sel_str
+                if not sel_key:
+                    messagebox.showwarning("提示", "請選擇要覆蓋的範本！", parent=dlg)
+                    return
+                target_path = os.path.join(self.presets_dir, f"{sel_key}.json")
+                title = self.presets.get(sel_key, {}).get("title", sel_key)
+                if not messagebox.askyesno("確認覆蓋", f"確定要覆蓋範本「{title}」嗎？\n原有的步驟內容將被取代。", parent=dlg):
+                    return
+                data = {
+                    "key": sel_key,
+                    "title": title,
+                    "desc": self.presets.get(sel_key, {}).get("desc", ""),
+                    "version": "1.0",
+                    "loop_count": self.var_loop_count.get(),
+                    "global_settings": self.get_global_settings(),
+                    "blocks": self._serialize_all_blocks()
+                }
+                try:
+                    os.makedirs(self.presets_dir, exist_ok=True)
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    self.reload_presets()
+                    self.auto_save_config()
+                    messagebox.showinfo("成功", f"已成功覆蓋更新範本:\n{title}", parent=dlg)
+                    dlg.destroy()
+                except Exception as ex:
+                    messagebox.showerror("錯誤", f"更新範本失敗: {ex}", parent=dlg)
+
+            elif m == "custom":
+                dlg.destroy()
+                path = filedialog.asksaveasfilename(
+                    initialdir=self.presets_dir if os.path.exists(self.presets_dir) else self.config_dir,
+                    title="另存任務清單 JSON",
+                    defaultextension=".json",
+                    filetypes=[("JSON 設定檔", "*.json"), ("所有檔案", "*.*")]
+                )
+                if not path:
+                    return
+                try:
+                    data = {
+                        "version": "1.0",
+                        "loop_count": self.var_loop_count.get(),
+                        "global_settings": self.get_global_settings(),
+                        "blocks": self._serialize_all_blocks()
+                    }
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    messagebox.showinfo("成功", f"任務清單已儲存至:\n{os.path.basename(path)}")
+                except Exception as ex:
+                    messagebox.showerror("錯誤", f"存檔失敗: {ex}")
+
+        btn_save = ttk.Button(f_bottom, text="💾 確認儲存", command=_do_save)
+        btn_save.pack(side=tk.RIGHT, padx=4)
+        btn_cancel = ttk.Button(f_bottom, text="取消", command=dlg.destroy)
+        btn_cancel.pack(side=tk.RIGHT, padx=4)
 
     def on_load_config_dialog(self):
         path = filedialog.askopenfilename(
-            initialdir=self.config_dir,
+            initialdir=self.presets_dir if os.path.exists(self.presets_dir) else self.config_dir,
             title="載入任務清單",
             filetypes=[("JSON 設定檔", "*.json"), ("所有檔案", "*.*")]
         )
@@ -2843,3 +3122,53 @@ class TaskFlowTab:
             messagebox.showinfo("成功", f"成功載入任務清單:\n{os.path.basename(path)}")
         except Exception as e:
             messagebox.showerror("錯誤", f"載入失敗: {e}")
+
+    # -------------------------------------------------------------------------
+    # 聯賽自動刷跳轉任務清單輔助方法
+    # -------------------------------------------------------------------------
+    def get_block_choices(self) -> List[str]:
+        """回傳目前程式區中積木選項 (供聯賽事件跳轉下拉選單使用)"""
+        choices = []
+        for i, b in enumerate(self.blocks_list, start=1):
+            name = b["name"].get() if hasattr(b["name"], "get") else b.get("name", "")
+            b_type = b.get("type", "step")
+            choices.append(f"#{i} {name} ({b_type})")
+        return choices
+
+    def get_preset_choices(self) -> List[str]:
+        """回傳常用日常範本選項 (供聯賽事件跳轉下拉選單使用)"""
+        choices = []
+        for k, v in self.presets.items():
+            choices.append(f"{k}: {v.get('title', k)}")
+        return choices
+
+    def get_preset_data(self, preset_key: str) -> Optional[Dict[str, Any]]:
+        """取得指定範本完整設定資料"""
+        if preset_key in self.presets:
+            return self.presets[preset_key]
+        if preset_key in DAILY_PRESETS:
+            return DAILY_PRESETS[preset_key]
+        fpath = os.path.join(self.presets_dir, f"{preset_key}.json")
+        if os.path.exists(fpath):
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return None
+
+    def get_block_data_by_choice(self, choice_str: str) -> Optional[Dict[str, Any]]:
+        """依據下拉選單選擇之字串，取出該積木的完整序列化設定"""
+        if not choice_str:
+            return None
+        import re
+        m = re.match(r"^#(\d+)", choice_str.strip())
+        if m:
+            idx = int(m.group(1)) - 1
+            if 0 <= idx < len(self.blocks_list):
+                return self._serialize_single_block(self.blocks_list[idx])
+        for b in self.blocks_list:
+            name = b["name"].get() if hasattr(b["name"], "get") else b.get("name", "")
+            if name and name in choice_str:
+                return self._serialize_single_block(b)
+        return None

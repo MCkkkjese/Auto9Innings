@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "interval": 0.4,
+  "interval": 0.39,
   "confidence": 0.4,
   "idle_strategy": "快速跳過",
   "auto_refresh": true,
@@ -9,8 +9,8 @@
     "seconds": 60
   },
   "telegram_global": {
-    "token": "8944387718:AAFPFjjoXnlotvBGLYcIR9jUU9qrfEBGYzY",
-    "chat_id": "7737272272"
+    "token": "",
+    "chat_id": ""
   },
   "ocr_languages": {
     "tc": true,
@@ -46,6 +46,9 @@
       "repeat_custom_y": 1064,
       "tg_enabled": true,
       "tg_message": "已開始自動聯賽",
+      "task_target_mode": "📋 完整任務清單",
+      "task_target_item": "",
+      "task_cooldown": 60.0,
       "enabled": true
     },
     {
@@ -68,6 +71,9 @@
       "repeat_custom_y": 1064,
       "tg_enabled": true,
       "tg_message": "已完成一場聯賽",
+      "task_target_mode": "📋 完整任務清單",
+      "task_target_item": "",
+      "task_cooldown": 60.0,
       "enabled": true
     },
     {
@@ -78,7 +84,7 @@
       "action": "點擊詞條",
       "custom_x": 0,
       "custom_y": 0,
-      "delay": 0.2,
+      "delay": 1.0,
       "roi": "全畫面比對",
       "while_condition": true,
       "repeat_enabled": true,
@@ -90,6 +96,9 @@
       "repeat_custom_y": 0,
       "tg_enabled": false,
       "tg_message": "",
+      "task_target_mode": "📋 完整任務清單",
+      "task_target_item": "",
+      "task_cooldown": 60.0,
       "enabled": true
     },
     {
@@ -100,18 +109,21 @@
       "action": "點擊詞條",
       "custom_x": 0,
       "custom_y": 0,
-      "delay": 0.2,
+      "delay": 1.0,
       "roi": "全畫面比對",
       "while_condition": true,
       "repeat_enabled": true,
       "repeat_mode": "持續連點",
       "repeat_count": 15,
       "repeat_speed": 0.3,
-      "repeat_area": "右下角區域",
+      "repeat_area": "自訂座標",
       "repeat_custom_x": 816,
       "repeat_custom_y": 1064,
       "tg_enabled": false,
       "tg_message": "",
+      "task_target_mode": "📋 完整任務清單",
+      "task_target_item": "",
+      "task_cooldown": 60.0,
       "enabled": true
     }
   ],
@@ -137,7 +149,10 @@
       "timeout_enabled": false,
       "timeout_seconds": 15,
       "tg_enabled": false,
-      "tg_message": ""
+      "tg_message": "",
+      "task_target_mode": "📋 完整任務清單",
+      "task_target_item": "",
+      "task_cooldown": 60.0
     }
   ]
 }

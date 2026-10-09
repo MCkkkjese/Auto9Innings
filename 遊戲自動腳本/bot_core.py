@@ -89,6 +89,7 @@ class BaseballBot:
         self.device: Optional[Device] = None
         self.adb_bin_path: Optional[str] = None
         self.is_running = False
+        self.task_flow_handler: Optional[Callable[[Dict[str, Any]], bool]] = None
 
         # 全域異常彈窗關鍵字 (項目 B: 突發異常彈窗全域攔截)
         self.popup_keywords = [
@@ -110,6 +111,10 @@ class BaseballBot:
 
         self.target_keywords = ["確認", "確定", "領取", "繼續", "下一步", "準備", "開始"]
         self.roi: Optional[Tuple[float, float, float, float]] = None
+
+    def set_task_flow_handler(self, handler: Optional[Callable[[Dict[str, Any]], bool]]):
+        """設定聯賽偵測到事件時跳轉任務清單的處理器"""
+        self.task_flow_handler = handler
 
     def _log(self, message: str, level: str = "INFO"):
         """記錄日誌並推播至 GUI 回呼函式"""
@@ -1565,6 +1570,49 @@ class BaseballBot:
                 keep_while = p_step.get("while_condition", True)
                 max_p_cycles = int(p_step.get("max_continuous", 25))
 
+                # 【事件跳轉任務清單】處理邏輯
+                is_task_jump = (p_step.get("action") == "📋 執行任務清單" or "任務清單" in str(p_step.get("action", "")) or "jump_task" in str(p_step.get("action", "")))
+                if is_task_jump:
+                    cd = float(p_step.get("task_cooldown", 60))
+                    last_t = float(p_step.get("_last_task_triggered", 0))
+                    if time.time() - last_t < cd:
+                        # 仍處於冷卻時間內，略過此優先動作避免畫面尚未跳轉時無限重覆執行
+                        time.sleep(0.1)
+                        continue
+
+                    p_step["_last_task_triggered"] = time.time()
+                    self._log(f"📋 ⭐ [{p_tag}] 命中事件「{p_text}」({p_score:.2f}) → 正在跳轉至任務清單執行特定功能...")
+
+                    if self.on_frame_callback and self.is_running:
+                        try:
+                            self.on_frame_callback(screen, detected, (p_step, p_text, px, py, p_score))
+                        except Exception:
+                            pass
+
+                    tg_cfg = p_step.get("telegram", {})
+                    if tg_cfg and tg_cfg.get("enabled", False):
+                        tg_tok = tg_cfg.get("token", "")
+                        tg_cid = tg_cfg.get("chat_id", "")
+                        tg_msg = tg_cfg.get("message", f"🚨 聯賽偵測到事件「{p_text}」，正在跳轉執行任務清單...")
+                        self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=p_tag, hit_text=p_text, screen_bgr=screen)
+
+                    if hasattr(self, "task_flow_handler") and self.task_flow_handler:
+                        try:
+                            ok = self.task_flow_handler(p_step)
+                            if ok:
+                                self._log(f"✅ [{p_tag}] 任務清單特定功能執行完成！即將恢復聯賽自動刷關...")
+                            else:
+                                self._log(f"⚠️ [{p_tag}] 任務清單執行結束，恢復聯賽自動刷關...")
+                        except Exception as e:
+                            self._log(f"❌ [{p_tag}] 執行任務清單發生異常: {e}", "ERROR")
+                    else:
+                        self._log(f"⚠️ [{p_tag}] 尚未設定任務清單處理器", "WARNING")
+
+                    time.sleep(max(0.5, p_delay))
+                    last_active_time = time.time()
+                    del screen, detected
+                    continue
+
                 p_count = 0
                 while self.is_running and p_count < max_p_cycles:
                     p_count += 1
@@ -1737,6 +1785,45 @@ class BaseballBot:
                 if step in active_steps:
                     current_step_idx = (active_steps.index(step) + 1) % len(active_steps)
                     step_wait_start_time = time.time()
+
+                is_task_jump = (step.get("action") == "📋 執行任務清單" or "任務清單" in str(step.get("action", "")) or "jump_task" in str(step.get("action", "")))
+                if is_task_jump:
+                    cd = float(step.get("task_cooldown", 60))
+                    last_t = float(step.get("_last_task_triggered", 0))
+                    if time.time() - last_t < cd:
+                        time.sleep(0.1)
+                        continue
+
+                    step["_last_task_triggered"] = time.time()
+                    self._log(f"📋 🎯 [{step_tag}] 命中「{text}」({score:.2f}) → 跳轉至任務清單執行特定功能...")
+
+                    if self.on_frame_callback and self.is_running:
+                        try:
+                            self.on_frame_callback(screen, detected, matched)
+                        except Exception:
+                            pass
+
+                    tg_cfg = step.get("telegram", {})
+                    if tg_cfg and tg_cfg.get("enabled", False):
+                        tg_tok = tg_cfg.get("token", "")
+                        tg_cid = tg_cfg.get("chat_id", "")
+                        tg_msg = tg_cfg.get("message", f"🚨 聯賽偵測到「{text}」，正在跳轉執行任務清單...")
+                        self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=step_tag, hit_text=text, screen_bgr=screen)
+
+                    if hasattr(self, "task_flow_handler") and self.task_flow_handler:
+                        try:
+                            ok = self.task_flow_handler(step)
+                            if ok:
+                                self._log(f"✅ [{step_tag}] 任務清單特定功能執行完成！恢復聯賽自動刷關...")
+                            else:
+                                self._log(f"⚠️ [{step_tag}] 任務清單執行結束，恢復聯賽自動刷關...")
+                        except Exception as e:
+                            self._log(f"❌ [{step_tag}] 執行任務清單異常: {e}", "ERROR")
+
+                    time.sleep(max(0.5, float(step.get("delay", 2.0))))
+                    last_active_time = time.time()
+                    del screen, detected
+                    continue
 
                 self._log(f"🎯 [{step_tag}] 命中「{text}」({score:.2f}) → 點擊 ({x}, {y})")
 

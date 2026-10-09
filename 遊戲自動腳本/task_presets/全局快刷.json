@@ -1,0 +1,315 @@
+{
+  "key": "全局快刷",
+  "title": "全局快刷",
+  "desc": "",
+  "version": "1.0",
+  "loop_count": 1,
+  "global_settings": {
+    "interval": 0.39,
+    "confidence": 0.4,
+    "idle_strategy": "快速跳過",
+    "lang_tc": true,
+    "lang_sc": false,
+    "lang_en": true,
+    "tg_token": "",
+    "tg_chat_id": "",
+    "watchdog_enabled": false,
+    "watchdog_seconds": 60
+  },
+  "blocks": [
+    {
+      "type": "comment",
+      "name": "快刷聯賽",
+      "enabled": true,
+      "params": {
+        "note": "開始刷聯賽  需要1.先確保聯賽球>=3。    2. 快速進行未勾選"
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點擊聯賽模式",
+      "enabled": true,
+      "params": {
+        "x": 493,
+        "y": 410,
+        "delay": 2.0,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點擊NEXT SCHEDULE",
+      "enabled": true,
+      "params": {
+        "x": 1670,
+        "y": 983,
+        "delay": 2.0,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點擊快速進行",
+      "enabled": true,
+      "params": {
+        "x": 300,
+        "y": 846,
+        "delay": 2.0,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點擊自動比賽",
+      "enabled": true,
+      "params": {
+        "x": 1260,
+        "y": 976,
+        "delay": 2.0,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點擊確定",
+      "enabled": true,
+      "params": {
+        "x": 953,
+        "y": 913,
+        "delay": 2.0,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "wait_condition",
+      "name": "等待自動完成",
+      "enabled": true,
+      "params": {
+        "cond_mode": "出現 (Wait Appear)",
+        "target_type": "📝 僅文字",
+        "keywords": "比賽結果",
+        "interval": 5.0,
+        "timeout": 1000000000000000016976219238238959704141045173573106739630601035115997744067216908958262325956255112879408454231155599236459402033650892537856,
+        "delay_after": 0.5,
+        "on_timeout": "continue"
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "刷完點擊確認",
+      "enabled": true,
+      "params": {
+        "x": 963,
+        "y": 946,
+        "delay": 2.0,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "回主畫面",
+      "enabled": true,
+      "params": {
+        "x": 86,
+        "y": 50,
+        "delay": 2.0,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "comment",
+      "name": "刷對戰",
+      "enabled": true,
+      "params": {
+        "note": "此處為備註說明文字，執行時不執行任何操作"
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點對戰模式",
+      "enabled": true,
+      "params": {
+        "x": 1010,
+        "y": 446,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點排名戰",
+      "enabled": true,
+      "params": {
+        "x": 873,
+        "y": 470,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點自動比賽",
+      "enabled": true,
+      "params": {
+        "x": 960,
+        "y": 920,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點確定",
+      "enabled": true,
+      "params": {
+        "x": 960,
+        "y": 540,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "wait_condition",
+      "name": "等待刷完",
+      "enabled": true,
+      "params": {
+        "cond_mode": "出現 (Wait Appear)",
+        "target_type": "📝 僅文字",
+        "keywords": "比賽結果",
+        "interval": 1.0,
+        "timeout": 30,
+        "delay_after": 0.5,
+        "on_timeout": "continue"
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點確定",
+      "enabled": true,
+      "params": {
+        "x": 960,
+        "y": 920,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "回主畫面",
+      "enabled": true,
+      "params": {
+        "x": 93,
+        "y": 50,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "comment",
+      "name": "打點模式",
+      "enabled": true,
+      "params": {
+        "note": "先把現有的比賽按掉"
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "特別模式",
+      "enabled": true,
+      "params": {
+        "x": 1346,
+        "y": 500,
+        "delay": 0.1,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "打點模式",
+      "enabled": true,
+      "params": {
+        "x": 396,
+        "y": 773,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "loop",
+      "name": "打點執行迴圈",
+      "enabled": true,
+      "params": {
+        "stop_mode": "偵測到文字出現",
+        "count": 0,
+        "keywords": "打點模式球數量不足",
+        "check_timing": "每輪開始前 (While)",
+        "delay_after": 0.5,
+        "inner_blocks": [
+          {
+            "type": "tap_coord",
+            "name": "點配對",
+            "enabled": true,
+            "params": {
+              "x": 1307,
+              "y": 785,
+              "delay": 1.0,
+              "repeat": 1
+            }
+          },
+          {
+            "type": "tap_coord",
+            "name": "點2 playball",
+            "enabled": true,
+            "params": {
+              "x": 825,
+              "y": 729,
+              "delay": 1.0,
+              "repeat": 1
+            }
+          },
+          {
+            "type": "tap_coord",
+            "name": "點3 移至大廳",
+            "enabled": true,
+            "params": {
+              "x": 774,
+              "y": 769,
+              "delay": 1.0,
+              "repeat": 1
+            }
+          },
+          {
+            "type": "tap_coord",
+            "name": "點4",
+            "enabled": true,
+            "params": {
+              "x": 1081,
+              "y": 335,
+              "delay": 1.0,
+              "repeat": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "回主畫面",
+      "enabled": true,
+      "params": {
+        "x": 80,
+        "y": 57,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "comment",
+      "name": "備註說明 #23",
+      "enabled": true,
+      "params": {
+        "note": "此處為備註說明文字，執行時不執行任何操作"
+      }
+    }
+  ]
+}

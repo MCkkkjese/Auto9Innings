@@ -23,7 +23,7 @@ from task_flow import TaskFlowTab
 ROI_OPTIONS = ["右下角區域", "右半側螢幕", "下半部區域", "中央區域", "全畫面比對"]
 REPEAT_MODES = ["持續連點", "指定次數"]
 REPEAT_AREAS = ["右下角區域", "中央區域", "右上角 (Skip)", "右半側中央", "跟隨命中目標", "自訂座標"]
-ACTION_OPTIONS = ["點擊詞條", "自訂座標", "右下角區域", "中央區域", "右上角 (Skip)", "右半側中央"]
+ACTION_OPTIONS = ["點擊詞條", "自訂座標", "右下角區域", "中央區域", "右上角 (Skip)", "右半側中央", "📋 執行任務清單"]
 IDLE_STRATEGIES = ["常規等待", "快速跳過", "自動停止"]
 TARGET_TYPES = ["📝 僅文字", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"]
 
@@ -186,6 +186,7 @@ class BaseballBotGUI:
         tab_tasks = ttk.Frame(self.notebook)
         self.notebook.add(tab_tasks, text="  📋 任務清單  ")
         self.task_tab = TaskFlowTab(tab_tasks, bot_instance=self.bot, gui_parent=self, log_callback=self.log_message)
+        self.bot.set_task_flow_handler(self._execute_task_flow_for_event)
 
     def _build_topbar(self):
         bar = ttk.Frame(self.root, padding=(10, 8, 10, 8))
@@ -217,6 +218,7 @@ class BaseballBotGUI:
         tools.pack(fill=tk.X, pady=(0, 6))
         ttk.Button(tools, text="⭐ ＋優先", command=self.on_add_priority_step).pack(side=tk.LEFT)
         ttk.Button(tools, text="＋ 步驟", command=self.on_add_empty_step).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(tools, text="📋 ＋任務跳轉", command=self.on_add_task_trigger_step).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(tools, text="範本", width=5, command=self.on_reset_baseball_template).pack(side=tk.RIGHT)
         ttk.Button(tools, text="載入", width=5, command=self.on_load_config_manual).pack(side=tk.RIGHT, padx=2)
         ttk.Button(tools, text="存檔", width=5, command=self.on_save_config_manual).pack(side=tk.RIGHT)
@@ -285,6 +287,21 @@ class BaseballBotGUI:
         self._create_priority_step_widget(name=f"優先 {n}", keywords="", expanded=True)
         self.root.after(50, lambda: self.step_canvas.yview_moveto(0.0))
 
+    def on_add_task_trigger_step(self):
+        n = len(self.priority_steps_list) + 1
+        self._create_priority_step_widget(
+            name=f"任務跳轉 {n}",
+            keywords="",
+            action="📋 執行任務清單",
+            task_target_mode="📋 完整任務清單",
+            task_cooldown=60.0,
+            delay=1.0,
+            roi_name="全畫面比對",
+            while_condition=False,
+            expanded=True
+        )
+        self.root.after(50, lambda: self.step_canvas.yview_moveto(0.0))
+
     def on_delete_priority_step(self, p_step):
         if p_step in self.priority_steps_list:
             p_step["frame"].destroy()
@@ -332,6 +349,9 @@ class BaseballBotGUI:
         repeat_custom_y: int = 0,
         tg_enabled: bool = False,
         tg_message: str = "",
+        task_target_mode: str = "📋 完整任務清單",
+        task_target_item: str = "",
+        task_cooldown: float = 60.0,
         enabled: bool = True,
         expanded: bool = False
     ):
@@ -385,6 +405,9 @@ class BaseballBotGUI:
             "repeat_custom_y": tk.IntVar(value=repeat_custom_y),
             "tg_enabled": tk.BooleanVar(value=tg_enabled),
             "tg_message": tk.StringVar(value=tg_message),
+            "task_target_mode": tk.StringVar(value=task_target_mode),
+            "task_target_item": tk.StringVar(value=task_target_item),
+            "task_cooldown": tk.DoubleVar(value=task_cooldown),
             "expanded": tk.BooleanVar(value=expanded),
             "frame": card,
         }
@@ -506,11 +529,64 @@ class BaseballBotGUI:
         tk.Label(rh, text="訊息內容", bg="#fffbeb", fg="#0284c7", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(22, 4))
         ttk.Entry(rh, textvariable=p["tg_message"]).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        # 任務清單跳轉設定面板
+        box_task_flow = tk.Frame(detail, bg="#f5f3ff", highlightbackground="#8b5cf6", highlightthickness=1, padx=6, pady=4)
+
+        row_tf1 = tk.Frame(box_task_flow, bg="#f5f3ff")
+        row_tf1.pack(fill=tk.X, pady=(1, 2))
+        tk.Label(row_tf1, text="📋 任務跳轉模式", bg="#f5f3ff", fg="#6d28d9", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        combo_task_mode = ttk.Combobox(
+            row_tf1,
+            textvariable=p["task_target_mode"],
+            values=["📋 完整任務清單", "🧩 指定積木步驟", "💡 常用日常範本"],
+            state="readonly",
+            width=14
+        )
+        combo_task_mode.pack(side=tk.LEFT, padx=(6, 4))
+
+        combo_task_item = ttk.Combobox(row_tf1, textvariable=p["task_target_item"], state="readonly", width=24)
+
+        def _update_p_task_items(*_):
+            m = p["task_target_mode"].get()
+            if m == "🧩 指定積木步驟":
+                choices = self.task_tab.get_block_choices() if hasattr(self, "task_tab") else []
+                combo_task_item["values"] = choices
+                if choices and p["task_target_item"].get() not in choices:
+                    p["task_target_item"].set(choices[0])
+                combo_task_item.pack(side=tk.LEFT, padx=(2, 4))
+            elif m == "💡 常用日常範本":
+                choices = self.task_tab.get_preset_choices() if hasattr(self, "task_tab") else []
+                combo_task_item["values"] = choices
+                if choices and p["task_target_item"].get() not in choices:
+                    p["task_target_item"].set(choices[0])
+                combo_task_item.pack(side=tk.LEFT, padx=(2, 4))
+            else:
+                combo_task_item.pack_forget()
+
+        p["task_target_mode"].trace_add("write", _update_p_task_items)
+
+        row_tf2 = tk.Frame(box_task_flow, bg="#f5f3ff")
+        row_tf2.pack(fill=tk.X, pady=(2, 1))
+        tk.Label(row_tf2, text="⏳ 觸發冷卻時間", bg="#f5f3ff", fg="#6d28d9").pack(side=tk.LEFT)
+        ttk.Spinbox(row_tf2, from_=5, to=3600, increment=10, textvariable=p["task_cooldown"], width=5).pack(side=tk.LEFT, padx=(4, 2))
+        tk.Label(row_tf2, text="秒 (防畫面未切換連續觸發)", bg="#f5f3ff", fg="#6b7280", font=("Arial", 9)).pack(side=tk.LEFT)
+        btn_refresh_choices = ttk.Button(row_tf2, text="🔄 刷新選項", width=8, command=_update_p_task_items)
+        btn_refresh_choices.pack(side=tk.RIGHT)
+
         def summary() -> str:
             act = p["action"].get()
             if act in ("自訂座標", "自訂特定區塊"):
                 act += f" ({p['custom_x'].get()}, {p['custom_y'].get()})"
+            elif act == "📋 執行任務清單":
+                t_m = p["task_target_mode"].get()
+                t_i = p["task_target_item"].get()
+                if t_m != "📋 完整任務清單" and t_i:
+                    act = f"📋 跳轉: {t_i}"
+                else:
+                    act = f"📋 跳轉: {t_m}"
             parts = [act, p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
+            if act.startswith("📋 跳轉"):
+                parts.append(f"冷卻 {_num(p['task_cooldown'], 60):g}s")
             if p["target_type"].get() != "📝 僅文字":
                 parts.insert(0, p["target_type"].get())
             if p["while_condition"].get():
@@ -544,6 +620,12 @@ class BaseballBotGUI:
             else:
                 box_xy.pack_forget()
 
+            if p["action"].get() == "📋 執行任務清單":
+                box_task_flow.pack(fill=tk.X, pady=(4, 0), after=ra)
+                _update_p_task_items()
+            else:
+                box_task_flow.pack_forget()
+
             if p["repeat_enabled"].get():
                 re.pack(fill=tk.X, pady=(4, 0), after=rd)
                 rf.pack(fill=tk.X, pady=(4, 0), after=re)
@@ -569,7 +651,7 @@ class BaseballBotGUI:
         for key in ("enabled", "expanded", "action", "custom_x", "custom_y", "roi", "delay",
                     "target_type", "while_condition", "exclude_keywords", "repeat_enabled", "repeat_mode",
                     "repeat_count", "repeat_speed", "repeat_area", "repeat_custom_x", "repeat_custom_y",
-                    "tg_enabled", "tg_message"):
+                    "tg_enabled", "tg_message", "task_target_mode", "task_target_item", "task_cooldown"):
             p[key].trace_add("write", refresh)
 
         p["lbl_num"] = lbl_num
@@ -656,6 +738,9 @@ class BaseballBotGUI:
                     "token": self.var_tg_token.get().strip(),
                     "chat_id": self.var_tg_chat_id.get().strip(),
                 },
+                "task_target_mode": p["task_target_mode"].get() if "task_target_mode" in p else "📋 完整任務清單",
+                "task_target_item": p["task_target_item"].get() if "task_target_item" in p else "",
+                "task_cooldown": _num(p["task_cooldown"], 60.0) if "task_cooldown" in p else 60.0,
                 "enabled": p["enabled"].get() and (bool(kws) or is_sym),
                 "max_continuous": 25,
             })
@@ -872,6 +957,9 @@ class BaseballBotGUI:
         timeout_seconds: int = 15,
         tg_enabled: bool = False,
         tg_message: str = "",
+        task_target_mode: str = "📋 完整任務清單",
+        task_target_item: str = "",
+        task_cooldown: float = 60.0,
         expanded: bool = False
     ):
         """建立步驟卡片：平時只顯示名稱與關鍵字，展開後才顯示細部設定"""
@@ -921,6 +1009,9 @@ class BaseballBotGUI:
             "timeout_seconds": tk.IntVar(value=timeout_seconds),
             "tg_enabled": tk.BooleanVar(value=tg_enabled),
             "tg_message": tk.StringVar(value=tg_message),
+            "task_target_mode": tk.StringVar(value=task_target_mode),
+            "task_target_item": tk.StringVar(value=task_target_item),
+            "task_cooldown": tk.DoubleVar(value=task_cooldown),
             "expanded": tk.BooleanVar(value=expanded),
             "frame": card,
             "border_color": color,
@@ -1048,11 +1139,64 @@ class BaseballBotGUI:
         tk.Label(rtg_msg, text="訊息內容", fg="#0284c7", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(22, 4))
         ttk.Entry(rtg_msg, textvariable=s["tg_message"]).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        # 任務清單跳轉設定面板
+        box_task_flow = tk.Frame(detail, bg="#f5f3ff", highlightbackground="#8b5cf6", highlightthickness=1, padx=6, pady=4)
+
+        row_tf1 = tk.Frame(box_task_flow, bg="#f5f3ff")
+        row_tf1.pack(fill=tk.X, pady=(1, 2))
+        tk.Label(row_tf1, text="📋 任務跳轉模式", bg="#f5f3ff", fg="#6d28d9", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        combo_task_mode = ttk.Combobox(
+            row_tf1,
+            textvariable=s["task_target_mode"],
+            values=["📋 完整任務清單", "🧩 指定積木步驟", "💡 常用日常範本"],
+            state="readonly",
+            width=14
+        )
+        combo_task_mode.pack(side=tk.LEFT, padx=(6, 4))
+
+        combo_task_item = ttk.Combobox(row_tf1, textvariable=s["task_target_item"], state="readonly", width=24)
+
+        def _update_s_task_items(*_):
+            m = s["task_target_mode"].get()
+            if m == "🧩 指定積木步驟":
+                choices = self.task_tab.get_block_choices() if hasattr(self, "task_tab") else []
+                combo_task_item["values"] = choices
+                if choices and s["task_target_item"].get() not in choices:
+                    s["task_target_item"].set(choices[0])
+                combo_task_item.pack(side=tk.LEFT, padx=(2, 4))
+            elif m == "💡 常用日常範本":
+                choices = self.task_tab.get_preset_choices() if hasattr(self, "task_tab") else []
+                combo_task_item["values"] = choices
+                if choices and s["task_target_item"].get() not in choices:
+                    s["task_target_item"].set(choices[0])
+                combo_task_item.pack(side=tk.LEFT, padx=(2, 4))
+            else:
+                combo_task_item.pack_forget()
+
+        s["task_target_mode"].trace_add("write", _update_s_task_items)
+
+        row_tf2 = tk.Frame(box_task_flow, bg="#f5f3ff")
+        row_tf2.pack(fill=tk.X, pady=(2, 1))
+        tk.Label(row_tf2, text="⏳ 觸發冷卻時間", bg="#f5f3ff", fg="#6d28d9").pack(side=tk.LEFT)
+        ttk.Spinbox(row_tf2, from_=5, to=3600, increment=10, textvariable=s["task_cooldown"], width=5).pack(side=tk.LEFT, padx=(4, 2))
+        tk.Label(row_tf2, text="秒 (防畫面未切換連續觸發)", bg="#f5f3ff", fg="#6b7280", font=("Arial", 9)).pack(side=tk.LEFT)
+        btn_refresh_choices = ttk.Button(row_tf2, text="🔄 刷新選項", width=8, command=_update_s_task_items)
+        btn_refresh_choices.pack(side=tk.RIGHT)
+
         def summary() -> str:
             act = s["action"].get()
             if act in ("自訂座標", "自訂特定區塊"):
                 act += f" ({s['custom_x'].get()}, {s['custom_y'].get()})"
+            elif act == "📋 執行任務清單":
+                t_m = s["task_target_mode"].get()
+                t_i = s["task_target_item"].get()
+                if t_m != "📋 完整任務清單" and t_i:
+                    act = f"📋 跳轉: {t_i}"
+                else:
+                    act = f"📋 跳轉: {t_m}"
             parts = [act, s["roi"].get(), f"延遲 {_num(s['delay'], 0):g}s"]
+            if act.startswith("📋 跳轉"):
+                parts.append(f"冷卻 {_num(s['task_cooldown'], 60):g}s")
             if s["target_type"].get() != "📝 僅文字":
                 parts.insert(0, s["target_type"].get())
             ex = s["exclude_keywords"].get().strip()
@@ -1084,6 +1228,12 @@ class BaseballBotGUI:
                 lbl_sum.config(text=summary())
                 lbl_sum.pack(fill=tk.X, pady=(4, 0))
 
+            if s["action"].get() == "📋 執行任務清單":
+                box_task_flow.pack(fill=tk.X, pady=(4, 0), after=ra)
+                _update_s_task_items()
+            else:
+                box_task_flow.pack_forget()
+
             if s["timeout_enabled"].get():
                 box_timeout.pack(side=tk.LEFT, after=chk_timeout)
             else:
@@ -1114,7 +1264,7 @@ class BaseballBotGUI:
         for key in ("enabled", "expanded", "action", "custom_x", "custom_y", "roi", "delay", "timeout_enabled", "timeout_seconds",
                     "target_type", "repeat_enabled", "repeat_mode", "repeat_count", "repeat_area",
                     "repeat_custom_x", "repeat_custom_y", "exclude_keywords",
-                    "tg_enabled", "tg_message"):
+                    "tg_enabled", "tg_message", "task_target_mode", "task_target_item", "task_cooldown"):
             s[key].trace_add("write", refresh)
 
         s["lbl_num"] = lbl_num
@@ -1270,6 +1420,9 @@ class BaseballBotGUI:
                     "token": self.var_tg_token.get().strip(),
                     "chat_id": self.var_tg_chat_id.get().strip(),
                 },
+                "task_target_mode": s["task_target_mode"].get() if "task_target_mode" in s else "📋 完整任務清單",
+                "task_target_item": s["task_target_item"].get() if "task_target_item" in s else "",
+                "task_cooldown": _num(s["task_cooldown"], 60.0) if "task_cooldown" in s else 60.0,
             })
         return cfg
 
@@ -1299,6 +1452,9 @@ class BaseballBotGUI:
                 "repeat_custom_y": _num(p["repeat_custom_y"], 0, int),
                 "tg_enabled": p["tg_enabled"].get(),
                 "tg_message": p["tg_message"].get().strip(),
+                "task_target_mode": p["task_target_mode"].get() if "task_target_mode" in p else "📋 完整任務清單",
+                "task_target_item": p["task_target_item"].get() if "task_target_item" in p else "",
+                "task_cooldown": _num(p["task_cooldown"], 60.0) if "task_cooldown" in p else 60.0,
                 "enabled": p["enabled"].get(),
             })
 
@@ -1326,6 +1482,9 @@ class BaseballBotGUI:
                 "timeout_seconds": _num(s["timeout_seconds"], 15, int),
                 "tg_enabled": s["tg_enabled"].get(),
                 "tg_message": s["tg_message"].get().strip(),
+                "task_target_mode": s["task_target_mode"].get() if "task_target_mode" in s else "📋 完整任務清單",
+                "task_target_item": s["task_target_item"].get() if "task_target_item" in s else "",
+                "task_cooldown": _num(s["task_cooldown"], 60.0) if "task_cooldown" in s else 60.0,
             })
         return {
             "version": "1.0",
@@ -1449,6 +1608,9 @@ class BaseballBotGUI:
                     repeat_custom_y=p.get("repeat_custom_y", 0),
                     tg_enabled=p.get("tg_enabled", p.get("telegram", {}).get("enabled", False) if isinstance(p.get("telegram"), dict) else False),
                     tg_message=p.get("tg_message", p.get("telegram", {}).get("message", "") if isinstance(p.get("telegram"), dict) else ""),
+                    task_target_mode=p.get("task_target_mode", "📋 完整任務清單"),
+                    task_target_item=p.get("task_target_item", ""),
+                    task_cooldown=float(p.get("task_cooldown", 60.0)),
                     enabled=p.get("enabled", True),
                     expanded=False,
                 )
@@ -1478,6 +1640,9 @@ class BaseballBotGUI:
                     timeout_seconds=s.get("timeout_seconds", 15),
                     tg_enabled=s.get("tg_enabled", s.get("telegram", {}).get("enabled", False) if isinstance(s.get("telegram"), dict) else False),
                     tg_message=s.get("tg_message", s.get("telegram", {}).get("message", "") if isinstance(s.get("telegram"), dict) else ""),
+                    task_target_mode=s.get("task_target_mode", "📋 完整任務清單"),
+                    task_target_item=s.get("task_target_item", ""),
+                    task_cooldown=float(s.get("task_cooldown", 60.0)),
                 )
             self._renumber_steps()
 
@@ -2105,11 +2270,78 @@ class BaseballBotGUI:
         self.log_message("🚀 [防卡死守護] 自動重新開啟腳本！")
         self.on_start_bot()
 
+    def _execute_task_flow_for_event(self, step_cfg: dict) -> bool:
+        """
+        當聯賽自動刷偵測到指定事件/文字時，暫停聯賽循環，跳轉至任務清單執行特定功能，完成後無縫恢復聯賽。
+        本方法由工作執行緒直接呼叫，會同步執行直到任務完成或被停止。
+        """
+        if not hasattr(self, "task_tab") or not self.task_tab:
+            self.log_message("⚠️ 尚未初始化任務清單元件，跳過執行。")
+            return False
+
+        mode = step_cfg.get("task_target_mode", "📋 完整任務清單")
+        target_item = step_cfg.get("task_target_item", "")
+        step_name = step_cfg.get("name", "事件步驟")
+
+        blocks_to_run = []
+        if mode == "💡 常用日常範本" and target_item:
+            preset_key = target_item.split(":")[0].strip()
+            preset = self.task_tab.get_preset_data(preset_key) if hasattr(self.task_tab, "get_preset_data") else None
+            if not preset:
+                from task_flow import DAILY_PRESETS
+                preset = DAILY_PRESETS.get(preset_key)
+            if preset:
+                blocks_to_run = [dict(b) for b in preset.get("blocks", [])]
+                self.log_message(f"📋 [任務跳轉] 載入日常範本「{preset.get('title', preset_key)}」(共 {len(blocks_to_run)} 個步驟)")
+            else:
+                self.log_message(f"⚠️ [任務跳轉] 找不到日常範本「{target_item}」，執行完整任務清單備援")
+                blocks_to_run = self.task_tab._serialize_all_blocks()
+        elif mode == "🧩 指定積木步驟" and target_item:
+            single_block = self.task_tab.get_block_data_by_choice(target_item)
+            if single_block:
+                blocks_to_run = [single_block]
+                self.log_message(f"📋 [任務跳轉] 執行指定積木「{single_block.get('name', target_item)}」")
+            else:
+                self.log_message(f"⚠️ [任務跳轉] 找不到指定積木「{target_item}」，執行完整任務清單備援")
+                blocks_to_run = self.task_tab._serialize_all_blocks()
+        else:
+            blocks_to_run = self.task_tab._serialize_all_blocks()
+            self.log_message(f"📋 [任務跳轉] 執行完整任務清單 (共 {len(blocks_to_run)} 個步驟)")
+
+        if not blocks_to_run:
+            self.log_message("⚠️ [任務跳轉] 任務清單中無可執行的步驟，結束跳轉並恢復聯賽。")
+            return False
+
+        # 更新 GUI 狀態列顯示跳轉中
+        self.root.after(0, lambda: self._set_status(f"● 執行任務: {step_name}", "#8b5cf6"))
+
+        def _on_step_change(idx, cycle, total):
+            if idx >= 0:
+                self.root.after(0, lambda: self.task_tab.highlight_active_step(idx))
+            else:
+                self.root.after(0, lambda: self.task_tab.highlight_active_step(-1))
+
+        # 同步阻塞工作執行緒直到任務完成 (或停止)
+        ok = self.task_tab.engine.run_sync(
+            blocks_data=blocks_to_run,
+            loop_count=1,
+            on_step_change=_on_step_change,
+            global_settings=self.task_tab.get_global_settings()
+        )
+
+        self.root.after(0, lambda: self.task_tab.highlight_active_step(-1))
+        if self.bot.is_running:
+            self.root.after(0, lambda: self._set_status("● 執行中 (聯賽自動刷)", COLOR_OK))
+
+        return ok
+
     def on_stop_bot(self):
         if getattr(self, "_watchdog_restart_job", None):
             self.root.after_cancel(self._watchdog_restart_job)
             self._watchdog_restart_job = None
         self.bot.stop()
+        if hasattr(self, "task_tab") and self.task_tab:
+            self.task_tab.engine.stop()
 
     def on_run_diagnostics(self):
         try:
@@ -2137,6 +2369,8 @@ class BaseballBotGUI:
         self.auto_save_current_config()
         if hasattr(self, "batting_tab") and self.batting_tab:
             self.batting_tab.on_close()
+        if hasattr(self, "task_tab") and self.task_tab:
+            self.task_tab.engine.stop()
         if self.bot.is_running:
             self.bot.stop()
         self.root.destroy()
