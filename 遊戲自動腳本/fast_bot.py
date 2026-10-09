@@ -10,6 +10,7 @@ import random
 import difflib
 import threading
 import subprocess
+import shutil
 from typing import Optional, Tuple, List, Dict, Any
 
 import cv2
@@ -79,6 +80,29 @@ class FastReactiveBot:
     def auto_detect_adb_bin(self) -> Optional[str]:
         """尋找系統或模擬器中的 ADB 二進位工具 (macOS / Linux / Windows 常用路徑)"""
         candidates = [
+            # Windows 模擬器路徑
+            r"C:\Program Files\BlueStacks_nxt\HD-Adb.exe",
+            r"C:\Program Files (x86)\BlueStacks_nxt\HD-Adb.exe",
+            r"C:\Program Files\BlueStacks\HD-Adb.exe",
+            r"C:\Program Files (x86)\BlueStacks\HD-Adb.exe",
+            r"D:\Program Files\BlueStacks_nxt\HD-Adb.exe",
+            r"D:\Program Files\BlueStacks\HD-Adb.exe",
+            r"C:\LDPlayer\LDPlayer9\adb.exe",
+            r"C:\LDPlayer\LDPlayer4\adb.exe",
+            r"D:\LDPlayer\LDPlayer9\adb.exe",
+            r"D:\LDPlayer\LDPlayer4\adb.exe",
+            r"C:\leidian\LDPlayer9\adb.exe",
+            r"C:\Program Files\LDPlayer\LDPlayer9\adb.exe",
+            r"C:\Program Files\Nox\bin\adb.exe",
+            r"C:\Program Files (x86)\Nox\bin\adb.exe",
+            r"C:\Program Files\Nox\bin\nox_adb.exe",
+            r"D:\Program Files\Nox\bin\adb.exe",
+            r"C:\Program Files\Netease\MuMuPlayerGlobal-12.0\shell\adb.exe",
+            r"C:\Program Files\Netease\MuMuPlayer-12.0\shell\adb.exe",
+            r"D:\Program Files\Netease\MuMuPlayer-12.0\shell\adb.exe",
+            r"C:\Program Files (x86)\MuMu\emulator\nemu\vmonitor\bin\adb_server.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe"),
+            # macOS 模擬器路徑
             "/Applications/BlueStacks.app/Contents/MacOS/hd-adb",
             "/Applications/MuMuPlayer.app/Contents/MacOS/adb",
             "/Applications/NoxAppPlayer.app/Contents/MacOS/adb",
@@ -86,8 +110,12 @@ class FastReactiveBot:
             "/opt/homebrew/bin/adb",
             os.path.expanduser("~/Library/Android/sdk/platform-tools/adb")
         ]
+        which_adb = shutil.which("adb.exe") or shutil.which("adb")
+        if which_adb and which_adb not in candidates:
+            candidates.insert(0, which_adb)
+
         for path in candidates:
-            if os.path.exists(path) and os.access(path, os.X_OK):
+            if os.path.exists(path) and (sys.platform == "win32" or os.access(path, os.X_OK)):
                 return path
         return None
 
@@ -106,9 +134,13 @@ class FastReactiveBot:
         if not devices and self.adb_bin:
             self.log("啟動 ADB Server 並搜尋模擬器連線...")
             try:
-                subprocess.run([self.adb_bin, "start-server"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
-                for port in [5554, 5555, 16384, 7555, 62001]:
-                    subprocess.run([self.adb_bin, "connect", f"127.0.0.1:{port}"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1)
+                if sys.platform == "win32":
+                    p = subprocess.Popen(['cmd.exe', '/c', self.adb_bin, 'devices'])
+                    p.wait(timeout=15)
+                else:
+                    subprocess.run([self.adb_bin, "start-server"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+                    for port in [5554, 5555, 16384, 7555, 62001]:
+                        subprocess.run([self.adb_bin, "connect", f"127.0.0.1:{port}"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1)
                 self.client = AdbClient(host=ADB_HOST, port=ADB_PORT)
                 devices = self.client.devices()
             except Exception as e:

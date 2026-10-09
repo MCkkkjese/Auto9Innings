@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 from bot_core import BaseballBot
+from batting_tab import BattingAssistTab
+from task_flow import TaskFlowTab
 
 
 # ==========================================
@@ -23,6 +25,7 @@ REPEAT_MODES = ["持續連點", "指定次數"]
 REPEAT_AREAS = ["右下角區域", "中央區域", "右上角 (Skip)", "右半側中央", "跟隨命中目標", "自訂座標"]
 ACTION_OPTIONS = ["點擊詞條", "自訂座標", "右下角區域", "中央區域", "右上角 (Skip)", "右半側中央"]
 IDLE_STRATEGIES = ["常規等待", "快速跳過", "自動停止"]
+TARGET_TYPES = ["📝 僅文字", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"]
 
 # 每個步驟卡片專屬邊框色 (拖曳時顏色跟著卡片走)
 STEP_COLORS = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#9333ea", "#0891b2"]
@@ -93,6 +96,24 @@ class BaseballBotGUI:
         self.var_preview_coords = tk.StringVar(value="")
         self.auto_refresh_job = None
 
+        # 語言辨識與過濾 (預設繁體中文+英文開啟，簡體中文關閉以杜絕誤判)
+        self.var_lang_tc = tk.BooleanVar(value=True)
+        self.var_lang_sc = tk.BooleanVar(value=False)
+        self.var_lang_en = tk.BooleanVar(value=True)
+
+        def _on_lang_changed(*_):
+            self.bot.set_allowed_languages(
+                self.var_lang_tc.get(),
+                self.var_lang_sc.get(),
+                self.var_lang_en.get()
+            )
+            self.auto_save_current_config()
+
+        self.var_lang_tc.trace_add("write", _on_lang_changed)
+        self.var_lang_sc.trace_add("write", _on_lang_changed)
+        self.var_lang_en.trace_add("write", _on_lang_changed)
+        self.bot.set_allowed_languages(True, False, True)
+
         # 看門狗防卡死守護參數 (可於進階面板設定)
         self.var_watchdog_enabled = tk.BooleanVar(value=False)
         self.var_watchdog_seconds = tk.IntVar(value=60)
@@ -135,8 +156,16 @@ class BaseballBotGUI:
     def _build_ui(self):
         self._build_topbar()
 
-        body = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        # 分頁管理器 (Notebook)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        # 頁籤 1: 🏆 聯賽自動刷關 (維持所有原有功能與版面)
+        tab_league = ttk.Frame(self.notebook)
+        self.notebook.add(tab_league, text="  🏆 聯賽自動刷關  ")
+
+        body = ttk.PanedWindow(tab_league, orient=tk.HORIZONTAL)
+        body.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
         left = ttk.Frame(body)
         right = ttk.PanedWindow(body, orient=tk.VERTICAL)
@@ -147,6 +176,16 @@ class BaseballBotGUI:
         self._build_advanced_panel(left)
         self._build_preview_panel(right)
         self._build_log_panel(right)
+
+        # 頁籤 2: ⚡ 即時打擊輔助 (手動打擊反應輔助)
+        tab_batting = ttk.Frame(self.notebook)
+        self.notebook.add(tab_batting, text="  ⚡ 即時打擊輔助  ")
+        self.batting_tab = BattingAssistTab(tab_batting, bot_instance=self.bot, gui_parent=self, log_callback=self.log_message)
+
+        # 頁籤 3: 📋 任務清單 (Scratch 積木式日常任務編程)
+        tab_tasks = ttk.Frame(self.notebook)
+        self.notebook.add(tab_tasks, text="  📋 任務清單  ")
+        self.task_tab = TaskFlowTab(tab_tasks, bot_instance=self.bot, gui_parent=self, log_callback=self.log_message)
 
     def _build_topbar(self):
         bar = ttk.Frame(self.root, padding=(10, 8, 10, 8))
@@ -275,6 +314,7 @@ class BaseballBotGUI:
     def _create_priority_step_widget(
         self,
         name: str = "優先動作",
+        target_type: str = "📝 僅文字",
         keywords: str = "NEXT SCHEDULE, 確定",
         exclude_keywords: str = "",
         action: str = "點擊字元",
@@ -320,11 +360,14 @@ class BaseballBotGUI:
             repeat_area = "右下角區域"
         if roi_name not in ROI_OPTIONS:
             roi_name = "全畫面比對"
+        if target_type not in TARGET_TYPES:
+            target_type = "📝 僅文字"
 
         p = {
             "type": "priority",
             "enabled": tk.BooleanVar(value=enabled),
             "name": tk.StringVar(value=name),
+            "target_type": tk.StringVar(value=target_type),
             "keywords": tk.StringVar(value=keywords),
             "exclude_keywords": tk.StringVar(value=exclude_keywords),
             "action": tk.StringVar(value=action),
@@ -356,7 +399,19 @@ class BaseballBotGUI:
         ttk.Checkbutton(head, variable=p["enabled"]).pack(side=tk.LEFT)
         lbl_num = tk.Label(head, text=f"⭐{len(self.priority_steps_list)}", fg=color, bg="#fffbeb", font=("Arial", 12, "bold"), width=3)
         lbl_num.pack(side=tk.LEFT)
-        ttk.Entry(head, textvariable=p["name"], width=10).pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Entry(head, textvariable=p["name"], width=9).pack(side=tk.LEFT, padx=(2, 4))
+        
+        combo_p_target = ttk.Combobox(head, textvariable=p["target_type"], values=TARGET_TYPES, state="readonly", width=9)
+        combo_p_target.pack(side=tk.LEFT, padx=(0, 4))
+
+        def _on_p_target_changed(*_):
+            tt = p["target_type"].get()
+            cur_kw = p["keywords"].get().strip()
+            if "打勾" in tt and not cur_kw:
+                p["keywords"].set("[打勾]")
+            elif "叉叉" in tt and not cur_kw:
+                p["keywords"].set("[叉叉]")
+        p["target_type"].trace_add("write", _on_p_target_changed)
 
         ttk.Button(head, text="✕", width=2, command=lambda: self.on_delete_priority_step(p)).pack(side=tk.RIGHT)
         btn_toggle = ttk.Button(head, text="▸", width=2, command=lambda: p["expanded"].set(not p["expanded"].get()))
@@ -366,6 +421,17 @@ class BaseballBotGUI:
         lbl_sum = tk.Label(card, fg="#92400e", bg="#fffbeb", font=("Arial", 10), anchor="w")
 
         detail = tk.Frame(card, bg="#fffbeb")
+
+        # 目標類型設定行 (詳細設定中支援快速加入符號)
+        rt = tk.Frame(detail, bg="#fffbeb")
+        rt.pack(fill=tk.X, pady=(4, 0))
+        tk.Label(rt, text="目標類型", bg="#fffbeb", fg="#78350f", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        ttk.Combobox(rt, textvariable=p["target_type"], values=TARGET_TYPES, state="readonly", width=12).pack(side=tk.LEFT, padx=(4, 8))
+        def _add_p_sym(tag):
+            k = p["keywords"].get().strip()
+            p["keywords"].set(f"{k}, {tag}" if k else tag)
+        ttk.Button(rt, text="＋打勾 ✓", width=7, command=lambda: _add_p_sym("[打勾]")).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(rt, text="＋叉叉 ✕", width=7, command=lambda: _add_p_sym("[叉叉]")).pack(side=tk.LEFT)
 
         ra = tk.Frame(detail, bg="#fffbeb")
         ra.pack(fill=tk.X, pady=(6, 0))
@@ -445,6 +511,8 @@ class BaseballBotGUI:
             if act in ("自訂座標", "自訂特定區塊"):
                 act += f" ({p['custom_x'].get()}, {p['custom_y'].get()})"
             parts = [act, p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
+            if p["target_type"].get() != "📝 僅文字":
+                parts.insert(0, p["target_type"].get())
             if p["while_condition"].get():
                 parts.append("while 重複")
             ex = p["exclude_keywords"].get().strip()
@@ -499,7 +567,7 @@ class BaseballBotGUI:
                 rh.pack_forget()
 
         for key in ("enabled", "expanded", "action", "custom_x", "custom_y", "roi", "delay",
-                    "while_condition", "exclude_keywords", "repeat_enabled", "repeat_mode",
+                    "target_type", "while_condition", "exclude_keywords", "repeat_enabled", "repeat_mode",
                     "repeat_count", "repeat_speed", "repeat_area", "repeat_custom_x", "repeat_custom_y",
                     "tg_enabled", "tg_message"):
             p[key].trace_add("write", refresh)
@@ -561,9 +629,12 @@ class BaseballBotGUI:
             kws = [k.strip() for k in p["keywords"].get().replace("，", ",").split(",") if k.strip()]
             ex_kws = [k.strip() for k in p["exclude_keywords"].get().replace("，", ",").split(",") if k.strip()]
             rep_on = p["repeat_enabled"].get()
+            tt = p["target_type"].get()
+            is_sym = ("打勾" in tt or "叉叉" in tt or "混合" in tt)
             cfg.append({
                 "type": "priority",
                 "name": p["name"].get().strip() or "優先動作",
+                "target_type": tt,
                 "keywords": kws,
                 "exclude_keywords": ex_kws,
                 "action": "custom_coord" if p["action"].get() in ("自訂座標", "自訂特定區塊") else p["action"].get(),
@@ -585,7 +656,7 @@ class BaseballBotGUI:
                     "token": self.var_tg_token.get().strip(),
                     "chat_id": self.var_tg_chat_id.get().strip(),
                 },
-                "enabled": p["enabled"].get() and bool(kws),
+                "enabled": p["enabled"].get() and (bool(kws) or is_sym),
                 "max_continuous": 25,
             })
         return cfg
@@ -631,15 +702,36 @@ class BaseballBotGUI:
             f, textvariable=self.var_idle_strategy, values=IDLE_STRATEGIES, state="readonly", width=10
         ).grid(row=2, column=1, sticky="w", padx=8)
 
-        # 等待中連點跳過設定
+        # 語言辨識與過濾 (降低文字誤判率)
         ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+
+        row_lang_hdr = ttk.Frame(f)
+        row_lang_hdr.grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        tk.Label(row_lang_hdr, text="🔤 辨識語言過濾 (降低誤判率)", font=("Arial", 9, "bold"), fg="#0284c7").pack(side=tk.LEFT)
+
+        row_lang_boxes = ttk.Frame(f)
+        row_lang_boxes.grid(row=5, column=0, columnspan=3, sticky="w", pady=(2, 2))
+        ttk.Checkbutton(row_lang_boxes, text="繁體中文", variable=self.var_lang_tc).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Checkbutton(row_lang_boxes, text="簡體中文", variable=self.var_lang_sc).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Checkbutton(row_lang_boxes, text="英文與數字", variable=self.var_lang_en).pack(side=tk.LEFT, padx=(0, 8))
+
+        lbl_lang_tip = ttk.Label(
+            f,
+            text="💡 提示：若遊戲為繁體版，建議關閉「簡體中文」，可完全杜絕背景雜訊被誤判為簡體字。",
+            font=("Microsoft JhengHei", 8),
+            foreground="#6b7280"
+        )
+        lbl_lang_tip.grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
+        # 等待中連點跳過設定
+        ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=7, column=0, columnspan=3, sticky="ew", pady=(6, 4))
         
         row_it = ttk.Frame(f)
-        row_it.grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
+        row_it.grid(row=8, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Checkbutton(row_it, text="⏳ 等待時背景連點 (比賽進行中連點跳過)", variable=self.var_idle_tap_enabled).pack(side=tk.LEFT)
 
         row_it_detail = ttk.Frame(f)
-        row_it_detail.grid(row=5, column=0, columnspan=3, sticky="w", pady=2)
+        row_it_detail.grid(row=9, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Label(row_it_detail, text="位置:").pack(side=tk.LEFT)
         combo_it_area = ttk.Combobox(row_it_detail, textvariable=self.var_idle_tap_area, values=REPEAT_AREAS, state="readonly", width=10)
         combo_it_area.pack(side=tk.LEFT, padx=4)
@@ -657,33 +749,33 @@ class BaseballBotGUI:
                 box_it_xy.pack_forget()
 
         # 看門狗防卡死守護設定 (超時自動停止並重新開啟)
-        ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=6, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+        ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=10, column=0, columnspan=3, sticky="ew", pady=(6, 4))
 
         row_wd = ttk.Frame(f)
-        row_wd.grid(row=7, column=0, columnspan=3, sticky="w", pady=2)
+        row_wd.grid(row=11, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Checkbutton(row_wd, text="🔄 無動作自動重啟 (防卡死守護)", variable=self.var_watchdog_enabled).pack(side=tk.LEFT)
 
         row_wd_detail = ttk.Frame(f)
-        row_wd_detail.grid(row=8, column=0, columnspan=3, sticky="w", pady=2)
+        row_wd_detail.grid(row=12, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Label(row_wd_detail, text="超過").pack(side=tk.LEFT)
         ttk.Spinbox(row_wd_detail, from_=10, to=1800, increment=10, textvariable=self.var_watchdog_seconds, width=5).pack(side=tk.LEFT, padx=4)
         ttk.Label(row_wd_detail, text="秒無動作時，自動停止並重新開啟腳本").pack(side=tk.LEFT)
 
         # Telegram 通知全域設定
-        ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=9, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+        ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=13, column=0, columnspan=3, sticky="ew", pady=(6, 4))
 
         row_tg_hdr = ttk.Frame(f)
-        row_tg_hdr.grid(row=10, column=0, columnspan=3, sticky="w", pady=2)
+        row_tg_hdr.grid(row=14, column=0, columnspan=3, sticky="w", pady=2)
         tk.Label(row_tg_hdr, text="📱 Telegram 推播通知設定", font=("Arial", 10, "bold"), fg="#0284c7").pack(side=tk.LEFT)
         ttk.Button(row_tg_hdr, text="發送測試訊息", width=12, command=self.on_test_telegram_message).pack(side=tk.RIGHT, padx=4)
 
         row_tg_1 = ttk.Frame(f)
-        row_tg_1.grid(row=11, column=0, columnspan=3, sticky="ew", pady=1)
+        row_tg_1.grid(row=15, column=0, columnspan=3, sticky="ew", pady=1)
         ttk.Label(row_tg_1, text="Bot Token:").pack(side=tk.LEFT)
         ttk.Entry(row_tg_1, textvariable=self.var_tg_token, width=28).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
         row_tg_2 = ttk.Frame(f)
-        row_tg_2.grid(row=12, column=0, columnspan=3, sticky="ew", pady=1)
+        row_tg_2.grid(row=16, column=0, columnspan=3, sticky="ew", pady=1)
         ttk.Label(row_tg_2, text="Chat ID:   ").pack(side=tk.LEFT)
         ttk.Entry(row_tg_2, textvariable=self.var_tg_chat_id, width=16).pack(side=tk.LEFT, padx=(4, 0))
 
@@ -761,6 +853,7 @@ class BaseballBotGUI:
         self,
         name: str,
         keywords: str,
+        target_type: str = "📝 僅文字",
         exclude_keywords: str = "",
         action: str = "點擊詞條",
         custom_x: int = 0,
@@ -797,6 +890,8 @@ class BaseballBotGUI:
             repeat_area = "右下角區域"
         if roi_name not in ROI_OPTIONS:
             roi_name = "右下角區域"
+        if target_type not in TARGET_TYPES:
+            target_type = "📝 僅文字"
 
         card = tk.Frame(
             self.frame_normal_cards, highlightbackground=color, highlightcolor=color,
@@ -807,6 +902,7 @@ class BaseballBotGUI:
         s = {
             "enabled": tk.BooleanVar(value=enabled),
             "name": tk.StringVar(value=name),
+            "target_type": tk.StringVar(value=target_type),
             "keywords": tk.StringVar(value=keywords),
             "exclude_keywords": tk.StringVar(value=exclude_keywords),
             "action": tk.StringVar(value=action),
@@ -840,7 +936,19 @@ class BaseballBotGUI:
         ttk.Checkbutton(head, variable=s["enabled"]).pack(side=tk.LEFT)
         lbl_num = tk.Label(head, text=str(len(self.steps_list)), fg=color, font=("Arial", 13, "bold"), width=2)
         lbl_num.pack(side=tk.LEFT)
-        ttk.Entry(head, textvariable=s["name"], width=11).pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Entry(head, textvariable=s["name"], width=10).pack(side=tk.LEFT, padx=(2, 4))
+
+        combo_s_target = ttk.Combobox(head, textvariable=s["target_type"], values=TARGET_TYPES, state="readonly", width=9)
+        combo_s_target.pack(side=tk.LEFT, padx=(0, 4))
+
+        def _on_s_target_changed(*_):
+            tt = s["target_type"].get()
+            cur_kw = s["keywords"].get().strip()
+            if "打勾" in tt and not cur_kw:
+                s["keywords"].set("[打勾]")
+            elif "叉叉" in tt and not cur_kw:
+                s["keywords"].set("[叉叉]")
+        s["target_type"].trace_add("write", _on_s_target_changed)
 
         ttk.Button(head, text="✕", width=2, command=lambda: self.on_delete_step(s)).pack(side=tk.RIGHT)
         btn_toggle = ttk.Button(head, text="▸", width=2, command=lambda: s["expanded"].set(not s["expanded"].get()))
@@ -852,6 +960,17 @@ class BaseballBotGUI:
 
         # ---- 展開後的細部設定 ----
         detail = tk.Frame(card)
+
+        # 目標類型設定行
+        rt = tk.Frame(detail)
+        rt.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(rt, text="目標類型:").pack(side=tk.LEFT)
+        ttk.Combobox(rt, textvariable=s["target_type"], values=TARGET_TYPES, state="readonly", width=12).pack(side=tk.LEFT, padx=(4, 8))
+        def _add_s_sym(tag):
+            k = s["keywords"].get().strip()
+            s["keywords"].set(f"{k}, {tag}" if k else tag)
+        ttk.Button(rt, text="＋打勾 ✓", width=7, command=lambda: _add_s_sym("[打勾]")).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(rt, text="＋叉叉 ✕", width=7, command=lambda: _add_s_sym("[叉叉]")).pack(side=tk.LEFT)
 
         ra = tk.Frame(detail)
         ra.pack(fill=tk.X, pady=(8, 0))
@@ -934,6 +1053,8 @@ class BaseballBotGUI:
             if act in ("自訂座標", "自訂特定區塊"):
                 act += f" ({s['custom_x'].get()}, {s['custom_y'].get()})"
             parts = [act, s["roi"].get(), f"延遲 {_num(s['delay'], 0):g}s"]
+            if s["target_type"].get() != "📝 僅文字":
+                parts.insert(0, s["target_type"].get())
             ex = s["exclude_keywords"].get().strip()
             if ex:
                 parts.append(f"排除: {ex}")
@@ -991,7 +1112,7 @@ class BaseballBotGUI:
                 rtg_msg.pack_forget()
 
         for key in ("enabled", "expanded", "action", "custom_x", "custom_y", "roi", "delay", "timeout_enabled", "timeout_seconds",
-                    "repeat_enabled", "repeat_mode", "repeat_count", "repeat_area",
+                    "target_type", "repeat_enabled", "repeat_mode", "repeat_count", "repeat_area",
                     "repeat_custom_x", "repeat_custom_y", "exclude_keywords",
                     "tg_enabled", "tg_message"):
             s[key].trace_add("write", refresh)
@@ -1119,8 +1240,11 @@ class BaseballBotGUI:
             ex_kws = [k.strip() for k in s["exclude_keywords"].get().replace("，", ",").split(",") if k.strip()]
             delay = _num(s["delay"], 2.5)
             rep_on = s["repeat_enabled"].get()
+            tt = s["target_type"].get() if "target_type" in s else "📝 僅文字"
+            is_sym = ("打勾" in tt or "叉叉" in tt or "混合" in tt)
             cfg.append({
                 "name": s["name"].get().strip() or "步驟",
+                "target_type": tt,
                 "keywords": kws,
                 "exclude_keywords": ex_kws,
                 "action": "custom_coord" if s["action"].get() in ("自訂座標", "自訂特定區塊") else s["action"].get(),
@@ -1129,7 +1253,7 @@ class BaseballBotGUI:
                 "delay": delay,
                 "delay_min": max(0.05, delay - 0.15),
                 "delay_max": delay + 0.15,
-                "enabled": s["enabled"].get() and bool(kws),
+                "enabled": s["enabled"].get() and (bool(kws) or is_sym),
                 "roi": self._map_roi_name_to_tuple(s["roi"].get()),
                 "roi_name": s["roi"].get(),
                 "repeat_enabled": rep_on,
@@ -1157,6 +1281,7 @@ class BaseballBotGUI:
         for p in self.priority_steps_list:
             priority_steps.append({
                 "name": p["name"].get(),
+                "target_type": p["target_type"].get() if "target_type" in p else "📝 僅文字",
                 "keywords": p["keywords"].get(),
                 "exclude_keywords": p["exclude_keywords"].get(),
                 "action": p["action"].get(),
@@ -1181,6 +1306,7 @@ class BaseballBotGUI:
         for s in self.steps_list:
             steps.append({
                 "name": s["name"].get(),
+                "target_type": s["target_type"].get() if "target_type" in s else "📝 僅文字",
                 "keywords": s["keywords"].get(),
                 "exclude_keywords": s["exclude_keywords"].get(),
                 "action": s["action"].get(),
@@ -1215,6 +1341,11 @@ class BaseballBotGUI:
                 "token": self.var_tg_token.get().strip(),
                 "chat_id": self.var_tg_chat_id.get().strip(),
             },
+            "ocr_languages": {
+                "tc": bool(self.var_lang_tc.get()),
+                "sc": bool(self.var_lang_sc.get()),
+                "en": bool(self.var_lang_en.get()),
+            },
             "idle_tap": {
                 "enabled": self.var_idle_tap_enabled.get(),
                 "area": self.var_idle_tap_area.get(),
@@ -1242,6 +1373,17 @@ class BaseballBotGUI:
             wd = cfg["watchdog"]
             self.var_watchdog_enabled.set(bool(wd.get("enabled", False)))
             self.var_watchdog_seconds.set(int(wd.get("seconds", 60)))
+        if "ocr_languages" in cfg and isinstance(cfg["ocr_languages"], dict):
+            langs = cfg["ocr_languages"]
+            self.var_lang_tc.set(bool(langs.get("tc", True)))
+            self.var_lang_sc.set(bool(langs.get("sc", False)))
+            self.var_lang_en.set(bool(langs.get("en", True)))
+            if hasattr(self, "bot"):
+                self.bot.set_allowed_languages(
+                    self.var_lang_tc.get(),
+                    self.var_lang_sc.get(),
+                    self.var_lang_en.get()
+                )
         if "idle_tap" in cfg and isinstance(cfg["idle_tap"], dict):
             it = cfg["idle_tap"]
             self.var_idle_tap_enabled.set(it.get("enabled", False))
@@ -1264,6 +1406,7 @@ class BaseballBotGUI:
             if p_old.get("keywords") or p_old.get("enabled"):
                 p_list = [{
                     "name": "優先 1",
+                    "target_type": p_old.get("target_type", "📝 僅文字"),
                     "keywords": p_old.get("keywords", ""),
                     "exclude_keywords": p_old.get("exclude_keywords", ""),
                     "action": p_old.get("action", "點擊字元"),
@@ -1288,6 +1431,7 @@ class BaseballBotGUI:
             for p in p_list:
                 self._create_priority_step_widget(
                     name=p.get("name", "優先動作"),
+                    target_type=p.get("target_type", "📝 僅文字"),
                     keywords=p.get("keywords", ""),
                     exclude_keywords=p.get("exclude_keywords", ""),
                     action=p.get("action", "點擊字元"),
@@ -1314,6 +1458,7 @@ class BaseballBotGUI:
             for s in cfg["steps"]:
                 self._create_step_widget(
                     name=s.get("name", "步驟"),
+                    target_type=s.get("target_type", "📝 僅文字"),
                     keywords=s.get("keywords", ""),
                     exclude_keywords=s.get("exclude_keywords", ""),
                     action=s.get("action", "點擊詞條"),
@@ -1554,6 +1699,10 @@ class BaseballBotGUI:
                     self.current_screen_bgr = screen
                     self._last_detected = detected
                     self._render_preview(screen, detected, matched)
+                    if hasattr(self, "batting_tab") and self.batting_tab:
+                        self.batting_tab.update_emulator_preview(screen)
+                    if hasattr(self, "task_tab") and self.task_tab:
+                        self.task_tab.update_emulator_preview(screen)
                     if announce:
                         self._announce_match(detected, matched)
                 if on_done:
@@ -1646,18 +1795,26 @@ class BaseballBotGUI:
                     )
                 else:
                     dot_color = (0, 215, 255) if is_priority else (0, 255, 0)
+                    if "[打勾]" in m_text or "✓" in m_text:
+                        dot_color = (50, 220, 50)  # 鮮綠色
+                    elif "[叉叉]" in m_text or "✕" in m_text:
+                        dot_color = (50, 50, 240)  # 紅色
                     cv2.circle(small, (stx, sty), 5 * t, dot_color, -1)
                     cv2.circle(small, (stx, sty), 9 * t, dot_color, t)
-                    if is_priority:
-                        cv2.putText(
-                            small,
-                            f"{step.get('name')}",
-                            (stx + 10 * t, sty + 4 * t),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.45,
-                            (0, 215, 255),
-                            1
-                        )
+                    tag = f"{step.get('name')}"
+                    if "[打勾]" in m_text or "✓" in m_text:
+                        tag += " [✓]"
+                    elif "[叉叉]" in m_text or "✕" in m_text:
+                        tag += " [✕]"
+                    cv2.putText(
+                        small,
+                        tag,
+                        (stx + 10 * t, sty + 4 * t),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        dot_color,
+                        1
+                    )
                     if step.get("repeat_enabled"):
                         rx, ry = self._repeat_point(step, w, h, tx, ty)
                         srx, sry = int(rx * scale), int(ry * scale)
@@ -1733,6 +1890,10 @@ class BaseballBotGUI:
             return
         h, w = screen_bgr.shape[:2]
         self.raw_screen_w, self.raw_screen_h = w, h
+        if hasattr(self, "batting_tab") and self.batting_tab:
+            self.batting_tab.update_emulator_preview(screen_bgr)
+        if hasattr(self, "task_tab") and self.task_tab:
+            self.task_tab.update_emulator_preview(screen_bgr)
 
         avail_w = max(100, self.lbl_canvas.winfo_width() - 4)
         avail_h = max(100, self.lbl_canvas.winfo_height() - 4)
@@ -1842,6 +2003,9 @@ class BaseballBotGUI:
     # ==========================================
     def on_start_bot(self):
         if self.bot.is_running:
+            return
+        if hasattr(self, "task_tab") and self.task_tab and self.task_tab.engine.is_running:
+            messagebox.showwarning("提示", "【任務清單】正在執行中，請先停止任務清單再啟動聯賽自動刷關。")
             return
         steps = self._get_active_steps_config()
         priority_steps = self._get_active_priority_steps_config()
@@ -1971,6 +2135,8 @@ class BaseballBotGUI:
                 except Exception:
                     pass
         self.auto_save_current_config()
+        if hasattr(self, "batting_tab") and self.batting_tab:
+            self.batting_tab.on_close()
         if self.bot.is_running:
             self.bot.stop()
         self.root.destroy()

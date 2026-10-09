@@ -1,0 +1,54 @@
+{
+  "version": "1.0",
+  "loop_count": 1,
+  "blocks": [
+    {
+      "type": "tap_coord",
+      "name": "快速進行",
+      "enabled": true,
+      "params": {
+        "x": 240,
+        "y": 700,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "自動比賽",
+      "enabled": true,
+      "params": {
+        "x": 1060,
+        "y": 831,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "13場比賽",
+      "enabled": true,
+      "params": {
+        "x": 1148,
+        "y": 391,
+        "delay": 1.5,
+        "repeat": 1
+      }
+    },
+    {
+      "type": "detect_click",
+      "name": "比賽結果",
+      "enabled": true,
+      "params": {
+        "target_type": "📝 僅文字",
+        "keywords": "比賽結果",
+        "timeout": 10,
+        "click_mode": "custom_coord",
+        "custom_x": 788,
+        "custom_y": 797,
+        "delay": 1.5,
+        "on_timeout": "continue"
+      }
+    }
+  ]
+}

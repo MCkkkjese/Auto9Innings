@@ -3,6 +3,7 @@
 """
 import os
 import sys
+import time
 import platform
 import subprocess
 import socket
@@ -24,20 +25,28 @@ class SystemDiagnostics:
 
     @staticmethod
     def get_installed_emulators() -> List[Dict[str, str]]:
-        """掃描常見 macOS 模擬器 App 與其內建的 adb 路徑"""
+        """掃描常見 Windows / macOS 模擬器 App 與其內建的 adb 路徑"""
         known_apps = [
-            ("BlueStacks", "/Applications/BlueStacks.app", "/Applications/BlueStacks.app/Contents/MacOS/hd-adb"),
-            ("BlueStacks Air", "/Applications/BlueStacks Air multi-instance manager.app", "/Applications/BlueStacks Air multi-instance manager.app/Contents/MacOS/hd-adb"),
-            ("MuMu Player", "/Applications/MuMuPlayer.app", "/Applications/MuMuPlayer.app/Contents/MacOS/adb"),
-            ("MuMu Pro", "/Applications/Netease/MuMuPlayer/Contents/MacOS/adb", "/Applications/Netease/MuMuPlayer/Contents/MacOS/adb"),
-            ("Nox App Player", "/Applications/NoxAppPlayer.app", "/Applications/NoxAppPlayer.app/Contents/MacOS/adb"),
-            ("LDPlayer (if installed)", "/Applications/LDPlayer.app", "/Applications/LDPlayer.app/Contents/MacOS/adb"),
+            # Windows 模擬器
+            ("BlueStacks 5 (Windows)", r"C:\Program Files\BlueStacks_nxt\HD-Player.exe", r"C:\Program Files\BlueStacks_nxt\HD-Adb.exe"),
+            ("BlueStacks 4 (Windows)", r"C:\Program Files\BlueStacks\HD-Player.exe", r"C:\Program Files\BlueStacks\HD-Adb.exe"),
+            ("LDPlayer 9 (Windows)", r"C:\LDPlayer\LDPlayer9\dnplayer.exe", r"C:\LDPlayer\LDPlayer9\adb.exe"),
+            ("LDPlayer 4 (Windows)", r"C:\LDPlayer\LDPlayer4\dnplayer.exe", r"C:\LDPlayer\LDPlayer4\adb.exe"),
+            ("Nox App Player (Windows)", r"C:\Program Files\Nox\bin\Nox.exe", r"C:\Program Files\Nox\bin\nox_adb.exe"),
+            ("MuMu Player 12 (Windows)", r"C:\Program Files\Netease\MuMuPlayerGlobal-12.0\shell\MuMuPlayer.exe", r"C:\Program Files\Netease\MuMuPlayerGlobal-12.0\shell\adb.exe"),
+            # macOS 模擬器
+            ("BlueStacks (macOS)", "/Applications/BlueStacks.app", "/Applications/BlueStacks.app/Contents/MacOS/hd-adb"),
+            ("BlueStacks Air (macOS)", "/Applications/BlueStacks Air multi-instance manager.app", "/Applications/BlueStacks Air multi-instance manager.app/Contents/MacOS/hd-adb"),
+            ("MuMu Player (macOS)", "/Applications/MuMuPlayer.app", "/Applications/MuMuPlayer.app/Contents/MacOS/adb"),
+            ("MuMu Pro (macOS)", "/Applications/Netease/MuMuPlayer/Contents/MacOS/adb", "/Applications/Netease/MuMuPlayer/Contents/MacOS/adb"),
+            ("Nox App Player (macOS)", "/Applications/NoxAppPlayer.app", "/Applications/NoxAppPlayer.app/Contents/MacOS/adb"),
+            ("LDPlayer (macOS)", "/Applications/LDPlayer.app", "/Applications/LDPlayer.app/Contents/MacOS/adb"),
         ]
 
         found = []
         for name, app_path, adb_path in known_apps:
             if os.path.exists(app_path):
-                adb_exists = os.path.exists(adb_path) and os.access(adb_path, os.X_OK)
+                adb_exists = os.path.exists(adb_path) and (sys.platform == "win32" or os.access(adb_path, os.X_OK))
                 found.append({
                     "name": name,
                     "app_path": app_path,
@@ -50,7 +59,7 @@ class SystemDiagnostics:
     def run_full_diagnosis(bot_instance=None) -> Dict[str, Any]:
         """執行全方位診斷並產出結構化診斷報告"""
         diag = {
-            "timestamp": subprocess.getoutput("date"),
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
             "os_info": f"{platform.system()} {platform.release()} ({platform.machine()})",
             "python_executable": sys.executable,
             "python_version": sys.version.split()[0],

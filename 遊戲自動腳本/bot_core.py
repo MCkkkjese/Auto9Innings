@@ -10,6 +10,7 @@ import logging
 import subprocess
 import difflib
 import threading
+import shutil
 from typing import Optional, Tuple, Dict, List, Callable, Any
 
 import requests
@@ -20,6 +21,52 @@ from ppadb.device import Device
 from rapidocr_onnxruntime import RapidOCR
 
 logger = logging.getLogger("BaseballBot")
+
+# =========================================================================
+# 語言分類與過濾快取 (繁體中文 Big5、簡體中文 GB2312、英文 ASCII)
+# =========================================================================
+_CHAR_LANG_CACHE: Dict[str, str] = {}
+
+def classify_char(ch: str) -> str:
+    """
+    分類單一字元:
+    'en': ASCII 英文與數字 (a-z, A-Z, 0-9)
+    'tc_only': 繁體中文專用字 (可編碼進 big5 但不可編碼進 gb2312)
+    'sc_only': 簡體中文專用字 (可編碼進 gb2312 但不可編碼進 big5)
+    'shared_cjk': 繁簡通用漢字 (兩者皆可編碼)
+    'rare_cjk': 罕見漢字 (兩者皆無法以基本集編碼)
+    'sym': 標點符號、特殊符號
+    """
+    cached = _CHAR_LANG_CACHE.get(ch)
+    if cached is not None:
+        return cached
+    if ('a' <= ch <= 'z') or ('A' <= ch <= 'Z') or ('0' <= ch <= '9'):
+        res = 'en'
+    elif '\u4e00' <= ch <= '\u9fff':
+        b5 = False
+        gb = False
+        try:
+            ch.encode('big5')
+            b5 = True
+        except Exception:
+            pass
+        try:
+            ch.encode('gb2312')
+            gb = True
+        except Exception:
+            pass
+        if b5 and not gb:
+            res = 'tc_only'
+        elif gb and not b5:
+            res = 'sc_only'
+        elif b5 and gb:
+            res = 'shared_cjk'
+        else:
+            res = 'rare_cjk'
+    else:
+        res = 'sym'
+    _CHAR_LANG_CACHE[ch] = res
+    return res
 
 
 class BaseballBot:
@@ -50,6 +97,12 @@ class BaseballBot:
         ]
         self.popup_confirm_keywords = ["確認", "確定", "重試", "OK", "重新連接", "同意"]
 
+        # 語言辨識與過濾設定 (預設繁體中文+英文開啟，簡體中文關閉以杜絕誤判)
+        self.allowed_languages = {"tc": True, "sc": False, "en": True}
+
+        # 預先快取多尺度特殊圖案 (打勾、叉叉) 模板
+        self._init_symbol_templates()
+
         # 初始化 RapidOCR 辨識引擎
         self._log("初始化 RapidOCR 辨識引擎中...")
         self.ocr = RapidOCR()
@@ -74,17 +127,244 @@ class BaseballBot:
             except Exception:
                 pass
 
+    # =========================================================================
+    # 語言過濾設定與判斷 (繁體中文 Big5、簡體中文 GB2312、英文/數字 ASCII)
+    # =========================================================================
+    def set_allowed_languages(self, allow_tc: bool = True, allow_sc: bool = False, allow_en: bool = True):
+        """設定允許辨識的語言種類：繁體中文(tc)、簡體中文(sc)、英文與數字(en)"""
+        self.allowed_languages = {
+            "tc": bool(allow_tc),
+            "sc": bool(allow_sc),
+            "en": bool(allow_en)
+        }
+        tc_str = "開" if allow_tc else "關"
+        sc_str = "開" if allow_sc else "關"
+        en_str = "開" if allow_en else "關"
+        self._log(f"🔤 辨識語言過濾更新: 繁體中文[{tc_str}] | 簡體中文[{sc_str}] | 英文與數字[{en_str}]")
+
+    def is_text_allowed(self, text: str) -> bool:
+        """
+        檢查辨識文字是否符合使用者勾選的語言範圍。
+        若文字內包含未允許的專用字元，則判定不通過 (有效杜絕背景雜訊產生的亂碼或簡體字)。
+        """
+        clean = text.strip()
+        if not clean:
+            return False
+        # 特殊圖案與標籤永遠豁免
+        if clean in ("[打勾]", "[叉叉]", "✓", "✔", "√", "✕", "✖", "×", "X", "x") or "[打勾]" in clean or "[叉叉]" in clean:
+            return True
+
+        allow_tc = self.allowed_languages.get("tc", True)
+        allow_sc = self.allowed_languages.get("sc", False)
+        allow_en = self.allowed_languages.get("en", True)
+
+        # 逐字檢查主要字元
+        for ch in clean:
+            if ch in " \t\n\r，,。.！!？?-_:：()[]{}/*+·~`@#$%^&|\\<>=’'\"":
+                continue
+            c_type = classify_char(ch)
+            if c_type == 'en' and not allow_en:
+                return False
+            if c_type == 'sc_only' and not allow_sc:
+                return False
+            if c_type == 'tc_only' and not allow_tc:
+                return False
+            if c_type in ('shared_cjk', 'rare_cjk') and (not allow_tc and not allow_sc):
+                return False
+        return True
+
+    # =========================================================================
+    # 特殊圖案模板快取與偵測 (打勾 ✓、叉叉/關閉 ✕/X)
+    # =========================================================================
+    def _init_symbol_templates(self):
+        """預先快取多尺度打勾 (Checkmark) 與叉叉 (Cross) 模板"""
+        self._symbol_templates: Dict[str, List[Tuple[int, np.ndarray, np.ndarray]]] = {
+            "check": [],
+            "cross": []
+        }
+        for sz in [20, 28, 36, 48]:
+            # 1. 打勾 (Checkmark)
+            t_c = np.zeros((sz, sz), dtype=np.uint8)
+            th = max(2, sz // 8)
+            p1 = (int(sz * 0.15), int(sz * 0.50))
+            p2 = (int(sz * 0.40), int(sz * 0.82))
+            p3 = (int(sz * 0.85), int(sz * 0.18))
+            cv2.polylines(t_c, [np.array([p1, p2, p3])], False, 255, th)
+            t_c_edges = cv2.Canny(t_c, 50, 150)
+            self._symbol_templates["check"].append((sz, t_c, t_c_edges))
+
+            # 2. 叉叉 (Cross / X / Close)
+            t_x = np.zeros((sz, sz), dtype=np.uint8)
+            m = int(sz * 0.15)
+            cv2.line(t_x, (m, m), (sz - m, sz - m), 255, th)
+            cv2.line(t_x, (m, sz - m), (sz - m, m), 255, th)
+            t_x_edges = cv2.Canny(t_x, 50, 150)
+            self._symbol_templates["cross"].append((sz, t_x, t_x_edges))
+
+    def detect_symbols(
+        self,
+        screen_bgr: np.ndarray,
+        target_type: str = "all",
+        roi: Optional[Tuple[float, float, float, float]] = None,
+        threshold: float = 0.50
+    ) -> List[Dict[str, Any]]:
+        """
+        偵測畫面中的特殊圖案 (打勾 ✓、叉叉/關閉 ✕/X)。
+        target_type: 'all' (兩者), 'check' (僅打勾), 'cross' (僅叉叉)
+        回傳格式相容於 parsed_boxes:
+        [{'text': '[打勾]', 'symbol': 'check', 'score': float, 'center': (cx, cy), 'size': (w, h), 'box': pts}, ...]
+        """
+        if screen_bgr is None:
+            return []
+
+        h, w = screen_bgr.shape[:2]
+        offset_x, offset_y = 0, 0
+        roi_img = screen_bgr
+
+        # ROI 區域裁切加速
+        if roi:
+            ymin, xmin, ymax, xmax = roi
+            rx1 = int(xmin * w) if xmin <= 1.0 else int(xmin)
+            ry1 = int(ymin * h) if ymin <= 1.0 else int(ymin)
+            rx2 = int(xmax * w) if xmax <= 1.0 else int(xmax)
+            ry2 = int(ymax * h) if ymax <= 1.0 else int(ymax)
+            rx1, ry1 = max(0, rx1), max(0, ry1)
+            rx2, ry2 = min(w, rx2), min(h, ry2)
+            if rx2 > rx1 and ry2 > ry1:
+                roi_img = screen_bgr[ry1:ry2, rx1:rx2]
+                offset_x, offset_y = rx1, ry1
+
+        rh, rw = roi_img.shape[:2]
+        if rw < 15 or rh < 15:
+            return []
+
+        gray = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+
+        types_to_check = []
+        target_type_str = str(target_type).lower()
+        if "all" in target_type_str or "混合" in target_type or "文字或圖案" in target_type:
+            types_to_check = ["check", "cross"]
+        elif "check" in target_type_str or "打勾" in target_type or "✓" in target_type:
+            types_to_check = ["check"]
+        elif "cross" in target_type_str or "叉叉" in target_type or "✕" in target_type or "關閉" in target_type:
+            types_to_check = ["cross"]
+        else:
+            types_to_check = ["check", "cross"]
+
+        candidates = []
+
+        # 1. 多尺度邊緣與灰階模板比對
+        for sym in types_to_check:
+            tpl_list = self._symbol_templates.get(sym, [])
+            for sz, tpl_raw, t_edges in tpl_list:
+                if rw < sz or rh < sz:
+                    continue
+                # 邊緣匹對 (不受底色影響)
+                res_edge = cv2.matchTemplate(edges, t_edges, cv2.TM_CCOEFF_NORMED)
+                locs_e = np.where(res_edge >= threshold)
+                for pt in zip(*locs_e[::-1]):
+                    val = float(res_edge[pt[1], pt[0]])
+                    candidates.append((sym, val, pt[0], pt[1], pt[0] + sz, pt[1] + sz))
+
+                # 灰階匹對備援 (高對比度實心圖示)
+                res_gray = cv2.matchTemplate(gray, tpl_raw, cv2.TM_CCOEFF_NORMED)
+                locs_g = np.where(res_gray >= max(0.68, threshold + 0.08))
+                for pt in zip(*locs_g[::-1]):
+                    val = float(res_gray[pt[1], pt[0]])
+                    candidates.append((sym, val, pt[0], pt[1], pt[0] + sz, pt[1] + sz))
+
+        # 2. 凸缺陷幾何拓撲分析
+        try:
+            bin_img = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 3)
+            cnts, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in cnts:
+                area = cv2.contourArea(cnt)
+                if area < 30 or area > 3500:
+                    continue
+                cx_b, cy_b, cw_b, ch_b = cv2.boundingRect(cnt)
+                aspect = cw_b / max(1, ch_b)
+                if aspect < 0.6 or aspect > 1.8:
+                    continue
+                hull = cv2.convexHull(cnt, returnPoints=False)
+                if hull is None or len(hull) < 4:
+                    continue
+                defects = cv2.convexityDefects(cnt, hull)
+                if defects is None:
+                    continue
+                deep_defects = 0
+                for i in range(defects.shape[0]):
+                    d = defects[i, 0, 3] / 256.0
+                    if d > 3.5:
+                        deep_defects += 1
+
+                if deep_defects == 4 and "cross" in types_to_check:
+                    candidates.append(("cross", 0.78, cx_b, cy_b, cx_b + cw_b, cy_b + ch_b))
+                elif deep_defects in (1, 2) and "check" in types_to_check:
+                    if cw_b >= 12 and ch_b >= 10:
+                        candidates.append(("check", 0.75, cx_b, cy_b, cx_b + cw_b, cy_b + ch_b))
+        except Exception:
+            pass
+
+        if not candidates:
+            return []
+
+        # 3. NMS 非極大值抑制
+        results = []
+        for sym in types_to_check:
+            sym_cands = [c for c in candidates if c[0] == sym]
+            if not sym_cands:
+                continue
+            boxes_list = [[c[2], c[3], c[4] - c[2], c[5] - c[3]] for c in sym_cands]
+            scores_list = [c[1] for c in sym_cands]
+            indices = cv2.dnn.NMSBoxes(boxes_list, scores_list, score_threshold=threshold, nms_threshold=0.35)
+            for idx in indices:
+                i = int(idx)
+                c = sym_cands[i]
+                bx1, by1, bx2, by2 = c[2], c[3], c[4], c[5]
+                score = c[1]
+
+                real_x1 = bx1 + offset_x
+                real_y1 = by1 + offset_y
+                real_x2 = bx2 + offset_x
+                real_y2 = by2 + offset_y
+
+                box_w = real_x2 - real_x1
+                box_h = real_y2 - real_y1
+                center_x = real_x1 + box_w // 2
+                center_y = real_y1 + box_h // 2
+
+                pts = np.array([
+                    [real_x1, real_y1],
+                    [real_x2, real_y1],
+                    [real_x2, real_y2],
+                    [real_x1, real_y2]
+                ], dtype=np.int32)
+
+                sym_tag = "[打勾]" if sym == "check" else "[叉叉]"
+                results.append({
+                    "text": sym_tag,
+                    "symbol": sym,
+                    "score": round(float(score), 2),
+                    "center": (center_x, center_y),
+                    "size": (int(box_w), int(box_h)),
+                    "box": pts
+                })
+
+        return results
+
     def send_telegram_notify(
         self,
         token: str,
         chat_id: str,
         custom_text: str,
         step_name: str = "",
-        hit_text: str = ""
+        hit_text: str = "",
+        screen_bgr: Optional[np.ndarray] = None
     ) -> bool:
         """
         發送 Telegram 通知 (非同步背景發送，不阻礙主線程點擊)
-        支援自訂訊息內容，並附帶當前時間戳記與命中資訊。
+        支援自訂訊息內容與附帶截圖相片，並附帶當前時間戳記與命中資訊。
         """
         token = str(token).strip()
         chat_id = str(chat_id).strip()
@@ -108,6 +388,23 @@ class BaseballBot:
 
         def _do_send():
             try:
+                # 若有附帶螢幕截圖，優先發送照片
+                if screen_bgr is not None:
+                    try:
+                        ok, buf = cv2.imencode('.jpg', screen_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                        if ok:
+                            url = f"https://api.telegram.org/bot{token}/sendPhoto"
+                            files = {'photo': ('screenshot.jpg', buf.tobytes(), 'image/jpeg')}
+                            data = {'chat_id': chat_id, 'caption': full_msg}
+                            resp = requests.post(url, data=data, files=files, timeout=12)
+                            if resp.status_code == 200 and resp.json().get("ok"):
+                                self._log(f"📱 [Telegram] 圖片通知發送成功:「{body_text}」")
+                                return
+                            else:
+                                self._log(f"⚠️ [Telegram] 照片發送失敗，改發送純文字: {resp.text}", "WARNING")
+                    except Exception as e_img:
+                        self._log(f"⚠️ [Telegram] 照片編碼失敗: {e_img}", "WARNING")
+
                 url = f"https://api.telegram.org/bot{token}/sendMessage"
                 payload = {
                     "chat_id": chat_id,
@@ -126,11 +423,33 @@ class BaseballBot:
 
     def auto_detect_and_start_adb(self) -> Optional[str]:
         """
-        全域掃描 macOS 系統中的模擬器（BlueStacks, MuMu, 夜神, 雷電）
+        全域掃描 macOS / Windows 系統中的模擬器（BlueStacks, MuMu, 夜神, 雷電）
         若本機 ADB Daemon 未啟動，自動使用模擬器內建的 adb 二進位檔啟動服務。
         """
         candidate_paths = [
-            # BlueStacks
+            # Windows 模擬器路徑
+            r"C:\Program Files\BlueStacks_nxt\HD-Adb.exe",
+            r"C:\Program Files (x86)\BlueStacks_nxt\HD-Adb.exe",
+            r"C:\Program Files\BlueStacks\HD-Adb.exe",
+            r"C:\Program Files (x86)\BlueStacks\HD-Adb.exe",
+            r"D:\Program Files\BlueStacks_nxt\HD-Adb.exe",
+            r"D:\Program Files\BlueStacks\HD-Adb.exe",
+            r"C:\LDPlayer\LDPlayer9\adb.exe",
+            r"C:\LDPlayer\LDPlayer4\adb.exe",
+            r"D:\LDPlayer\LDPlayer9\adb.exe",
+            r"D:\LDPlayer\LDPlayer4\adb.exe",
+            r"C:\leidian\LDPlayer9\adb.exe",
+            r"C:\Program Files\LDPlayer\LDPlayer9\adb.exe",
+            r"C:\Program Files\Nox\bin\adb.exe",
+            r"C:\Program Files (x86)\Nox\bin\adb.exe",
+            r"C:\Program Files\Nox\bin\nox_adb.exe",
+            r"D:\Program Files\Nox\bin\adb.exe",
+            r"C:\Program Files\Netease\MuMuPlayerGlobal-12.0\shell\adb.exe",
+            r"C:\Program Files\Netease\MuMuPlayer-12.0\shell\adb.exe",
+            r"D:\Program Files\Netease\MuMuPlayer-12.0\shell\adb.exe",
+            r"C:\Program Files (x86)\MuMu\emulator\nemu\vmonitor\bin\adb_server.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe"),
+            # macOS 模擬器
             "/Applications/BlueStacks.app/Contents/MacOS/hd-adb",
             "/Applications/BlueStacks Air multi-instance manager.app/Contents/MacOS/hd-adb",
             # MuMu 模擬器
@@ -144,9 +463,13 @@ class BaseballBot:
             os.path.expanduser("~/Library/Android/sdk/platform-tools/adb")
         ]
 
+        which_adb = shutil.which("adb.exe") or shutil.which("adb")
+        if which_adb and which_adb not in candidate_paths:
+            candidate_paths.insert(0, which_adb)
+
         found_adb = None
         for path in candidate_paths:
-            if os.path.exists(path) and os.access(path, os.X_OK):
+            if os.path.exists(path) and (sys.platform == "win32" or os.access(path, os.X_OK)):
                 found_adb = path
                 break
 
@@ -154,12 +477,17 @@ class BaseballBot:
             self.adb_bin_path = found_adb
             self._log(f"找到模擬器 ADB 工具: {found_adb}")
             try:
-                # 啟動 ADB server 並抓取設備
-                subprocess.run([found_adb, "start-server"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
-                # 嘗試常見端口連線 (BlueStacks / 雷電 5554/5555, 夜神 62001, MuMu 7555/16384)
-                for port in [5554, 5555, 62001, 7555, 16384]:
-                    subprocess.run([found_adb, "connect", f"127.0.0.1:{port}"],
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+                if sys.platform == "win32":
+                    # Windows: 透過 cmd.exe /c 執行 devices 命令，自動拉起背景 daemon 且避免 PIPE 阻斷
+                    p = subprocess.Popen(['cmd.exe', '/c', found_adb, 'devices'])
+                    p.wait(timeout=15)
+                else:
+                    # 啟動 ADB server 並抓取設備
+                    subprocess.run([found_adb, "start-server"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+                    # 嘗試常見端口連線 (BlueStacks / 雷電 5554/5555, 夜神 62001, MuMu 7555/16384)
+                    for port in [5554, 5555, 62001, 7555, 16384]:
+                        subprocess.run([found_adb, "connect", f"127.0.0.1:{port}"],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
             except Exception as e:
                 self._log(f"啟動 ADB Server 時發生警告: {e}", "WARNING")
             return found_adb
@@ -249,7 +577,8 @@ class BaseballBot:
                 if adb_bin and current_serial:
                     try:
                         cmd = [adb_bin, "-s", current_serial, "exec-out", "screencap", "-p"]
-                        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+                        kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+                        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, **kwargs)
                         if proc.returncode == 0 and len(proc.stdout) > 100:
                             raw_png = proc.stdout
                     except Exception as sub_e:
@@ -280,6 +609,9 @@ class BaseballBot:
         self._log("截圖失敗：連續 3 次重試後仍無法從裝置取得畫面緩衝區", "ERROR")
         return None
 
+    # 別名相容
+    get_screenshot = capture_screen
+
     def scan_text(self, screen_bgr: np.ndarray) -> List[Dict[str, Any]]:
         """使用 RapidOCR 辨識畫面中的文字，支援 ROI 範圍裁切加速 (用完即刪、即時釋放臨時緩衝區)"""
         h, w = screen_bgr.shape[:2]
@@ -306,6 +638,11 @@ class BaseballBot:
         parsed_boxes = []
         if ocr_result:
             for box, text, score in ocr_result:
+                clean_t = text.strip()
+                # 語言過濾：若不符合勾選語言則過濾 (杜絕雜訊與未選語言)
+                if not self.is_text_allowed(clean_t):
+                    continue
+
                 pts = np.array(box, dtype=np.int32)
                 pts[:, 0] += offset_x
                 pts[:, 1] += offset_y
@@ -315,13 +652,27 @@ class BaseballBot:
                 box_w = int(np.max(pts[:, 0]) - np.min(pts[:, 0]))
                 box_h = int(np.max(pts[:, 1]) - np.min(pts[:, 1]))
 
-                parsed_boxes.append({
-                    "text": text.strip(),
+                # 若 OCR 恰好辨識到特殊符號，打上標記
+                sym_tag = None
+                if clean_t in ("✓", "✔", "√"):
+                    sym_tag = "check"
+                    clean_t = "[打勾]"
+                elif clean_t in ("✕", "✖", "×", "X", "x") and box_w <= 90:
+                    aspect = box_w / max(1, box_h)
+                    if 0.65 <= aspect <= 1.5:
+                        sym_tag = "cross"
+                        clean_t = "[叉叉]"
+
+                item = {
+                    "text": clean_t,
                     "score": float(score),
                     "center": (cx, cy),
                     "size": (box_w, box_h),
                     "box": pts
-                })
+                }
+                if sym_tag:
+                    item["symbol"] = sym_tag
+                parsed_boxes.append(item)
 
         # 【特色增強】：藍底/深底白色按鈕專屬超對比度補檢
         # 遊戲中結算、確認按鈕常為深藍底白字，常規 OCR 容易因邊緣對比度不足或解析度微縮漏檢
@@ -366,7 +717,7 @@ class BaseballBot:
                     if btn_res:
                         for box, b_text, b_score in btn_res:
                             clean_t = b_text.strip()
-                            if not clean_t:
+                            if not clean_t or not self.is_text_allowed(clean_t):
                                 continue
                             real_pts = np.array([
                                 [bx + offset_x, by + offset_y],
@@ -389,6 +740,29 @@ class BaseballBot:
             if is_sub_slice:
                 del img_for_ocr
 
+        # 【特色增強】：特殊圖案 (打勾、叉叉/關閉) 視覺偵測與融合
+        try:
+            symbols = self.detect_symbols(screen_bgr, target_type="all")
+            for sym_item in symbols:
+                scx, scy = sym_item["center"]
+                matched_exist = None
+                for exist in parsed_boxes:
+                    ecx, ecy = exist["center"]
+                    if abs(ecx - scx) < 22 and abs(ecy - scy) < 22:
+                        matched_exist = exist
+                        break
+                if matched_exist:
+                    # 如果現有 OCR 框僅辨識出 V、X、x、r、1、7 等單一模糊字元，升級為明確符號
+                    ex_t = matched_exist.get("text", "")
+                    if ex_t in ("V", "v", "X", "x", "r", "1", "7", "+", "-") or not matched_exist.get("symbol"):
+                        matched_exist["text"] = sym_item["text"]
+                        matched_exist["symbol"] = sym_item["symbol"]
+                        matched_exist["score"] = max(matched_exist["score"], sym_item["score"])
+                else:
+                    parsed_boxes.append(sym_item)
+        except Exception:
+            pass
+
         return parsed_boxes
 
     # =========================================================================
@@ -400,6 +774,11 @@ class BaseballBot:
         for ch in [" ", "\t", "\n", "\r", "　", "，", ",", "。", ".", "！", "!", "？", "?", "-", "_", ":", "："]:
             s = s.replace(ch, "")
         s = s.strip().upper()
+        # 符號正規化 (打勾與叉叉)
+        for sym in ["✔", "√"]:
+            s = s.replace(sym, "✓")
+        for sym in ["✖", "×"]:
+            s = s.replace(sym, "✕")
         # 常見遊戲字詞繁簡歸一化 (使「確定」與「确定」、「下一頁」與「下一页」能雙向精確對應)
         s = s.translate(str.maketrans({
             "確": "确", "頁": "页", "認": "认", "點": "点", "開": "开",
@@ -413,13 +792,20 @@ class BaseballBot:
         """
         多重文字比對機制（已放寬空白與標點干擾）：
         1. 原文精確比對：若 target_kw 在 recognized_text 中，直接判定為精確命中 (1.0)。
-        2. 去除空白/標點精確比對：處理 OCR 中間誤插入空格（如 "開 始" vs "開始"）。
-        3. 滑動視窗模糊比對：使用 difflib.SequenceMatcher，相似度 >= 0.70 視為命中。
+        2. 特殊圖案對齊：支援 [打勾]、✓、[叉叉]、✕、X 之直接對應。
+        3. 去除空白/標點精確比對：處理 OCR 中間誤插入空格（如 "開 始" vs "開始"）。
+        4. 滑動視窗模糊比對：使用 difflib.SequenceMatcher，相似度 >= 0.70 視為命中。
         """
         kw = target_kw.strip()
         rec = recognized_text.strip()
         if not kw or not rec:
             return False, 0.0
+
+        # 特殊符號優先對齊
+        if kw in ("[打勾]", "✓") and (rec in ("[打勾]", "✓", "✔", "√") or "[打勾]" in rec):
+            return True, 1.0
+        if kw in ("[叉叉]", "✕", "X", "x") and (rec in ("[叉叉]", "✕", "✖", "×", "X", "x") or "[叉叉]" in rec):
+            return True, 1.0
 
         clean_kw = self._clean_str(kw)
         clean_rec = self._clean_str(rec)
@@ -703,7 +1089,14 @@ class BaseballBot:
         else:
             exclude_keywords = []
 
-        if not keywords or not detected_items:
+        target_type = str(step.get("target_type", "📝 僅文字"))
+        is_check = ("打勾" in target_type or "check" in target_type.lower())
+        is_cross = ("叉叉" in target_type or "cross" in target_type.lower() or "關閉" in target_type)
+        is_symbol_target = is_check or is_cross
+
+        if not detected_items:
+            return None
+        if not keywords and not is_symbol_target:
             return None
 
         if screen_shape:
@@ -731,6 +1124,26 @@ class BaseballBot:
             rx1, ry1, rx2, ry2 = 0, 0, img_w, img_h
 
         roi_box = (rx1, ry1, rx2, ry2)
+
+        # 0. 特殊圖案比對 (打勾 ✓ / 叉叉 ✕)
+        if is_check or is_cross:
+            for item in detected_items:
+                if item["score"] < max(0.50, self.confidence_threshold - 0.10):
+                    continue
+                cx, cy = item["center"]
+                if not (rx1 <= cx <= rx2 and ry1 <= cy <= ry2):
+                    continue
+                is_ex, _ = self._is_text_excluded(item, exclude_keywords, detected_items, roi_box)
+                if is_ex:
+                    continue
+                sym = item.get("symbol")
+                txt = item.get("text", "")
+                if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
+                    tx, ty = self._calc_action_coord(action, item, step, (img_h, img_w))
+                    return item["text"], tx, ty, item["score"], item["box"], 1.0
+                if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
+                    tx, ty = self._calc_action_coord(action, item, step, (img_h, img_w))
+                    return item["text"], tx, ty, item["score"], item["box"], 1.0
 
         # 第一階段：精確關鍵字比對 (Exact Match)
         for kw in keywords:
@@ -895,6 +1308,32 @@ class BaseballBot:
                 rx1, ry1, rx2, ry2 = 0, 0, img_w, img_h
 
             roi_box = (rx1, ry1, rx2, ry2)
+
+            target_type = str(step.get("target_type", "📝 僅文字"))
+            is_check = ("打勾" in target_type or "check" in target_type.lower())
+            is_cross = ("叉叉" in target_type or "cross" in target_type.lower() or "關閉" in target_type)
+
+            # 特殊圖案比對 (打勾 ✓ / 叉叉 ✕)
+            if is_check or is_cross:
+                for item in detected_items:
+                    if item["score"] < max(0.50, self.confidence_threshold - 0.10):
+                        continue
+                    cx, cy = item["center"]
+                    if not (rx1 <= cx <= rx2 and ry1 <= cy <= ry2):
+                        continue
+                    is_ex, _ = self._is_text_excluded(item, exclude_keywords, detected_items, roi_box)
+                    if is_ex:
+                        continue
+                    sym = item.get("symbol")
+                    txt = item.get("text", "")
+                    if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
+                        action = step.get("action", "click_text")
+                        tx, ty = self._calc_action_coord(action, item, step, (img_h, img_w))
+                        return step, item["text"], tx, ty, item["score"]
+                    if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
+                        action = step.get("action", "click_text")
+                        tx, ty = self._calc_action_coord(action, item, step, (img_h, img_w))
+                        return step, item["text"], tx, ty, item["score"]
 
             for kw in keywords:
                 for item in detected_items:

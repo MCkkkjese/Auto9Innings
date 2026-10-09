@@ -3,7 +3,7 @@
   "interval": 0.4,
   "confidence": 0.4,
   "idle_strategy": "快速跳過",
-  "auto_refresh": true,
+  "auto_refresh": false,
   "watchdog": {
     "enabled": false,
     "seconds": 60
