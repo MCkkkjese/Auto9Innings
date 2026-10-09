@@ -15,73 +15,267 @@
   },
   "blocks": [
     {
-      "type": "tap_coord",
-      "name": "快速進行",
+      "type": "multi_tap",
+      "name": "連續點擊 #1",
       "enabled": true,
       "params": {
-        "x": 240,
-        "y": 700,
-        "delay": 1.5,
-        "repeat": 1
+        "x": 960,
+        "y": 540,
+        "count": 10,
+        "interval": 0.3,
+        "stop_mode": "無 (僅點滿次數)",
+        "stop_keywords": "確認, 確定, 完成, 上限",
+        "check_every": 1,
+        "delay_after": 0.5
       }
     },
     {
-      "type": "tap_coord",
-      "name": "自動比賽",
+      "type": "loop",
+      "name": "迴圈容器 #2",
       "enabled": true,
       "params": {
-        "x": 1060,
-        "y": 831,
-        "delay": 1.5,
-        "repeat": 1
-      }
-    },
-    {
-      "type": "tap_coord",
-      "name": "13場比賽",
-      "enabled": true,
-      "params": {
-        "x": 1148,
-        "y": 391,
-        "delay": 1.5,
-        "repeat": 1
+        "stop_mode": "依指定次數",
+        "count": 3,
+        "keywords": "",
+        "check_timing": "每輪開始與結束",
+        "delay_after": 0.5,
+        "inner_blocks": []
       }
     },
     {
       "type": "detect_click",
-      "name": "比賽結果",
+      "name": "等待並點擊 #3",
       "enabled": true,
       "params": {
         "target_type": "📝 僅文字",
-        "keywords": "比賽結果",
+        "keywords": "確認, 確定",
         "timeout": 10,
-        "click_mode": "custom_coord",
-        "custom_x": 788,
-        "custom_y": 797,
+        "click_mode": "click_text",
+        "custom_x": 960,
+        "custom_y": 540,
         "delay": 1.5,
         "on_timeout": "continue"
       }
     },
     {
-      "type": "tap_coord",
-      "name": "點NEXT",
+      "type": "loop",
+      "name": "迴圈容器 #4",
       "enabled": true,
       "params": {
-        "x": 1388,
-        "y": 817,
+        "stop_mode": "依指定次數",
+        "count": 3,
+        "keywords": "",
+        "check_timing": "每輪開始與結束",
+        "delay_after": 0.5,
+        "inner_blocks": []
+      }
+    },
+    {
+      "type": "wait_condition",
+      "name": "等待條件達成 #5",
+      "enabled": true,
+      "params": {
+        "cond_mode": "出現 (Wait Appear)",
+        "target_type": "📝 僅文字",
+        "keywords": "確認, 確定",
+        "interval": 1.0,
+        "timeout": 30,
+        "delay_after": 0.5,
+        "on_timeout": "continue"
+      }
+    },
+    {
+      "type": "wait_sec",
+      "name": "等待延遲 #6",
+      "enabled": true,
+      "params": {
+        "seconds": 3.0
+      }
+    },
+    {
+      "type": "swipe",
+      "name": "滑動螢幕 #7",
+      "enabled": true,
+      "params": {
+        "x1": 1500,
+        "y1": 540,
+        "x2": 400,
+        "y2": 540,
+        "duration_ms": 400,
+        "delay": 1.0
+      }
+    },
+    {
+      "type": "back_key",
+      "name": "返回上一頁 #8",
+      "enabled": true,
+      "params": {
+        "delay": 1.2
+      }
+    },
+    {
+      "type": "comment",
+      "name": "備註說明 #9",
+      "enabled": true,
+      "params": {
+        "note": "此處為備註說明文字，執行時不執行任何操作"
+      }
+    },
+    {
+      "type": "send_telegram",
+      "name": "發送 Telegram #10",
+      "enabled": true,
+      "params": {
+        "message": "任務步驟執行完成！",
+        "attach_screenshot": true,
+        "use_custom": false,
+        "custom_token": "",
+        "custom_chat_id": "",
+        "delay_after": 0.5
+      }
+    },
+    {
+      "type": "tap_coord",
+      "name": "點擊座標 #11",
+      "enabled": true,
+      "params": {
+        "x": 960,
+        "y": 540,
         "delay": 1.5,
         "repeat": 1
       }
     },
     {
-      "type": "tap_coord",
-      "name": "取消快速進行",
+      "type": "multi_tap",
+      "name": "連續點擊 #12",
       "enabled": true,
       "params": {
-        "x": 245,
-        "y": 697,
+        "x": 960,
+        "y": 540,
+        "count": 10,
+        "interval": 0.3,
+        "stop_mode": "無 (僅點滿次數)",
+        "stop_keywords": "確認, 確定, 完成, 上限",
+        "check_every": 1,
+        "delay_after": 0.5
+      }
+    },
+    {
+      "type": "detect_click",
+      "name": "等待並點擊 #13",
+      "enabled": true,
+      "params": {
+        "target_type": "📝 僅文字",
+        "keywords": "確認, 確定",
+        "timeout": 10,
+        "click_mode": "click_text",
+        "custom_x": 960,
+        "custom_y": 540,
         "delay": 1.5,
-        "repeat": 1
+        "on_timeout": "continue"
+      }
+    },
+    {
+      "type": "branch_if",
+      "name": "文字條件分支 #14",
+      "enabled": true,
+      "params": {
+        "timeout": 8,
+        "delay": 1.5,
+        "else_action": "skip",
+        "else_x": 960,
+        "else_y": 950,
+        "branches": [
+          {
+            "name": "If",
+            "keywords": "勝利, 挑戰成功",
+            "x": 1650,
+            "y": 950
+          },
+          {
+            "name": "Else If 1",
+            "keywords": "失敗, 挑戰失敗",
+            "x": 960,
+            "y": 950
+          }
+        ]
+      }
+    },
+    {
+      "type": "loop",
+      "name": "迴圈容器 #15",
+      "enabled": true,
+      "params": {
+        "stop_mode": "依指定次數",
+        "count": 3,
+        "keywords": "",
+        "check_timing": "每輪開始與結束",
+        "delay_after": 0.5,
+        "inner_blocks": []
+      }
+    },
+    {
+      "type": "wait_condition",
+      "name": "等待條件達成 #16",
+      "enabled": true,
+      "params": {
+        "cond_mode": "出現 (Wait Appear)",
+        "target_type": "📝 僅文字",
+        "keywords": "確認, 確定",
+        "interval": 1.0,
+        "timeout": 30,
+        "delay_after": 0.5,
+        "on_timeout": "continue"
+      }
+    },
+    {
+      "type": "wait_sec",
+      "name": "等待延遲 #17",
+      "enabled": true,
+      "params": {
+        "seconds": 3.0
+      }
+    },
+    {
+      "type": "swipe",
+      "name": "滑動螢幕 #18",
+      "enabled": true,
+      "params": {
+        "x1": 1500,
+        "y1": 540,
+        "x2": 400,
+        "y2": 540,
+        "duration_ms": 400,
+        "delay": 1.0
+      }
+    },
+    {
+      "type": "back_key",
+      "name": "返回上一頁 #19",
+      "enabled": true,
+      "params": {
+        "delay": 1.2
+      }
+    },
+    {
+      "type": "comment",
+      "name": "備註說明 #20",
+      "enabled": true,
+      "params": {
+        "note": "此處為備註說明文字，執行時不執行任何操作"
+      }
+    },
+    {
+      "type": "send_telegram",
+      "name": "發送 Telegram #21",
+      "enabled": true,
+      "params": {
+        "message": "任務步驟執行完成！",
+        "attach_screenshot": true,
+        "use_custom": false,
+        "custom_token": "",
+        "custom_chat_id": "",
+        "delay_after": 0.5
       }
     }
   ]

@@ -162,7 +162,7 @@ class BaseballBotGUI:
 
         # 頁籤 1: 🏆 聯賽自動刷關 (維持所有原有功能與版面)
         tab_league = ttk.Frame(self.notebook)
-        self.notebook.add(tab_league, text="  🏆 聯賽自動刷關  ")
+        self.notebook.add(tab_league, text="  聯賽自動刷  ")
 
         body = ttk.PanedWindow(tab_league, orient=tk.HORIZONTAL)
         body.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
@@ -179,12 +179,12 @@ class BaseballBotGUI:
 
         # 頁籤 2: ⚡ 即時打擊輔助 (手動打擊反應輔助)
         tab_batting = ttk.Frame(self.notebook)
-        self.notebook.add(tab_batting, text="  ⚡ 即時打擊輔助  ")
+        self.notebook.add(tab_batting, text="  即時打擊輔助  ")
         self.batting_tab = BattingAssistTab(tab_batting, bot_instance=self.bot, gui_parent=self, log_callback=self.log_message)
 
         # 頁籤 3: 📋 任務清單 (Scratch 積木式日常任務編程)
         tab_tasks = ttk.Frame(self.notebook)
-        self.notebook.add(tab_tasks, text="  📋 任務清單  ")
+        self.notebook.add(tab_tasks, text="  任務清單  ")
         self.task_tab = TaskFlowTab(tab_tasks, bot_instance=self.bot, gui_parent=self, log_callback=self.log_message)
         self.bot.set_task_flow_handler(self._execute_task_flow_for_event)
 
@@ -216,10 +216,10 @@ class BaseballBotGUI:
 
         tools = ttk.Frame(box)
         tools.pack(fill=tk.X, pady=(0, 6))
-        ttk.Button(tools, text="⭐ ＋優先", command=self.on_add_priority_step).pack(side=tk.LEFT)
-        ttk.Button(tools, text="＋ 步驟", command=self.on_add_empty_step).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(tools, text="📋 ＋任務跳轉", command=self.on_add_task_trigger_step).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(tools, text="範本", width=5, command=self.on_reset_baseball_template).pack(side=tk.RIGHT)
+        ttk.Button(tools, text="＋ 優先動作", command=self.on_add_priority_step).pack(side=tk.LEFT)
+        ttk.Button(tools, text="＋ 一般步驟", command=self.on_add_empty_step).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(tools, text="＋ 任務跳轉", command=self.on_add_task_trigger_step).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(tools, text="預設範本", width=7, command=self.on_reset_baseball_template).pack(side=tk.RIGHT)
         ttk.Button(tools, text="載入", width=5, command=self.on_load_config_manual).pack(side=tk.RIGHT, padx=2)
         ttk.Button(tools, text="存檔", width=5, command=self.on_save_config_manual).pack(side=tk.RIGHT)
 
@@ -251,7 +251,7 @@ class BaseballBotGUI:
 
         hdr_p = tk.Frame(self.frame_priority_section)
         hdr_p.pack(fill=tk.X, pady=(2, 2))
-        tk.Label(hdr_p, text="⭐ 優先動作 (依序判定，符合立即中斷)", font=("Arial", 11, "bold"), fg="#b45309").pack(side=tk.LEFT)
+        tk.Label(hdr_p, text="優先動作（由上而下判定，符合即中斷）", font=("Arial", 11, "bold"), fg="#b45309").pack(side=tk.LEFT)
         self.lbl_p_count = tk.Label(hdr_p, text="(0)", font=("Arial", 10), fg="#9ca3af")
         self.lbl_p_count.pack(side=tk.LEFT, padx=4)
 
@@ -260,7 +260,7 @@ class BaseballBotGUI:
 
         self.lbl_no_priority = tk.Label(
             self.frame_priority_section,
-            text="（尚無優先動作，點擊上方「⭐ ＋優先」新增）",
+            text="（尚無優先動作，點擊上方「＋ 優先動作」新增）",
             font=("Arial", 10),
             fg="#9ca3af"
         )
@@ -272,7 +272,7 @@ class BaseballBotGUI:
 
         hdr_n = tk.Frame(self.frame_normal_section)
         hdr_n.pack(fill=tk.X, pady=(2, 2))
-        tk.Label(hdr_n, text="📋 一般步驟 (依序循環執行)", font=("Arial", 11, "bold"), fg="#2563eb").pack(side=tk.LEFT)
+        tk.Label(hdr_n, text="一般步驟（依序循環執行）", font=("Arial", 11, "bold"), fg="#2563eb").pack(side=tk.LEFT)
         self.lbl_n_count = tk.Label(hdr_n, text="(0)", font=("Arial", 10), fg="#9ca3af")
         self.lbl_n_count.pack(side=tk.LEFT, padx=4)
 
@@ -317,7 +317,7 @@ class BaseballBotGUI:
 
     def _renumber_priority_steps(self):
         for i, p in enumerate(self.priority_steps_list, start=1):
-            p["lbl_num"].config(text=f"⭐{i}")
+            p["lbl_num"].config(text=f"P{i}")
         cnt = len(self.priority_steps_list)
         if hasattr(self, "lbl_p_count"):
             self.lbl_p_count.config(text=f"({cnt})")
@@ -417,10 +417,10 @@ class BaseballBotGUI:
         head = tk.Frame(card, bg="#fffbeb")
         head.pack(fill=tk.X)
 
-        handle = tk.Label(head, text="⭐", fg=color, bg="#fffbeb", cursor="fleur", font=("Arial", 13, "bold"))
+        handle = tk.Label(head, text="☰", fg=color, bg="#fffbeb", cursor="fleur", font=("Arial", 13, "bold"))
         handle.pack(side=tk.LEFT, padx=(0, 2))
         ttk.Checkbutton(head, variable=p["enabled"]).pack(side=tk.LEFT)
-        lbl_num = tk.Label(head, text=f"⭐{len(self.priority_steps_list)}", fg=color, bg="#fffbeb", font=("Arial", 12, "bold"), width=3)
+        lbl_num = tk.Label(head, text=f"P{len(self.priority_steps_list)}", fg=color, bg="#fffbeb", font=("Arial", 12, "bold"), width=3)
         lbl_num.pack(side=tk.LEFT)
         ttk.Entry(head, textvariable=p["name"], width=9).pack(side=tk.LEFT, padx=(2, 4))
         
@@ -438,23 +438,17 @@ class BaseballBotGUI:
 
         ttk.Button(head, text="✕", width=2, command=lambda: self.on_delete_priority_step(p)).pack(side=tk.RIGHT)
         btn_toggle = ttk.Button(head, text="▸", width=2, command=lambda: p["expanded"].set(not p["expanded"].get()))
-        btn_toggle.pack(side=tk.RIGHT, padx=(4, 2))
+        btn_toggle.pack(side=tk.RIGHT, padx=(2, 2))
+        def _add_p_sym(tag):
+            k = p["keywords"].get().strip()
+            p["keywords"].set(f"{k}, {tag}" if k else tag)
+        ttk.Button(head, text="✓", width=2, command=lambda: _add_p_sym("[打勾]")).pack(side=tk.RIGHT, padx=1)
+        ttk.Button(head, text="✕", width=2, command=lambda: _add_p_sym("[叉叉]")).pack(side=tk.RIGHT, padx=1)
         ttk.Entry(head, textvariable=p["keywords"]).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         lbl_sum = tk.Label(card, fg="#92400e", bg="#fffbeb", font=("Arial", 10), anchor="w")
 
         detail = tk.Frame(card, bg="#fffbeb")
-
-        # 目標類型設定行 (詳細設定中支援快速加入符號)
-        rt = tk.Frame(detail, bg="#fffbeb")
-        rt.pack(fill=tk.X, pady=(4, 0))
-        tk.Label(rt, text="目標類型", bg="#fffbeb", fg="#78350f", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
-        ttk.Combobox(rt, textvariable=p["target_type"], values=TARGET_TYPES, state="readonly", width=12).pack(side=tk.LEFT, padx=(4, 8))
-        def _add_p_sym(tag):
-            k = p["keywords"].get().strip()
-            p["keywords"].set(f"{k}, {tag}" if k else tag)
-        ttk.Button(rt, text="＋打勾 ✓", width=7, command=lambda: _add_p_sym("[打勾]")).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(rt, text="＋叉叉 ✕", width=7, command=lambda: _add_p_sym("[叉叉]")).pack(side=tk.LEFT)
 
         ra = tk.Frame(detail, bg="#fffbeb")
         ra.pack(fill=tk.X, pady=(6, 0))
@@ -489,12 +483,12 @@ class BaseballBotGUI:
 
         rc = tk.Frame(detail, bg="#fffbeb")
         rc.pack(fill=tk.X, pady=(4, 0))
-        tk.Label(rc, text="🚫 排除", bg="#fffbeb", fg="#dc2626", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        tk.Label(rc, text="排除字詞", bg="#fffbeb", fg="#dc2626", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
         ttk.Entry(rc, textvariable=p["exclude_keywords"]).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
 
         rb = tk.Frame(detail, bg="#fffbeb")
         rb.pack(fill=tk.X, pady=(4, 0))
-        ttk.Checkbutton(rb, text="條件持續時重複執行 (while 條件直至字元消失)", variable=p["while_condition"]).pack(side=tk.LEFT)
+        ttk.Checkbutton(rb, text="條件存在時重複執行（直到消失）", variable=p["while_condition"]).pack(side=tk.LEFT)
 
         rd = tk.Frame(detail, bg="#fffbeb")
         rd.pack(fill=tk.X, pady=(6, 0))
@@ -523,7 +517,7 @@ class BaseballBotGUI:
         # Telegram 通知列 (動作成功時觸發)
         rg = tk.Frame(detail, bg="#fffbeb")
         rg.pack(fill=tk.X, pady=(4, 0))
-        ttk.Checkbutton(rg, text="📱 成功後發送 Telegram 通知", variable=p["tg_enabled"]).pack(side=tk.LEFT)
+        ttk.Checkbutton(rg, text="成功後發送 Telegram 通知", variable=p["tg_enabled"]).pack(side=tk.LEFT)
 
         rh = tk.Frame(detail, bg="#fffbeb")
         tk.Label(rh, text="訊息內容", bg="#fffbeb", fg="#0284c7", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(22, 4))
@@ -534,7 +528,7 @@ class BaseballBotGUI:
 
         row_tf1 = tk.Frame(box_task_flow, bg="#f5f3ff")
         row_tf1.pack(fill=tk.X, pady=(1, 2))
-        tk.Label(row_tf1, text="📋 任務跳轉模式", bg="#f5f3ff", fg="#6d28d9", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        tk.Label(row_tf1, text="跳轉目標", bg="#f5f3ff", fg="#6d28d9", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
         combo_task_mode = ttk.Combobox(
             row_tf1,
             textvariable=p["task_target_mode"],
@@ -567,10 +561,10 @@ class BaseballBotGUI:
 
         row_tf2 = tk.Frame(box_task_flow, bg="#f5f3ff")
         row_tf2.pack(fill=tk.X, pady=(2, 1))
-        tk.Label(row_tf2, text="⏳ 觸發冷卻時間", bg="#f5f3ff", fg="#6d28d9").pack(side=tk.LEFT)
+        tk.Label(row_tf2, text="冷卻時間", bg="#f5f3ff", fg="#6d28d9").pack(side=tk.LEFT)
         ttk.Spinbox(row_tf2, from_=5, to=3600, increment=10, textvariable=p["task_cooldown"], width=5).pack(side=tk.LEFT, padx=(4, 2))
-        tk.Label(row_tf2, text="秒 (防畫面未切換連續觸發)", bg="#f5f3ff", fg="#6b7280", font=("Arial", 9)).pack(side=tk.LEFT)
-        btn_refresh_choices = ttk.Button(row_tf2, text="🔄 刷新選項", width=8, command=_update_p_task_items)
+        tk.Label(row_tf2, text="秒（避免重複觸發）", bg="#f5f3ff", fg="#6b7280", font=("Arial", 9)).pack(side=tk.LEFT)
+        btn_refresh_choices = ttk.Button(row_tf2, text="重新整理", width=9, command=_update_p_task_items)
         btn_refresh_choices.pack(side=tk.RIGHT)
 
         def summary() -> str:
@@ -694,7 +688,7 @@ class BaseballBotGUI:
             p["frame"].pack_forget()
         for i, p in enumerate(self.priority_steps_list, start=1):
             p["frame"].pack(fill=tk.X, pady=4, padx=4)
-            p["lbl_num"].config(text=f"⭐{i}")
+            p["lbl_num"].config(text=f"P{i}")
         cnt = len(self.priority_steps_list)
         if hasattr(self, "lbl_p_count"):
             self.lbl_p_count.config(text=f"({cnt})")
@@ -749,14 +743,14 @@ class BaseballBotGUI:
     def _build_advanced_panel(self, parent):
         hdr = ttk.Frame(parent)
         hdr.pack(fill=tk.X, pady=(6, 0))
-        self.btn_adv = ttk.Button(hdr, text="⚙ 進階 ▸", command=self._toggle_advanced)
+        self.btn_adv = ttk.Button(hdr, text="進階設定 ▸", command=self._toggle_advanced)
         self.btn_adv.pack(side=tk.LEFT)
         self._adv_hdr = hdr
 
         f = ttk.Frame(parent, padding=(6, 6, 6, 0))
         self.adv_frame = f
 
-        ttk.Label(f, text="掃描間隔(秒)").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Label(f, text="掃描間隔").grid(row=0, column=0, sticky="w", pady=2)
         row_speed = ttk.Frame(f)
         row_speed.grid(row=0, column=1, sticky="w", padx=8)
 
@@ -772,7 +766,7 @@ class BaseballBotGUI:
 
         ent_speed = ttk.Entry(row_speed, textvariable=self.var_interval, width=5)
         ent_speed.pack(side=tk.LEFT)
-        ttk.Label(row_speed, text="秒 (0為極限無延遲)", font=("Arial", 9), foreground="#6b7280").pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(row_speed, text="秒（0 = 不延遲）", font=("Arial", 9), foreground="#6b7280").pack(side=tk.LEFT, padx=(4, 0))
 
         ttk.Label(f, text="辨識門檻").grid(row=1, column=0, sticky="w", pady=2)
         ttk.Scale(
@@ -792,7 +786,7 @@ class BaseballBotGUI:
 
         row_lang_hdr = ttk.Frame(f)
         row_lang_hdr.grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
-        tk.Label(row_lang_hdr, text="🔤 辨識語言過濾 (降低誤判率)", font=("Arial", 9, "bold"), fg="#0284c7").pack(side=tk.LEFT)
+        tk.Label(row_lang_hdr, text="辨識語言（減少誤判）", font=("Arial", 9, "bold"), fg="#0284c7").pack(side=tk.LEFT)
 
         row_lang_boxes = ttk.Frame(f)
         row_lang_boxes.grid(row=5, column=0, columnspan=3, sticky="w", pady=(2, 2))
@@ -802,7 +796,7 @@ class BaseballBotGUI:
 
         lbl_lang_tip = ttk.Label(
             f,
-            text="💡 提示：若遊戲為繁體版，建議關閉「簡體中文」，可完全杜絕背景雜訊被誤判為簡體字。",
+            text="提示：遊戲為繁體版時，建議關閉「簡體中文」以減少誤判。",
             font=("Microsoft JhengHei", 8),
             foreground="#6b7280"
         )
@@ -813,7 +807,7 @@ class BaseballBotGUI:
         
         row_it = ttk.Frame(f)
         row_it.grid(row=8, column=0, columnspan=3, sticky="w", pady=2)
-        ttk.Checkbutton(row_it, text="⏳ 等待時背景連點 (比賽進行中連點跳過)", variable=self.var_idle_tap_enabled).pack(side=tk.LEFT)
+        ttk.Checkbutton(row_it, text="等待時自動連點（跳過比賽動畫）", variable=self.var_idle_tap_enabled).pack(side=tk.LEFT)
 
         row_it_detail = ttk.Frame(f)
         row_it_detail.grid(row=9, column=0, columnspan=3, sticky="w", pady=2)
@@ -838,20 +832,20 @@ class BaseballBotGUI:
 
         row_wd = ttk.Frame(f)
         row_wd.grid(row=11, column=0, columnspan=3, sticky="w", pady=2)
-        ttk.Checkbutton(row_wd, text="🔄 無動作自動重啟 (防卡死守護)", variable=self.var_watchdog_enabled).pack(side=tk.LEFT)
+        ttk.Checkbutton(row_wd, text="無動作時自動重啟（防卡死）", variable=self.var_watchdog_enabled).pack(side=tk.LEFT)
 
         row_wd_detail = ttk.Frame(f)
         row_wd_detail.grid(row=12, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Label(row_wd_detail, text="超過").pack(side=tk.LEFT)
         ttk.Spinbox(row_wd_detail, from_=10, to=1800, increment=10, textvariable=self.var_watchdog_seconds, width=5).pack(side=tk.LEFT, padx=4)
-        ttk.Label(row_wd_detail, text="秒無動作時，自動停止並重新開啟腳本").pack(side=tk.LEFT)
+        ttk.Label(row_wd_detail, text="秒無動作，自動重啟腳本").pack(side=tk.LEFT)
 
         # Telegram 通知全域設定
         ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=13, column=0, columnspan=3, sticky="ew", pady=(6, 4))
 
         row_tg_hdr = ttk.Frame(f)
         row_tg_hdr.grid(row=14, column=0, columnspan=3, sticky="w", pady=2)
-        tk.Label(row_tg_hdr, text="📱 Telegram 推播通知設定", font=("Arial", 10, "bold"), fg="#0284c7").pack(side=tk.LEFT)
+        tk.Label(row_tg_hdr, text="Telegram 通知", font=("Arial", 10, "bold"), fg="#0284c7").pack(side=tk.LEFT)
         ttk.Button(row_tg_hdr, text="發送測試訊息", width=12, command=self.on_test_telegram_message).pack(side=tk.RIGHT, padx=4)
 
         row_tg_1 = ttk.Frame(f)
@@ -886,10 +880,10 @@ class BaseballBotGUI:
         self._adv_open = not self._adv_open
         if self._adv_open:
             self.adv_frame.pack(fill=tk.X, after=self._adv_hdr)
-            self.btn_adv.config(text="⚙ 進階 ▾")
+            self.btn_adv.config(text="進階設定 ▾")
         else:
             self.adv_frame.pack_forget()
-            self.btn_adv.config(text="⚙ 進階 ▸")
+            self.btn_adv.config(text="進階設定 ▸")
 
     def _build_preview_panel(self, parent):
         box = ttk.LabelFrame(parent, text="預覽", padding=6)
@@ -1043,7 +1037,12 @@ class BaseballBotGUI:
 
         ttk.Button(head, text="✕", width=2, command=lambda: self.on_delete_step(s)).pack(side=tk.RIGHT)
         btn_toggle = ttk.Button(head, text="▸", width=2, command=lambda: s["expanded"].set(not s["expanded"].get()))
-        btn_toggle.pack(side=tk.RIGHT, padx=(4, 2))
+        btn_toggle.pack(side=tk.RIGHT, padx=(2, 2))
+        def _add_s_sym(tag):
+            k = s["keywords"].get().strip()
+            s["keywords"].set(f"{k}, {tag}" if k else tag)
+        ttk.Button(head, text="✓", width=2, command=lambda: _add_s_sym("[打勾]")).pack(side=tk.RIGHT, padx=1)
+        ttk.Button(head, text="✕", width=2, command=lambda: _add_s_sym("[叉叉]")).pack(side=tk.RIGHT, padx=1)
         ttk.Entry(head, textvariable=s["keywords"]).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # ---- 收合時的摘要 ----
@@ -1051,17 +1050,6 @@ class BaseballBotGUI:
 
         # ---- 展開後的細部設定 ----
         detail = tk.Frame(card)
-
-        # 目標類型設定行
-        rt = tk.Frame(detail)
-        rt.pack(fill=tk.X, pady=(6, 0))
-        ttk.Label(rt, text="目標類型:").pack(side=tk.LEFT)
-        ttk.Combobox(rt, textvariable=s["target_type"], values=TARGET_TYPES, state="readonly", width=12).pack(side=tk.LEFT, padx=(4, 8))
-        def _add_s_sym(tag):
-            k = s["keywords"].get().strip()
-            s["keywords"].set(f"{k}, {tag}" if k else tag)
-        ttk.Button(rt, text="＋打勾 ✓", width=7, command=lambda: _add_s_sym("[打勾]")).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(rt, text="＋叉叉 ✕", width=7, command=lambda: _add_s_sym("[叉叉]")).pack(side=tk.LEFT)
 
         ra = tk.Frame(detail)
         ra.pack(fill=tk.X, pady=(8, 0))
@@ -1103,7 +1091,7 @@ class BaseballBotGUI:
 
         re = tk.Frame(detail)
         re.pack(fill=tk.X, pady=(6, 0))
-        ttk.Label(re, text="🚫 排除").pack(side=tk.LEFT)
+        ttk.Label(re, text="排除字詞").pack(side=tk.LEFT)
         ttk.Entry(re, textvariable=s["exclude_keywords"]).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
         rb = tk.Frame(detail)
@@ -1133,7 +1121,7 @@ class BaseballBotGUI:
         # Telegram 通知列 (動作成功時觸發)
         rtg = tk.Frame(detail)
         rtg.pack(fill=tk.X, pady=(6, 0))
-        ttk.Checkbutton(rtg, text="📱 成功後發送 Telegram 通知", variable=s["tg_enabled"]).pack(side=tk.LEFT)
+        ttk.Checkbutton(rtg, text="成功後發送 Telegram 通知", variable=s["tg_enabled"]).pack(side=tk.LEFT)
 
         rtg_msg = tk.Frame(detail)
         tk.Label(rtg_msg, text="訊息內容", fg="#0284c7", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(22, 4))
@@ -1144,7 +1132,7 @@ class BaseballBotGUI:
 
         row_tf1 = tk.Frame(box_task_flow, bg="#f5f3ff")
         row_tf1.pack(fill=tk.X, pady=(1, 2))
-        tk.Label(row_tf1, text="📋 任務跳轉模式", bg="#f5f3ff", fg="#6d28d9", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        tk.Label(row_tf1, text="跳轉目標", bg="#f5f3ff", fg="#6d28d9", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
         combo_task_mode = ttk.Combobox(
             row_tf1,
             textvariable=s["task_target_mode"],
@@ -1177,10 +1165,10 @@ class BaseballBotGUI:
 
         row_tf2 = tk.Frame(box_task_flow, bg="#f5f3ff")
         row_tf2.pack(fill=tk.X, pady=(2, 1))
-        tk.Label(row_tf2, text="⏳ 觸發冷卻時間", bg="#f5f3ff", fg="#6d28d9").pack(side=tk.LEFT)
+        tk.Label(row_tf2, text="冷卻時間", bg="#f5f3ff", fg="#6d28d9").pack(side=tk.LEFT)
         ttk.Spinbox(row_tf2, from_=5, to=3600, increment=10, textvariable=s["task_cooldown"], width=5).pack(side=tk.LEFT, padx=(4, 2))
-        tk.Label(row_tf2, text="秒 (防畫面未切換連續觸發)", bg="#f5f3ff", fg="#6b7280", font=("Arial", 9)).pack(side=tk.LEFT)
-        btn_refresh_choices = ttk.Button(row_tf2, text="🔄 刷新選項", width=8, command=_update_s_task_items)
+        tk.Label(row_tf2, text="秒（避免重複觸發）", bg="#f5f3ff", fg="#6b7280", font=("Arial", 9)).pack(side=tk.LEFT)
+        btn_refresh_choices = ttk.Button(row_tf2, text="重新整理", width=9, command=_update_s_task_items)
         btn_refresh_choices.pack(side=tk.RIGHT)
 
         def summary() -> str:
