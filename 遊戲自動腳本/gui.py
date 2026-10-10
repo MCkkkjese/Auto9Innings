@@ -818,20 +818,39 @@ class BaseballBotGUI:
         row_it_detail = ttk.Frame(f)
         row_it_detail.grid(row=9, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Label(row_it_detail, text="位置:").pack(side=tk.LEFT)
-        combo_it_area = ttk.Combobox(row_it_detail, textvariable=self.var_idle_tap_area, values=REPEAT_AREAS, state="readonly", width=10)
+        combo_it_area = ttk.Combobox(row_it_detail, textvariable=self.var_idle_tap_area, values=REPEAT_AREAS, state="readonly", width=12)
         combo_it_area.pack(side=tk.LEFT, padx=4)
 
         box_it_xy = ttk.Frame(row_it_detail)
         ttk.Label(box_it_xy, text="X:").pack(side=tk.LEFT)
         ttk.Entry(box_it_xy, textvariable=self.var_idle_tap_custom_x, width=5).pack(side=tk.LEFT, padx=(2, 4))
         ttk.Label(box_it_xy, text="Y:").pack(side=tk.LEFT)
-        ttk.Entry(box_it_xy, textvariable=self.var_idle_tap_custom_y, width=5).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Entry(box_it_xy, textvariable=self.var_idle_tap_custom_y, width=5).pack(side=tk.LEFT, padx=(2, 4))
+
+        def _fill_it_xy_from_preview():
+            cur = self.var_preview_coords.get().strip()
+            if cur and "," in cur:
+                try:
+                    px, py = [int(v.strip()) for v in cur.split(",")]
+                    self.var_idle_tap_custom_x.set(px)
+                    self.var_idle_tap_custom_y.set(py)
+                    self.log_message(f"已填入等待連點座標: ({px}, {py})")
+                except Exception:
+                    pass
+        btn_it_fill = ttk.Button(box_it_xy, text="填入游標座標", width=11, command=_fill_it_xy_from_preview)
+        btn_it_fill.pack(side=tk.LEFT, padx=(2, 0))
 
         def _refresh_it_ui(*_):
             if "自訂" in self.var_idle_tap_area.get():
                 box_it_xy.pack(side=tk.LEFT, padx=(4, 0))
             else:
                 box_it_xy.pack_forget()
+
+        self.var_idle_tap_area.trace_add("write", _refresh_it_ui)
+        self.var_idle_tap_custom_x.trace_add("write", lambda *_: self.auto_save_current_config())
+        self.var_idle_tap_custom_y.trace_add("write", lambda *_: self.auto_save_current_config())
+        self.var_idle_tap_enabled.trace_add("write", lambda *_: self.auto_save_current_config())
+        _refresh_it_ui()
 
         # 看門狗防卡死守護設定 (超時自動停止並重新開啟)
         ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=10, column=0, columnspan=3, sticky="ew", pady=(6, 4))

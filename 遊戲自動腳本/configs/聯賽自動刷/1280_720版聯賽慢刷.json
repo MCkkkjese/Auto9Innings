@@ -3,7 +3,7 @@
   "interval": 0.39,
   "confidence": 0.4,
   "idle_strategy": "快速跳過",
-  "auto_refresh": false,
+  "auto_refresh": true,
   "watchdog": {
     "enabled": false,
     "seconds": 60
@@ -14,7 +14,7 @@
   },
   "ocr_languages": {
     "tc": true,
-    "sc": false,
+    "sc": true,
     "en": true
   },
   "idle_tap": {
