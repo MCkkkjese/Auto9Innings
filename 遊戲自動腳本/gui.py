@@ -56,14 +56,17 @@ def _num(var, default, cast=float):
 
 
 class BaseballBotGUI:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, instance_id: int = 1):
         self.root = root
-        self.root.title("⚾ 棒球自動刷關")
+        self.instance_id = instance_id
+        title_suffix = f" (視窗 #{instance_id})" if instance_id > 1 else ""
+        self.root.title(f"⚾ 棒球自動刷關{title_suffix}")
         self.root.geometry("1200x780")
         self.root.minsize(1000, 640)
 
         self.config_dir = os.path.dirname(os.path.abspath(__file__))
-        self.auto_save_file = os.path.join(self.config_dir, "autosave_last_config.json")
+        save_name = "autosave_last_config.json" if instance_id == 1 else f"autosave_last_config_{instance_id}.json"
+        self.auto_save_file = os.path.join(self.config_dir, save_name)
 
         self.bot = BaseballBot(log_callback=self.log_message, on_frame_callback=self.on_bot_frame_update)
         self.worker_thread = None
@@ -185,7 +188,7 @@ class BaseballBotGUI:
         # 頁籤 3: 📋 任務清單 (Scratch 積木式日常任務編程)
         tab_tasks = ttk.Frame(self.notebook)
         self.notebook.add(tab_tasks, text="  任務清單  ")
-        self.task_tab = TaskFlowTab(tab_tasks, bot_instance=self.bot, gui_parent=self, log_callback=self.log_message)
+        self.task_tab = TaskFlowTab(tab_tasks, bot_instance=self.bot, gui_parent=self, log_callback=self.log_message, instance_id=self.instance_id)
         self.bot.set_task_flow_handler(self._execute_task_flow_for_event)
 
     def _build_topbar(self):
@@ -201,6 +204,9 @@ class BaseballBotGUI:
         self.btn_connect.pack(side=tk.LEFT)
 
         ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=12)
+
+        self.btn_new_win = ttk.Button(bar, text="＋ 開新視窗", command=self.on_open_new_window)
+        self.btn_new_win.pack(side=tk.LEFT, padx=(0, 4))
 
         self.btn_start = ttk.Button(bar, text="▶ 開始", width=8, command=self.on_start_bot, state=tk.DISABLED)
         self.btn_start.pack(side=tk.LEFT, padx=(0, 4))
@@ -2346,6 +2352,27 @@ class BaseballBotGUI:
         self.root.update()
         self.log_message("自檢報告已複製到剪貼簿")
 
+    def on_open_new_window(self):
+        """點擊「＋ 開新視窗」：開啟獨立的多開實例視窗"""
+        try:
+            # 支援獨立進程或同一行程 Toplevel
+            next_id = 2 if self.instance_id == 1 else self.instance_id + 1
+            # 優先嘗試啟動新進程，實現最乾淨的雙視窗完全隔離
+            python_bin = sys.executable
+            main_script = os.path.join(self.config_dir, "main.py")
+            if os.path.exists(main_script):
+                subprocess.Popen([python_bin, main_script, f"--instance={next_id}"])
+                self.log_message(f"已啟動新視窗 (實例 #{next_id})")
+                return
+        except Exception as e:
+            self.log_message(f"啟動新進程視窗失敗: {e}，改用內建視窗開啟...")
+
+        # 備援方案：在當前 Tk 循環中開啟獨立 Toplevel 視窗
+        new_win = tk.Toplevel(self.root)
+        next_id = 2 if self.instance_id == 1 else self.instance_id + 1
+        BaseballBotGUI(new_win, instance_id=next_id)
+        self.log_message(f"已在主程式內建立新視窗 (實例 #{next_id})")
+
     def on_close_window(self):
         self.var_auto_refresh.set(False)
         for job in (self.auto_refresh_job, self._resize_job):
@@ -2365,9 +2392,35 @@ class BaseballBotGUI:
 
 
 def main():
-    root = tk.Tk()
-    BaseballBotGUI(root)
-    root.mainloop()
+    # 檢查是否有指定 instance_id 或 --dual 參數
+    instance_id = 1
+    dual_mode = False
+    for arg in sys.argv[1:]:
+        if arg.startswith("--instance="):
+            try:
+                instance_id = int(arg.split("=")[1])
+            except ValueError:
+                instance_id = 1
+        elif arg == "--dual":
+            dual_mode = True
+
+    if dual_mode:
+        root = tk.Tk()
+        BaseballBotGUI(root, instance_id=1)
+        root.geometry("1100x720+30+30")
+
+        root2 = tk.Toplevel(root)
+        BaseballBotGUI(root2, instance_id=2)
+        root2.geometry("1100x720+500+120")
+
+        root.mainloop()
+    else:
+        root = tk.Tk()
+        if instance_id > 1:
+            # 錯開第二個視窗的初始位置
+            root.geometry("1200x780+450+100")
+        BaseballBotGUI(root, instance_id=instance_id)
+        root.mainloop()
 
 
 if __name__ == "__main__":

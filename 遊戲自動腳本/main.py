@@ -19,7 +19,6 @@ if __name__ == "__main__":
         bot = FastReactiveBot()
         bot.run()
     else:
-        
-        # 預設啟動圖形化介面 (GUI)
+        # 預設啟動圖形化介面 (GUI)，支援多開參數傳遞 (如 --dual, --instance=2)
         from gui import main
         main()

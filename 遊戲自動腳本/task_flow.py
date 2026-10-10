@@ -972,12 +972,14 @@ class TaskFlowTab:
         parent: ttk.Frame,
         bot_instance=None,
         gui_parent=None,
-        log_callback: Optional[Callable[[str], None]] = None
+        log_callback: Optional[Callable[[str], None]] = None,
+        instance_id: int = 1
     ):
         self.parent = parent
         self.bot = bot_instance
         self.gui = gui_parent
         self.log_callback = log_callback
+        self.instance_id = instance_id
 
         # 連接父層 GUI 的全域通用進階變數 (與聯賽自動刷頁面雙向同步共享)
         if self.gui:
@@ -1054,7 +1056,8 @@ class TaskFlowTab:
         self.presets_dir = os.path.join(self.config_dir, "task_presets")
         os.makedirs(self.presets_dir, exist_ok=True)
         self.presets: Dict[str, Dict[str, Any]] = {}
-        self.save_file = os.path.join(self.config_dir, "tasks_flow.json")
+        tf_name = "tasks_flow.json" if self.instance_id == 1 else f"tasks_flow_{self.instance_id}.json"
+        self.save_file = os.path.join(self.config_dir, tf_name)
 
         self._build_ui()
         self.reload_presets()

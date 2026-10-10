@@ -1,0 +1,17 @@
+{
+  "version": "1.0",
+  "loop_count": 1,
+  "global_settings": {
+    "interval": 0.39,
+    "confidence": 0.4,
+    "idle_strategy": "快速跳過",
+    "lang_tc": true,
+    "lang_sc": false,
+    "lang_en": true,
+    "tg_token": "",
+    "tg_chat_id": "",
+    "watchdog_enabled": false,
+    "watchdog_seconds": 60
+  },
+  "blocks": []
+}
