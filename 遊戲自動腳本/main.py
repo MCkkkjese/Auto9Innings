@@ -1,6 +1,6 @@
 """
 棒球手遊自動化腳本 - 啟動入口 
-執行此檔案可選擇啟動 GUI 圖形化介面或 CLI 命令列模式。
+預設啟動現代化 CustomTkinter 控制面板介面 (gui.py)。
 """
 import sys
 
@@ -19,6 +19,6 @@ if __name__ == "__main__":
         bot = FastReactiveBot()
         bot.run()
     else:
-        # 預設啟動圖形化介面 (GUI)，支援多開參數傳遞 (如 --dual, --instance=2)
+        # 預設啟動：現代化 CustomTkinter 圖形化介面 (GUI)
         from gui import main
         main()

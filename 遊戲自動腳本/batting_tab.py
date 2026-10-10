@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from batting_assist import BattingAssistEngine, ALGO_PRESETS, DEFAULT_CONFIG, list_emulator_windows, HAS_MSS
+from theme import DARK_BG, DARK_FG, DARK_FG_MUTED, DARK_BORDER, get_theme_palette
 
 PRESET_DESCRIPTIONS = {
     "white_ball": "⚾【小白球高速偵測】專門鎖定高速飛入好球帶的白色棒球，自適應運動模糊與橢圓拉伸，自動過濾投手褲子大雜訊！",
@@ -198,9 +199,10 @@ class BattingAssistTab:
         )
         self.btn_grab_frame.pack(side=tk.LEFT, padx=(0, 6))
 
+        p_pal = get_theme_palette()
         self.lbl_status_badge = tk.Label(
             top_box, textvariable=self.var_status_badge, font=("Arial", 10, "bold"),
-            fg="#dc2626"
+            fg="#ef4444", bg=p_pal["bg"]
         )
         self.lbl_status_badge.pack(side=tk.RIGHT, padx=6)
 
@@ -210,7 +212,7 @@ class BattingAssistTab:
 
         lbl_win = tk.Label(
             status_bar, textvariable=self.var_locked_window_text, font=("Arial", 9, "bold"),
-            fg="#0369a1", bg="#f0f9ff", padx=6, pady=2, relief=tk.SOLID, borderwidth=1
+            fg="#38bdf8", bg="#0c4a6e", padx=6, pady=2, relief=tk.SOLID, borderwidth=1
         )
         lbl_win.pack(side=tk.LEFT)
 
@@ -260,7 +262,8 @@ class BattingAssistTab:
         ttk.Radiobutton(tool_row2, text="💥 設定揮棒點 (紅靶心)", value="swing", variable=self.var_canvas_target_mode).pack(side=tk.LEFT)
 
         # 畫布 (支援滑鼠點擊/拖曳)
-        self.canvas = tk.Canvas(box_preview, width=self.canvas_w, height=self.canvas_h, bg="#0f172a")
+        pal = get_theme_palette()
+        self.canvas = tk.Canvas(box_preview, width=self.canvas_w, height=self.canvas_h, bg=pal["preview_bg"])
         self.canvas.pack(fill=tk.BOTH, expand=True, pady=2)
         self.canvas.bind("<ButtonPress-1>", self.on_canvas_click)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
@@ -281,7 +284,7 @@ class BattingAssistTab:
         ttk.Label(tele_row2, text="目標監控:").pack(side=tk.LEFT, padx=(0, 4))
         self.lbl_target_desc = tk.Label(
             tele_row2, textvariable=self.var_target_desc, font=("Microsoft JhengHei", 9, "bold"),
-            fg="#0284c7", bg="#f0f9ff", padx=6, pady=2, relief=tk.SOLID, borderwidth=1, anchor="w"
+            fg="#38bdf8", bg="#0c4a6e", padx=6, pady=2, relief=tk.SOLID, borderwidth=1, anchor="w"
         )
         self.lbl_target_desc.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -387,7 +390,7 @@ class BattingAssistTab:
 
         self.lbl_preset_detail = tk.Label(
             box_thresh, textvariable=self.var_preset_desc, font=("Microsoft JhengHei", 9),
-            fg="#0369a1", bg="#f0f9ff", padx=6, pady=3, relief=tk.SOLID, borderwidth=1,
+            fg="#38bdf8", bg="#0c4a6e", padx=6, pady=3, relief=tk.SOLID, borderwidth=1,
             justify=tk.LEFT, wraplength=460
         )
         self.lbl_preset_detail.pack(fill=tk.X, pady=(0, 4))
@@ -687,11 +690,11 @@ class BattingAssistTab:
             if target_desc:
                 self.var_target_desc.set(target_desc)
                 if "白褲子" in target_desc or "過大" in target_desc:
-                    self.lbl_target_desc.config(fg="#ea580c", bg="#fff7ed")
+                    self.lbl_target_desc.config(fg="#fb923c", bg="#7c2d12")
                 elif "鎖定" in target_desc or "⚾" in target_desc or "🟡" in target_desc:
-                    self.lbl_target_desc.config(fg="#16a34a", bg="#f0fdf4")
+                    self.lbl_target_desc.config(fg="#4ade80", bg="#14532d")
                 else:
-                    self.lbl_target_desc.config(fg="#0284c7", bg="#f0f9ff")
+                    self.lbl_target_desc.config(fg="#38bdf8", bg="#0c4a6e")
 
             now = time.perf_counter()
             is_recent_swing = (now - self._swing_flash_timer) < 0.28
@@ -798,11 +801,11 @@ class BattingAssistTab:
             self.on_apply_config()
             self.engine.start()
             self.btn_toggle.config(text="⏹ 停止打擊輔助 (F8)", bg="#dc2626")
-            self.lbl_status_badge.config(text="🟢 打擊輔助運作中 (按 F8 暫停)", fg="#16a34a")
+            self.lbl_status_badge.config(text="🟢 打擊輔助運作中 (按 F8 暫停)", fg="#22c55e")
         else:
             self.engine.stop()
             self.btn_toggle.config(text="▶ 啟動打擊輔助 (F8)", bg="#16a34a")
-            self.lbl_status_badge.config(text="⏸ 打擊輔助已停止", fg="#dc2626")
+            self.lbl_status_badge.config(text="⏸ 打擊輔助已停止", fg="#ef4444")
 
     def on_preset_changed(self, event=None):
         """使用者選擇預設演算法"""
@@ -939,22 +942,33 @@ class BattingAssistTab:
         if desc:
             self.var_target_desc.set(desc)
             if "白褲子" in desc or "過大" in desc:
-                self.lbl_target_desc.config(fg="#ea580c", bg="#fff7ed")
+                self.lbl_target_desc.config(fg="#fb923c", bg="#7c2d12")
             elif "鎖定" in desc or "⚾" in desc or "🟡" in desc:
-                self.lbl_target_desc.config(fg="#16a34a", bg="#f0fdf4")
+                self.lbl_target_desc.config(fg="#4ade80", bg="#14532d")
             else:
-                self.lbl_target_desc.config(fg="#0284c7", bg="#f0f9ff")
+                self.lbl_target_desc.config(fg="#38bdf8", bg="#0c4a6e")
 
         if not self.engine.is_running:
-            self.lbl_status_badge.config(text="⏸ 打擊輔助未啟動", fg="#dc2626")
+            self.lbl_status_badge.config(text="⏸ 打擊輔助未啟動", fg="#ef4444")
         elif not tele.get("is_active", True):
-            self.lbl_status_badge.config(text="⏸ 已暫停 (按 F8 恢復)", fg="#d97706")
+            self.lbl_status_badge.config(text="⏸ 已暫停 (按 F8 恢復)", fg="#f59e0b")
         else:
-            self.lbl_status_badge.config(text="🟢 打擊輔助運作中 (按 F8 暫停)", fg="#16a34a")
+            self.lbl_status_badge.config(text="🟢 打擊輔助運作中 (按 F8 暫停)", fg="#22c55e")
 
     def _on_swing_event(self, event_data: Dict[str, Any]):
         """觸發擊球瞬間閃爍動畫"""
         self._swing_flash_timer = time.perf_counter()
+
+    def on_theme_changed(self, mode: str):
+        """全域主題切換時動態更新預覽畫布與狀態標籤"""
+        p = get_theme_palette(mode)
+        try:
+            if hasattr(self, "canvas"):
+                self.canvas.configure(bg=p["preview_bg"])
+            if hasattr(self, "lbl_status_badge"):
+                self.lbl_status_badge.configure(bg=p["bg"])
+        except Exception:
+            pass
 
     def on_close(self):
         """視窗關閉時釋放資源"""

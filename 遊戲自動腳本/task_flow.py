@@ -25,6 +25,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
+from theme import DARK_BG, DARK_FG, DARK_FG_MUTED, DARK_BORDER, DARK_SURFACE, apply_dark_theme, get_theme_palette
+
 
 # ==========================================
 # 積木外觀與色彩常數 (Scratch 色彩系統)
@@ -40,7 +42,10 @@ COLOR_BLOCK_SWIPE = "#0891b2"      # 滑動 (青藍)
 COLOR_BLOCK_BACK = "#475569"       # 返回鍵 (深灰藍)
 COLOR_BLOCK_COMMENT = "#ca8a04"    # 備註 (便條金黃)
 COLOR_BLOCK_ACTIVE = "#eab308"     # 執行中光環 (金黃色)
-COLOR_BLOCK_BG = "#f8fafc"         # 積木卡片底色 (淺米灰)
+COLOR_BLOCK_BG = "#1e232d"         # 積木卡片底色 (深石板色)
+COLOR_BLOCK_BODY = "#161922"       # 積木內容區底色 (深黑藍)
+COLOR_BLOCK_FG = "#ffffff"         # 積木白色文字
+COLOR_BLOCK_MUTED = "#94a3b8"      # 積木次要文字
 
 BLOCK_TYPES = {
     "tap_coord": {
@@ -1276,16 +1281,17 @@ class TaskFlowTab:
         self._build_advanced_panel(box)
 
         # 狀態標籤列
-        bar_status = tk.Frame(box, bg="#f1f5f9", bd=1, relief=tk.SUNKEN)
-        bar_status.pack(fill=tk.X, pady=(0, 6), ipady=2)
-        lbl_st = tk.Label(bar_status, textvariable=self.var_status_text, bg="#f1f5f9", font=("Arial", 9, "bold"), fg="#0f172a")
-        lbl_st.pack(side=tk.LEFT, padx=6)
+        p_pal = get_theme_palette()
+        self.bar_status = tk.Frame(box, bg=p_pal["surface"], bd=1, relief=tk.SUNKEN)
+        self.bar_status.pack(fill=tk.X, pady=(0, 6), ipady=2)
+        self.lbl_st = tk.Label(self.bar_status, textvariable=self.var_status_text, bg=p_pal["surface"], font=("Arial", 9, "bold"), fg=p_pal["fg"])
+        self.lbl_st.pack(side=tk.LEFT, padx=6)
 
         # 滾動積木畫布
         area = ttk.Frame(box)
         area.pack(fill=tk.BOTH, expand=True)
 
-        self.canvas_blocks = tk.Canvas(area, borderwidth=0, highlightthickness=0, bg="#ffffff")
+        self.canvas_blocks = tk.Canvas(area, borderwidth=0, highlightthickness=0, bg=p_pal["canvas_bg"])
         self.scroll_blocks = ttk.Scrollbar(area, orient="vertical", command=self.canvas_blocks.yview)
         self.inner_blocks = ttk.Frame(self.canvas_blocks)
         self.canvas_window = self.canvas_blocks.create_window((0, 0), window=self.inner_blocks, anchor="nw")
@@ -1438,21 +1444,22 @@ class TaskFlowTab:
         self.btn_capture.pack(side=tk.LEFT)
         ttk.Checkbutton(tools, text="自動刷新", variable=self.var_auto_preview, command=self.on_toggle_auto_refresh).pack(side=tk.LEFT, padx=8)
 
+        p_pal = get_theme_palette()
         # 頂部即時座標顯示 (同 gui.py Menlo 11 bold 藍色字樣)
-        lbl_coord_rt = tk.Label(tools, textvariable=self.var_preview_coords, fg="#2563eb", font=("Menlo", 11, "bold"))
-        lbl_coord_rt.pack(side=tk.RIGHT)
+        self.lbl_coord_rt = tk.Label(tools, textvariable=self.var_preview_coords, fg="#2563eb", bg=p_pal["bg"], font=("Menlo", 11, "bold"))
+        self.lbl_coord_rt.pack(side=tk.RIGHT)
 
         # 固定大小容器，避免圖片尺寸變動造成版面跳動 (同 gui.py)
-        holder = tk.Frame(box, width=340, height=240, bg="#1e293b")
-        holder.pack_propagate(False)
-        holder.pack(fill=tk.BOTH, expand=True, pady=(6, 4))
-        holder.bind("<Configure>", self._on_preview_resize)
+        self.preview_holder = tk.Frame(box, width=340, height=240, bg=p_pal["preview_bg"])
+        self.preview_holder.pack_propagate(False)
+        self.preview_holder.pack(fill=tk.BOTH, expand=True, pady=(6, 4))
+        self.preview_holder.bind("<Configure>", self._on_preview_resize)
 
         self.lbl_canvas = tk.Label(
-            holder,
+            self.preview_holder,
             text="連線後按「截圖」，\n再點擊畫面即可選取座標",
-            bg="#1e293b",
-            fg="#94a3b8",
+            bg=p_pal["preview_bg"],
+            fg=p_pal["fg_muted"],
             cursor="crosshair",
             anchor=tk.CENTER
         )
@@ -1636,7 +1643,7 @@ class TaskFlowTab:
         btn_pick.bind("<Button-1>", lambda e: self.select_block(block_item))
 
         # 內容參數區
-        body = tk.Frame(card, bg="#ffffff", padx=8, pady=6)
+        body = tk.Frame(card, bg=COLOR_BLOCK_BODY, padx=8, pady=6)
         body.pack(fill=tk.X)
         block_item["body_frame"] = body
 
@@ -1653,18 +1660,18 @@ class TaskFlowTab:
             vp["delay"] = tk.DoubleVar(value=p.get("delay", 1.5))
             vp["repeat"] = tk.IntVar(value=p.get("repeat", 1))
 
-            row = tk.Frame(body, bg="#ffffff")
+            row = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row.pack(fill=tk.X, pady=2)
-            tk.Label(row, text="座標 X:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="座標 X:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(row, textvariable=vp["x"], width=5).pack(side=tk.LEFT, padx=(1, 4))
-            tk.Label(row, text="Y:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="Y:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(row, textvariable=vp["y"], width=5).pack(side=tk.LEFT, padx=(1, 4))
             btn_fill = ttk.Button(row, text="填入", width=5, command=lambda target=block: self._fill_block_coords(target))
             btn_fill.pack(side=tk.LEFT, padx=(0, 10))
-            tk.Label(row, text="延遲:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row, from_=0.1, to=30.0, increment=0.5, textvariable=vp["delay"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row, text="秒", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 10))
-            tk.Label(row, text="點擊次數:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 10))
+            tk.Label(row, text="點擊次數:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row, from_=1, to=50, increment=1, textvariable=vp["repeat"], width=3).pack(side=tk.LEFT, padx=(2, 0))
 
         elif b_type == "multi_tap":
@@ -1677,26 +1684,26 @@ class TaskFlowTab:
             vp["check_every"] = tk.IntVar(value=_safe_int(p.get("check_every", 1)))
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
 
-            row1 = tk.Frame(body, bg="#ffffff")
+            row1 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row1.pack(fill=tk.X, pady=2)
-            tk.Label(row1, text="座標 X:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row1, text="座標 X:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(row1, textvariable=vp["x"], width=5).pack(side=tk.LEFT, padx=(1, 4))
-            tk.Label(row1, text="Y:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row1, text="Y:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(row1, textvariable=vp["y"], width=5).pack(side=tk.LEFT, padx=(1, 4))
             btn_fill = ttk.Button(row1, text="填入", width=5, command=lambda target=block: self._fill_block_coords(target))
             btn_fill.pack(side=tk.LEFT, padx=(0, 10))
 
-            tk.Label(row1, text="點擊次數:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row1, text="點擊次數:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row1, from_=0, to=9999, increment=5, textvariable=vp["count"], width=5).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row1, text="次（0 = 無限）", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 10))
+            tk.Label(row1, text="次（0 = 無限）", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 10))
 
-            tk.Label(row1, text="間隔:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row1, text="間隔:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row1, from_=0.05, to=10.0, increment=0.1, textvariable=vp["interval"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row1, text="秒/次", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row1, text="秒/次", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
 
-            row2 = tk.Frame(body, bg="#ffffff")
+            row2 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row2.pack(fill=tk.X, pady=2)
-            tk.Label(row2, text="停止條件:", bg="#ffffff", font=("Arial", 9, "bold"), fg="#c2410c").pack(side=tk.LEFT)
+            tk.Label(row2, text="停止條件:", bg=COLOR_BLOCK_BODY, font=("Arial", 9, "bold"), fg="#fb923c").pack(side=tk.LEFT)
             combo_stop = ttk.Combobox(row2, textvariable=vp["stop_mode"], values=[
                 "無 (僅點滿次數)",
                 "偵測到文字出現",
@@ -1706,8 +1713,8 @@ class TaskFlowTab:
             ], state="readonly", width=14)
             combo_stop.pack(side=tk.LEFT, padx=(2, 6))
 
-            box_kws = tk.Frame(row2, bg="#ffffff")
-            tk.Label(box_kws, text="關鍵字:", bg="#ffffff").pack(side=tk.LEFT)
+            box_kws = tk.Frame(row2, bg=COLOR_BLOCK_BODY)
+            tk.Label(box_kws, text="關鍵字:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(box_kws, textvariable=vp["stop_keywords"], width=16).pack(side=tk.LEFT, padx=(2, 6))
 
             def _toggle_stop_kws(*_):
@@ -1719,13 +1726,13 @@ class TaskFlowTab:
             vp["stop_mode"].trace_add("write", _toggle_stop_kws)
             _toggle_stop_kws()
 
-            tk.Label(row2, text="每:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="每:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row2, from_=1, to=20, increment=1, textvariable=vp["check_every"], width=3).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="次檢查", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 8))
+            tk.Label(row2, text="次檢查", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 8))
 
-            tk.Label(row2, text="結束延遲:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="結束延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row2, from_=0.0, to=30.0, increment=0.5, textvariable=vp["delay_after"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
 
         elif b_type == "detect_click":
             vp["target_type"] = tk.StringVar(value=p.get("target_type", "📝 僅文字"))
@@ -1737,26 +1744,26 @@ class TaskFlowTab:
             vp["delay"] = tk.DoubleVar(value=p.get("delay", 1.5))
             vp["on_timeout"] = tk.StringVar(value=p.get("on_timeout", "continue"))
 
-            row1 = tk.Frame(body, bg="#ffffff")
+            row1 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row1.pack(fill=tk.X, pady=2)
-            tk.Label(row1, text="類型:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row1, text="類型:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Combobox(row1, textvariable=vp["target_type"], values=["📝 僅文字", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"], state="readonly", width=9).pack(side=tk.LEFT, padx=(2, 8))
-            tk.Label(row1, text="關鍵字:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row1, text="關鍵字:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(row1, textvariable=vp["keywords"], width=20).pack(side=tk.LEFT, padx=(2, 8), fill=tk.X, expand=True)
 
-            row2 = tk.Frame(body, bg="#ffffff")
+            row2 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row2.pack(fill=tk.X, pady=2)
-            tk.Label(row2, text="超時:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="超時:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row2, from_=1, to=300, increment=1, textvariable=vp["timeout"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 8))
-            tk.Label(row2, text="動作:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 8))
+            tk.Label(row2, text="動作:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             combo_act = ttk.Combobox(row2, textvariable=vp["click_mode"], values=["click_text", "custom_coord"], state="readonly", width=10)
             combo_act.pack(side=tk.LEFT, padx=(2, 8))
 
-            box_xy = tk.Frame(row2, bg="#ffffff")
-            tk.Label(box_xy, text="X:", bg="#ffffff").pack(side=tk.LEFT)
+            box_xy = tk.Frame(row2, bg=COLOR_BLOCK_BODY)
+            tk.Label(box_xy, text="X:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(box_xy, textvariable=vp["custom_x"], width=5).pack(side=tk.LEFT, padx=(1, 4))
-            tk.Label(box_xy, text="Y:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(box_xy, text="Y:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(box_xy, textvariable=vp["custom_y"], width=5).pack(side=tk.LEFT, padx=(1, 6))
 
             def _toggle_xy(*_):
@@ -1767,9 +1774,9 @@ class TaskFlowTab:
             vp["click_mode"].trace_add("write", _toggle_xy)
             _toggle_xy()
 
-            tk.Label(row2, text="延遲:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row2, from_=0.1, to=30.0, increment=0.5, textvariable=vp["delay"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
 
         elif b_type == "branch_if":
             branches_data = p.get("branches")
@@ -1812,21 +1819,21 @@ class TaskFlowTab:
                 })
 
             # 頂部控制列：新增分支按鈕、超時、延遲
-            row_ctrl = tk.Frame(body, bg="#ffffff")
+            row_ctrl = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row_ctrl.pack(fill=tk.X, pady=(0, 4))
-            tk.Label(row_ctrl, text="條件分支:", bg="#ffffff", font=("Arial", 9, "bold"), fg="#d97706").pack(side=tk.LEFT)
+            tk.Label(row_ctrl, text="條件分支:", bg=COLOR_BLOCK_BODY, font=("Arial", 9, "bold"), fg="#f59e0b").pack(side=tk.LEFT)
 
             btn_add_br = ttk.Button(row_ctrl, text="＋ 新增 Else If", command=lambda: _add_branch())
             btn_add_br.pack(side=tk.LEFT, padx=(6, 12))
 
-            tk.Label(row_ctrl, text="限時:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row_ctrl, text="限時:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row_ctrl, from_=1, to=120, textvariable=vp["timeout"], width=3).pack(side=tk.LEFT, padx=2)
-            tk.Label(row_ctrl, text="s  延遲:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row_ctrl, text="s  延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row_ctrl, from_=0.1, to=30.0, increment=0.5, textvariable=vp["delay"], width=4).pack(side=tk.LEFT, padx=2)
-            tk.Label(row_ctrl, text="s", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row_ctrl, text="s", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
 
             # 動態分支容器
-            branches_box = tk.Frame(body, bg="#ffffff")
+            branches_box = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             branches_box.pack(fill=tk.X)
 
             def _render_branch_rows():
@@ -1837,26 +1844,26 @@ class TaskFlowTab:
                     is_first = (idx == 0)
                     br["name"] = "If" if is_first else f"Else If {idx}"
 
-                    row = tk.Frame(branches_box, bg="#f8fafc", bd=1, relief=tk.SOLID)
+                    row = tk.Frame(branches_box, bg="#1e232d", bd=1, relief=tk.SOLID)
                     row.pack(fill=tk.X, pady=2, ipady=1)
 
                     badge_bg = "#d97706" if is_first else "#0284c7"
                     lbl_badge = tk.Label(row, text=f" {br['name']} ", bg=badge_bg, fg="#ffffff", font=("Arial", 8, "bold"), width=9)
                     lbl_badge.pack(side=tk.LEFT, padx=(2, 6))
 
-                    tk.Label(row, text="若包含:", bg="#f8fafc").pack(side=tk.LEFT)
+                    tk.Label(row, text="若包含:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
                     ttk.Entry(row, textvariable=br["keywords"], width=15).pack(side=tk.LEFT, padx=(2, 6))
 
-                    tk.Label(row, text="點擊 X:", bg="#f8fafc").pack(side=tk.LEFT)
+                    tk.Label(row, text="點擊 X:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
                     ttk.Entry(row, textvariable=br["x"], width=5).pack(side=tk.LEFT, padx=1)
-                    tk.Label(row, text="Y:", bg="#f8fafc").pack(side=tk.LEFT)
+                    tk.Label(row, text="Y:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
                     ttk.Entry(row, textvariable=br["y"], width=5).pack(side=tk.LEFT, padx=(1, 4))
 
                     btn_fill = ttk.Button(row, text="填入", width=5, command=lambda target=br: self._fill_branch_from_picker(target))
                     btn_fill.pack(side=tk.LEFT, padx=2)
 
                     if not is_first:
-                        lbl_del = tk.Label(row, text=" ✕ ", bg="#f8fafc", fg="#dc2626", font=("Arial", 9, "bold"), cursor="hand2")
+                        lbl_del = tk.Label(row, text=" ✕ ", bg="#1e232d", fg="#ef4444", font=("Arial", 9, "bold"), cursor="hand2")
                         lbl_del.pack(side=tk.RIGHT, padx=4)
                         lbl_del.bind("<Button-1>", lambda e, target_idx=idx: _remove_branch(target_idx))
 
@@ -1880,20 +1887,20 @@ class TaskFlowTab:
             _render_branch_rows()
 
             # 底部 Else 行
-            row_else = tk.Frame(body, bg="#f8fafc", bd=1, relief=tk.SOLID)
+            row_else = tk.Frame(body, bg="#1e232d", bd=1, relief=tk.SOLID)
             row_else.pack(fill=tk.X, pady=(3, 0), ipady=1)
 
             lbl_else_badge = tk.Label(row_else, text=" Else ", bg="#64748b", fg="#ffffff", font=("Arial", 8, "bold"), width=9)
             lbl_else_badge.pack(side=tk.LEFT, padx=(2, 6))
 
-            tk.Label(row_else, text="若皆不符合:", bg="#f8fafc").pack(side=tk.LEFT)
+            tk.Label(row_else, text="若皆不符合:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             combo_else = ttk.Combobox(row_else, textvariable=vp["else_action"], values=["skip", "click_coord"], state="readonly", width=9)
             combo_else.pack(side=tk.LEFT, padx=(2, 6))
 
-            box_else_xy = tk.Frame(row_else, bg="#f8fafc")
-            tk.Label(box_else_xy, text="X:", bg="#f8fafc").pack(side=tk.LEFT)
+            box_else_xy = tk.Frame(row_else, bg="#1e232d")
+            tk.Label(box_else_xy, text="X:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(box_else_xy, textvariable=vp["else_x"], width=5).pack(side=tk.LEFT, padx=1)
-            tk.Label(box_else_xy, text="Y:", bg="#f8fafc").pack(side=tk.LEFT)
+            tk.Label(box_else_xy, text="Y:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(box_else_xy, textvariable=vp["else_y"], width=5).pack(side=tk.LEFT, padx=(1, 4))
             btn_fill_else = ttk.Button(box_else_xy, text="填入", width=5, command=lambda: self.on_fill_branch_coord("else"))
             btn_fill_else.pack(side=tk.LEFT, padx=2)
@@ -1914,14 +1921,14 @@ class TaskFlowTab:
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
 
             # 迴圈控制頂部容器
-            box_loop_header = tk.Frame(body, bg="#ffffff")
+            box_loop_header = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             box_loop_header.pack(fill=tk.X, pady=(0, 4))
 
             # 第 1 列：停止條件與次數/延遲
-            row_loop_ctrl = tk.Frame(box_loop_header, bg="#ffffff")
+            row_loop_ctrl = tk.Frame(box_loop_header, bg=COLOR_BLOCK_BODY)
             row_loop_ctrl.pack(fill=tk.X, pady=(0, 2))
 
-            tk.Label(row_loop_ctrl, text="停止條件:", bg="#ffffff", font=("Arial", 9, "bold"), fg="#4f46e5").pack(side=tk.LEFT)
+            tk.Label(row_loop_ctrl, text="停止條件:", bg=COLOR_BLOCK_BODY, font=("Arial", 9, "bold"), fg="#818cf8").pack(side=tk.LEFT)
             LOOP_MODES = [
                 "依指定次數",
                 "偵測到文字出現",
@@ -1932,26 +1939,26 @@ class TaskFlowTab:
             cbo_mode = ttk.Combobox(row_loop_ctrl, textvariable=vp["stop_mode"], values=LOOP_MODES, state="readonly", width=14)
             cbo_mode.pack(side=tk.LEFT, padx=3)
 
-            lbl_cnt_title = tk.Label(row_loop_ctrl, text="次數:", bg="#ffffff", font=("Arial", 9))
+            lbl_cnt_title = tk.Label(row_loop_ctrl, text="次數:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG, font=("Arial", 9))
             lbl_cnt_title.pack(side=tk.LEFT, padx=(4, 2))
             spn_cnt = ttk.Spinbox(row_loop_ctrl, from_=0, to=999, textvariable=vp["count"], width=4)
             spn_cnt.pack(side=tk.LEFT)
-            lbl_cnt_hint = tk.Label(row_loop_ctrl, text="次（0 = 無限）", bg="#ffffff", font=("Arial", 8), fg="#64748b")
+            lbl_cnt_hint = tk.Label(row_loop_ctrl, text="次（0 = 無限）", bg=COLOR_BLOCK_BODY, font=("Arial", 8), fg=COLOR_BLOCK_MUTED)
             lbl_cnt_hint.pack(side=tk.LEFT, padx=(2, 6))
 
-            tk.Label(row_loop_ctrl, text="延遲:", bg="#ffffff", font=("Arial", 8), fg="#475569").pack(side=tk.LEFT, padx=(2, 1))
+            tk.Label(row_loop_ctrl, text="延遲:", bg=COLOR_BLOCK_BODY, font=("Arial", 8), fg=COLOR_BLOCK_MUTED).pack(side=tk.LEFT, padx=(2, 1))
             ttk.Spinbox(row_loop_ctrl, from_=0.0, to=60.0, increment=0.5, textvariable=vp["delay_after"], width=4).pack(side=tk.LEFT)
-            tk.Label(row_loop_ctrl, text="s", bg="#ffffff", font=("Arial", 8), fg="#64748b").pack(side=tk.LEFT)
+            tk.Label(row_loop_ctrl, text="s", bg=COLOR_BLOCK_BODY, font=("Arial", 8), fg=COLOR_BLOCK_MUTED).pack(side=tk.LEFT)
 
             # 第 2 列：條件細節 (關鍵字與檢查時機，在條件模式下展開)
-            row_cond_detail = tk.Frame(box_loop_header, bg="#ffffff")
+            row_cond_detail = tk.Frame(box_loop_header, bg=COLOR_BLOCK_BODY)
 
-            lbl_kw_title = tk.Label(row_cond_detail, text="停止關鍵字:", bg="#ffffff", font=("Arial", 8, "bold"), fg="#334155")
+            lbl_kw_title = tk.Label(row_cond_detail, text="停止關鍵字:", bg=COLOR_BLOCK_BODY, font=("Arial", 8, "bold"), fg="#c4b5fd")
             lbl_kw_title.pack(side=tk.LEFT)
             ent_kw = ttk.Entry(row_cond_detail, textvariable=vp["keywords"], width=18)
             ent_kw.pack(side=tk.LEFT, padx=(2, 6))
 
-            tk.Label(row_cond_detail, text="檢查時機:", bg="#ffffff", font=("Arial", 8), fg="#334155").pack(side=tk.LEFT)
+            tk.Label(row_cond_detail, text="檢查時機:", bg=COLOR_BLOCK_BODY, font=("Arial", 8), fg="#c4b5fd").pack(side=tk.LEFT)
             TIMINGS = [
                 "每輪開始與結束",
                 "每輪開始前 (While)",
@@ -1980,10 +1987,10 @@ class TaskFlowTab:
             _on_loop_mode_change()
 
             # 裝入積木工具列
-            tb_inner = tk.Frame(body, bg="#f1f5f9", bd=1, relief=tk.SOLID)
+            tb_inner = tk.Frame(body, bg="#1e232d", bd=1, relief=tk.SOLID)
             tb_inner.pack(fill=tk.X, pady=(2, 4), ipady=2)
 
-            tk.Label(tb_inner, text="加入積木:", bg="#f1f5f9", font=("Arial", 8, "bold"), fg="#334155").pack(side=tk.LEFT, padx=(4, 4))
+            tk.Label(tb_inner, text="加入積木:", bg="#1e232d", font=("Arial", 8, "bold"), fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(4, 4))
 
             TYPE_LABELS = {
                 "tap_coord": "👆 點擊座標",
@@ -2010,12 +2017,12 @@ class TaskFlowTab:
             btn_pull.pack(side=tk.RIGHT, padx=4)
 
             # 內部積木容器 (C-Block 槽位，具備左側縮排與底色)
-            inner_box = tk.Frame(body, bg="#e0e7ff", bd=1, relief=tk.GROOVE)
+            inner_box = tk.Frame(body, bg="#1a1c2d", bd=1, relief=tk.GROOVE)
             inner_box.pack(fill=tk.X, padx=(10, 0), pady=(2, 4))
             block["inner_container"] = inner_box
 
             # 迴圈底座結尾
-            lbl_end = tk.Label(body, text="迴圈結束（條件達成或次數用完後繼續）", bg="#ffffff", fg="#6366f1", font=("Arial", 8, "bold"))
+            lbl_end = tk.Label(body, text="迴圈結束（條件達成或次數用完後繼續）", bg=COLOR_BLOCK_BODY, fg="#818cf8", font=("Arial", 8, "bold"))
             lbl_end.pack(anchor="w", padx=2, pady=(2, 0))
 
         elif b_type == "wait_condition":
@@ -2027,39 +2034,39 @@ class TaskFlowTab:
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
             vp["on_timeout"] = tk.StringVar(value=p.get("on_timeout", "continue"))
 
-            row1 = tk.Frame(body, bg="#ffffff")
+            row1 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row1.pack(fill=tk.X, pady=2)
-            tk.Label(row1, text="條件:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row1, text="條件:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Combobox(row1, textvariable=vp["cond_mode"], values=["出現 (Wait Appear)", "消失 (Wait Disappear)"], state="readonly", width=16).pack(side=tk.LEFT, padx=(2, 8))
-            tk.Label(row1, text="類型:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row1, text="類型:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Combobox(row1, textvariable=vp["target_type"], values=["📝 僅文字", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"], state="readonly", width=9).pack(side=tk.LEFT, padx=(2, 8))
-            tk.Label(row1, text="關鍵字:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row1, text="關鍵字:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(row1, textvariable=vp["keywords"], width=20).pack(side=tk.LEFT, padx=(2, 4), fill=tk.X, expand=True)
 
-            row2 = tk.Frame(body, bg="#ffffff")
+            row2 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row2.pack(fill=tk.X, pady=2)
-            tk.Label(row2, text="更新頻率:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="更新頻率:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row2, from_=0.1, to=30.0, increment=0.5, textvariable=vp["interval"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒/次", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 10))
+            tk.Label(row2, text="秒/次", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 10))
 
-            tk.Label(row2, text="最長限時:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="最長限時:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row2, from_=1, to=600, increment=5, textvariable=vp["timeout"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 10))
+            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 10))
 
-            tk.Label(row2, text="達成後延遲:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="達成後延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row2, from_=0.0, to=30.0, increment=0.5, textvariable=vp["delay_after"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 10))
+            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 10))
 
-            tk.Label(row2, text="超時:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row2, text="超時:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Combobox(row2, textvariable=vp["on_timeout"], values=["continue", "stop"], state="readonly", width=8).pack(side=tk.LEFT, padx=(2, 0))
 
         elif b_type == "wait_sec":
             vp["seconds"] = tk.DoubleVar(value=p.get("seconds", 3.0))
-            row = tk.Frame(body, bg="#ffffff")
+            row = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row.pack(fill=tk.X, pady=2)
-            tk.Label(row, text="等待秒數:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="等待秒數:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row, from_=0.1, to=300.0, increment=0.5, textvariable=vp["seconds"], width=5).pack(side=tk.LEFT, padx=(4, 2))
-            tk.Label(row, text="秒", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
 
         elif b_type == "swipe":
             vp["x1"] = tk.IntVar(value=p.get("x1", 1500))
@@ -2069,31 +2076,31 @@ class TaskFlowTab:
             vp["duration_ms"] = tk.IntVar(value=p.get("duration_ms", 400))
             vp["delay"] = tk.DoubleVar(value=p.get("delay", 1.0))
 
-            row = tk.Frame(body, bg="#ffffff")
+            row = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row.pack(fill=tk.X, pady=2)
-            tk.Label(row, text="起點 (X,Y):", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="起點 (X,Y):", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(row, textvariable=vp["x1"], width=5).pack(side=tk.LEFT, padx=1)
             ttk.Entry(row, textvariable=vp["y1"], width=5).pack(side=tk.LEFT, padx=(1, 6))
-            tk.Label(row, text="終點 (X,Y):", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="終點 (X,Y):", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Entry(row, textvariable=vp["x2"], width=5).pack(side=tk.LEFT, padx=1)
             ttk.Entry(row, textvariable=vp["y2"], width=5).pack(side=tk.LEFT, padx=(1, 6))
-            tk.Label(row, text="耗時:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="耗時:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row, from_=100, to=3000, increment=100, textvariable=vp["duration_ms"], width=4).pack(side=tk.LEFT, padx=1)
-            tk.Label(row, text="ms", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="ms", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
 
         elif b_type == "back_key":
             vp["delay"] = tk.DoubleVar(value=p.get("delay", 1.2))
-            row = tk.Frame(body, bg="#ffffff")
+            row = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row.pack(fill=tk.X, pady=2)
-            tk.Label(row, text="模擬 Android 返回鍵 (input keyevent 4)，點擊後延遲:", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="模擬 Android 返回鍵 (input keyevent 4)，點擊後延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
             ttk.Spinbox(row, from_=0.1, to=30.0, increment=0.2, textvariable=vp["delay"], width=4).pack(side=tk.LEFT, padx=(4, 2))
-            tk.Label(row, text="秒", bg="#ffffff").pack(side=tk.LEFT)
+            tk.Label(row, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
 
         elif b_type == "comment":
             vp["note"] = tk.StringVar(value=p.get("note", "此處為備註說明文字，執行時不執行任何操作"))
-            row = tk.Frame(body, bg="#fffbeb", bd=1, relief=tk.SOLID)
+            row = tk.Frame(body, bg="#2d2417", bd=1, relief=tk.SOLID)
             row.pack(fill=tk.X, pady=2, ipady=3)
-            tk.Label(row, text="備註:", bg="#fffbeb", font=("Arial", 9, "bold"), fg="#92400e").pack(side=tk.LEFT, padx=(6, 4))
+            tk.Label(row, text="備註:", bg="#2d2417", font=("Arial", 9, "bold"), fg="#fde68a").pack(side=tk.LEFT, padx=(6, 4))
             ent_note = ttk.Entry(row, textvariable=vp["note"], font=("Microsoft JhengHei", 9))
             ent_note.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
             vp["note"].trace_add("write", lambda *_: self.auto_save_config())
@@ -2110,14 +2117,14 @@ class TaskFlowTab:
                 vp[k].trace_add("write", lambda *_: self.auto_save_config())
 
             # 第 1 列：通知訊息內容與截圖核取方塊
-            row1 = tk.Frame(body, bg="#ffffff")
+            row1 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row1.pack(fill=tk.X, pady=2)
-            tk.Label(row1, text="訊息:", bg="#ffffff", font=("Arial", 9, "bold"), fg="#0284c7").pack(side=tk.LEFT)
+            tk.Label(row1, text="訊息:", bg=COLOR_BLOCK_BODY, font=("Arial", 9, "bold"), fg="#38bdf8").pack(side=tk.LEFT)
             ttk.Entry(row1, textvariable=vp["message"], width=24).pack(side=tk.LEFT, padx=(4, 8), fill=tk.X, expand=True)
             ttk.Checkbutton(row1, text="附帶截圖", variable=vp["attach_screenshot"]).pack(side=tk.LEFT, padx=(0, 6))
 
             # 第 2 列：設定自訂切換、延遲與測試發送按鈕
-            row2 = tk.Frame(body, bg="#ffffff")
+            row2 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
             row2.pack(fill=tk.X, pady=2)
 
             ttk.Checkbutton(row2, text="使用獨立 Token / Chat ID", variable=vp["use_custom"]).pack(side=tk.LEFT)
@@ -2125,23 +2132,23 @@ class TaskFlowTab:
             btn_test = ttk.Button(row2, text="測試發送", width=9, command=lambda target_b=block: self._test_block_telegram(target_b))
             btn_test.pack(side=tk.RIGHT, padx=2)
 
-            tk.Label(row2, text="延遲:", bg="#ffffff").pack(side=tk.RIGHT)
+            tk.Label(row2, text="延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.RIGHT)
             ttk.Spinbox(row2, from_=0.0, to=30.0, increment=0.5, textvariable=vp["delay_after"], width=4).pack(side=tk.RIGHT, padx=(2, 4))
-            tk.Label(row2, text="秒", bg="#ffffff").pack(side=tk.RIGHT)
+            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.RIGHT)
 
             # 自訂 Token / Chat ID 摺疊區
-            box_custom = tk.Frame(body, bg="#f0f9ff", bd=1, relief=tk.SOLID)
+            box_custom = tk.Frame(body, bg="#0c4a6e", bd=1, relief=tk.SOLID)
 
-            row_c1 = tk.Frame(box_custom, bg="#f0f9ff")
+            row_c1 = tk.Frame(box_custom, bg="#0c4a6e")
             row_c1.pack(fill=tk.X, padx=4, pady=2)
-            tk.Label(row_c1, text="Bot Token:", bg="#f0f9ff", font=("Arial", 8)).pack(side=tk.LEFT)
+            tk.Label(row_c1, text="Bot Token:", bg="#0c4a6e", fg="#38bdf8", font=("Arial", 8)).pack(side=tk.LEFT)
             ttk.Entry(row_c1, textvariable=vp["custom_token"], width=28).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
-            row_c2 = tk.Frame(box_custom, bg="#f0f9ff")
+            row_c2 = tk.Frame(box_custom, bg="#0c4a6e")
             row_c2.pack(fill=tk.X, padx=4, pady=2)
-            tk.Label(row_c2, text="Chat ID:   ", bg="#f0f9ff", font=("Arial", 8)).pack(side=tk.LEFT)
+            tk.Label(row_c2, text="Chat ID:   ", bg="#0c4a6e", fg="#38bdf8", font=("Arial", 8)).pack(side=tk.LEFT)
             ttk.Entry(row_c2, textvariable=vp["custom_chat_id"], width=18).pack(side=tk.LEFT, padx=(4, 0))
-            tk.Label(row_c2, text="（未勾選或留空時，使用進階設定中的通用值）", bg="#f0f9ff", font=("Arial", 8), fg="#64748b").pack(side=tk.LEFT, padx=6)
+            tk.Label(row_c2, text="（未勾選或留空時，使用進階設定中的通用值）", bg="#0c4a6e", font=("Arial", 8), fg="#bae6fd").pack(side=tk.LEFT, padx=6)
 
             def _toggle_custom(*_):
                 if vp["use_custom"].get():
@@ -2895,18 +2902,19 @@ class TaskFlowTab:
         dlg.title("儲存任務清單")
         dlg.geometry("520x460")
         dlg.resizable(False, False)
+        dlg.configure(bg=DARK_BG)
         dlg.grab_set()
         dlg.transient(self.parent)
 
         # 頂部提示與資料夾路徑
-        f_top = tk.Frame(dlg, bg="#f3f4f6", padx=12, pady=10)
+        f_top = tk.Frame(dlg, bg=DARK_SURFACE, padx=12, pady=10)
         f_top.pack(fill=tk.X)
-        tk.Label(f_top, text="選擇儲存方式", font=("Microsoft JhengHei", 11, "bold"), bg="#f3f4f6", fg="#1f2937").pack(anchor="w")
+        tk.Label(f_top, text="選擇儲存方式", font=("Microsoft JhengHei", 11, "bold"), bg=DARK_SURFACE, fg=DARK_FG).pack(anchor="w")
 
-        row_dir = tk.Frame(f_top, bg="#f3f4f6")
+        row_dir = tk.Frame(f_top, bg=DARK_SURFACE)
         row_dir.pack(fill=tk.X, pady=(4, 0))
         folder_name = os.path.basename(self.presets_dir)
-        tk.Label(row_dir, text=f"範本資料夾：{folder_name}/", font=("Microsoft JhengHei", 9), bg="#f3f4f6", fg="#4b5563").pack(side=tk.LEFT)
+        tk.Label(row_dir, text=f"範本資料夾：{folder_name}/", font=("Microsoft JhengHei", 9), bg=DARK_SURFACE, fg=DARK_FG_MUTED).pack(side=tk.LEFT)
 
         def _open_folder():
             try:
@@ -2927,25 +2935,25 @@ class TaskFlowTab:
         if preset_keys:
             existing_var.set(f"{preset_keys[0]}: {self.presets[preset_keys[0]].get('title', preset_keys[0])}")
 
-        f_body = tk.Frame(dlg, padx=16, pady=10)
+        f_body = tk.Frame(dlg, bg=DARK_BG, padx=16, pady=10)
         f_body.pack(fill=tk.BOTH, expand=True)
 
         # 模式 1: 新增常用日常範本
         rb1 = ttk.Radiobutton(f_body, text="新增為常用範本", value="new", variable=mode_var)
         rb1.pack(anchor="w", pady=(2, 2))
 
-        f_new = tk.LabelFrame(f_body, text=" 範本資訊 ", padx=10, pady=6)
+        f_new = tk.LabelFrame(f_body, text=" 範本資訊 ", bg=DARK_BG, fg=DARK_FG, padx=10, pady=6)
         f_new.pack(fill=tk.X, padx=16, pady=(0, 8))
 
-        row_name = tk.Frame(f_new)
+        row_name = tk.Frame(f_new, bg=DARK_BG)
         row_name.pack(fill=tk.X, pady=2)
-        tk.Label(row_name, text="範本名稱:", width=9, anchor="w").pack(side=tk.LEFT)
+        tk.Label(row_name, text="範本名稱:", bg=DARK_BG, fg=DARK_FG, width=9, anchor="w").pack(side=tk.LEFT)
         ent_name = ttk.Entry(row_name, textvariable=name_var)
         ent_name.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        row_desc = tk.Frame(f_new)
+        row_desc = tk.Frame(f_new, bg=DARK_BG)
         row_desc.pack(fill=tk.X, pady=2)
-        tk.Label(row_desc, text="說明備註:", width=9, anchor="w").pack(side=tk.LEFT)
+        tk.Label(row_desc, text="說明備註:", bg=DARK_BG, fg=DARK_FG, width=9, anchor="w").pack(side=tk.LEFT)
         ent_desc = ttk.Entry(row_desc, textvariable=desc_var)
         ent_desc.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -2953,12 +2961,12 @@ class TaskFlowTab:
         rb2 = ttk.Radiobutton(f_body, text="覆蓋既有範本", value="existing", variable=mode_var)
         rb2.pack(anchor="w", pady=(2, 2))
 
-        f_exist = tk.LabelFrame(f_body, text=" 選擇範本 ", padx=10, pady=6)
+        f_exist = tk.LabelFrame(f_body, text=" 選擇範本 ", bg=DARK_BG, fg=DARK_FG, padx=10, pady=6)
         f_exist.pack(fill=tk.X, padx=16, pady=(0, 8))
 
-        row_sel = tk.Frame(f_exist)
+        row_sel = tk.Frame(f_exist, bg=DARK_BG)
         row_sel.pack(fill=tk.X, pady=2)
-        tk.Label(row_sel, text="現有範本:", width=9, anchor="w").pack(side=tk.LEFT)
+        tk.Label(row_sel, text="現有範本:", bg=DARK_BG, fg=DARK_FG, width=9, anchor="w").pack(side=tk.LEFT)
         combo_exist = ttk.Combobox(row_sel, textvariable=existing_var, state="readonly" if preset_keys else "disabled")
         combo_exist["values"] = [f"{k}: {v.get('title', k)}" for k, v in self.presets.items()]
         combo_exist.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -2977,7 +2985,7 @@ class TaskFlowTab:
         _update_ui_state()
 
         # 底部按鈕
-        f_bottom = tk.Frame(dlg, padx=16, pady=10)
+        f_bottom = tk.Frame(dlg, bg=DARK_BG, padx=16, pady=10)
         f_bottom.pack(fill=tk.X, side=tk.BOTTOM)
 
         def _do_save():
@@ -3175,3 +3183,24 @@ class TaskFlowTab:
             if name and name in choice_str:
                 return self._serialize_single_block(b)
         return None
+
+    def on_theme_changed(self, mode: str):
+        """當全域主題切換時動態更新畫布與元件底色"""
+        p = get_theme_palette(mode)
+        try:
+            if hasattr(self, "canvas_blocks"):
+                self.canvas_blocks.configure(bg=p["canvas_bg"])
+            if hasattr(self, "bar_status"):
+                self.bar_status.configure(bg=p["surface"])
+            if hasattr(self, "lbl_st"):
+                self.lbl_st.configure(bg=p["surface"], fg=p["fg"])
+            if hasattr(self, "lbl_coord_rt"):
+                self.lbl_coord_rt.configure(bg=p["bg"])
+            if hasattr(self, "preview_holder"):
+                self.preview_holder.configure(bg=p["preview_bg"])
+            if hasattr(self, "lbl_canvas") and getattr(self, "current_screen_bgr", None) is None:
+                self.lbl_canvas.configure(bg=p["preview_bg"], fg=p["fg_muted"])
+            elif hasattr(self, "lbl_canvas"):
+                self.lbl_canvas.configure(bg=p["preview_bg"])
+        except Exception:
+            pass
