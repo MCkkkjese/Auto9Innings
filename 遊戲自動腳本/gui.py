@@ -26,8 +26,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-# 內部核心模組
 from bot_core import BaseballBot
+# [AI協作註記] 即時打擊輔助功能已全面關閉（停用狀態），協作與維護聯賽/任務時可直接跳過此模組。
 from batting_tab import BattingAssistTab
 from task_flow import TaskFlowTab
 
@@ -113,6 +113,12 @@ class BaseballBotGUI:
         self.config_dir = os.path.dirname(os.path.abspath(__file__))
         save_name = "autosave_last_config.json" if instance_id == 1 else f"autosave_last_config_{instance_id}.json"
         self.auto_save_file = os.path.join(self.config_dir, save_name)
+
+        # 常用聯賽範本儲存目錄 (configs/聯賽自動刷/)
+        self.league_presets_dir = os.path.join(self.config_dir, "configs", "聯賽自動刷")
+        os.makedirs(self.league_presets_dir, exist_ok=True)
+        self.league_presets: Dict[str, Dict[str, Any]] = {}
+        self.reload_league_presets()
 
         # 2. 自動化核心與工作執行緒
         self.bot = BaseballBot(log_callback=self.log_message, on_frame_callback=self.on_bot_frame_update)
@@ -229,7 +235,8 @@ class BaseballBotGUI:
             fg_color=COLOR_BG,
             segmented_button_fg_color=COLOR_CARD,
             segmented_button_selected_color=COLOR_BTN_PRIMARY,
-            segmented_button_selected_hover_color=COLOR_BTN_PRIMARY_HOVER
+            segmented_button_selected_hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=self._on_tab_changed
         )
         self.tabview.pack(fill="both", expand=True, pady=(10, 0))
 
@@ -237,16 +244,7 @@ class BaseballBotGUI:
         tab_league = self.tabview.add("🏆 聯賽自動刷")
         self._build_league_tab(tab_league)
 
-        # 頁籤 2: ⚡ 即時打擊輔助
-        tab_batting = self.tabview.add("⚡ 即時打擊輔助")
-        self.batting_tab = BattingAssistTab(
-            tab_batting,
-            bot_instance=self.bot,
-            gui_parent=self,
-            log_callback=self.log_message
-        )
-
-        # 頁籤 3: 📋 任務清單 (Scratch 積木)
+        # 頁籤 2: 📋 任務清單 (Scratch 積木)
         tab_tasks = self.tabview.add("📋 任務清單 (Scratch 積木)")
         self.task_tab = TaskFlowTab(
             tab_tasks,
@@ -256,6 +254,95 @@ class BaseballBotGUI:
             instance_id=self.instance_id
         )
         self.bot.set_task_flow_handler(self._execute_task_flow_for_event)
+
+        # 頁籤 3: ⚡ 即時打擊輔助 (放到最後，點擊跳出警告並覆蓋灰色遮罩完全停用)
+        tab_batting = self.tabview.add("⚡ 即時打擊輔助")
+        self._build_disabled_batting_tab(tab_batting)
+
+    def _on_tab_changed(self):
+        """切換頁籤事件回呼：當點擊進入打擊輔助時先跳出警告"""
+        selected_tab = self.tabview.get()
+        if "即時打擊輔助" in selected_tab:
+            messagebox.showwarning("警告", "正在開發，功能不完全")
+
+    def _build_disabled_batting_tab(self, parent: ctk.CTkFrame):
+        """
+        建構打擊輔助頁面：
+        1. 保留底層原始 BattingAssistTab 介面與程式碼結構。
+        2. 以灰色半透明/實心遮罩完整覆蓋全畫面，攔截所有點擊與操作。
+        3. 遮罩點擊時即時彈出警告提示。
+        """
+        try:
+            self.batting_tab = BattingAssistTab(
+                parent,
+                bot_instance=self.bot,
+                gui_parent=self,
+                log_callback=self.log_message
+            )
+        except Exception:
+            self.batting_tab = None
+
+        # 灰色半透明鎖定遮罩 (覆蓋整個頁面，無法點開底層任何元件)
+        overlay = ctk.CTkFrame(
+            parent,
+            fg_color="#181825",
+            corner_radius=12,
+            border_width=2,
+            border_color="#45475A"
+        )
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        overlay.lift()
+
+        def _warn_disabled(event=None):
+            messagebox.showwarning("警告", "正在開發，功能不完全")
+
+        overlay.bind("<Button-1>", _warn_disabled)
+
+        # 遮罩內部居中警告卡片
+        center_card = ctk.CTkFrame(
+            overlay,
+            fg_color="#252538",
+            corner_radius=16,
+            border_width=1,
+            border_color="#313244",
+            width=540,
+            height=280
+        )
+        center_card.place(relx=0.5, rely=0.5, anchor="center")
+        center_card.pack_propagate(False)
+        center_card.bind("<Button-1>", _warn_disabled)
+
+        lbl_icon = ctk.CTkLabel(center_card, text="⚠️", font=ctk.CTkFont(size=46))
+        lbl_icon.pack(pady=(26, 6))
+        lbl_icon.bind("<Button-1>", _warn_disabled)
+
+        lbl_title = ctk.CTkLabel(
+            center_card,
+            text="正在開發，功能不完全",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color="#F59E0B"
+        )
+        lbl_title.pack(pady=4)
+        lbl_title.bind("<Button-1>", _warn_disabled)
+
+        lbl_desc = ctk.CTkLabel(
+            center_card,
+            text="即時打擊輔助功能目前暫停使用，畫面已鎖定。\n背景計算、視窗截圖與按鍵模擬已全面關閉。\n請使用「🏆 聯賽自動刷」或「📋 任務清單」進行自動化操作。",
+            font=ctk.CTkFont(size=13),
+            text_color="#A6ADC8",
+            justify="center"
+        )
+        lbl_desc.pack(pady=(8, 14))
+        lbl_desc.bind("<Button-1>", _warn_disabled)
+
+        badge = ctk.CTkLabel(
+            center_card,
+            text="🔒 [ 功能已停用 (Feature Disabled) ]",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#6C7086"
+        )
+        badge.pack()
+        badge.bind("<Button-1>", _warn_disabled)
 
     # --------------------------------------------------------------------------
     # 頂部狀態列 (大字體指示燈、統計數據、裝置連線與主控制大按鈕)
@@ -431,9 +518,9 @@ class BaseballBotGUI:
         ctk.CTkButton(btn_box, text="＋ 優先動作", width=76, height=28, corner_radius=6, command=self.on_add_priority_step, fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=2)
         ctk.CTkButton(btn_box, text="⚡ 事件跳轉", width=76, height=28, corner_radius=6, command=self.on_add_task_trigger_step, fg_color="#8B5CF6", hover_color="#7C3AED", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=2)
         ctk.CTkButton(btn_box, text="＋ 一般步驟", width=76, height=28, corner_radius=6, command=self.on_add_empty_step, fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=2)
-        ctk.CTkButton(btn_box, text="💡 常用範本", width=76, height=28, corner_radius=6, command=self.on_reset_baseball_template, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=2)
-        ctk.CTkButton(btn_box, text="💾 儲存", width=52, height=28, corner_radius=6, command=self.on_save_config_manual, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=2)
-        ctk.CTkButton(btn_box, text="📂 載入", width=52, height=28, corner_radius=6, command=self.on_load_config_manual, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=2)
+        ctk.CTkButton(btn_box, text="💡 常用範本", width=76, height=28, corner_radius=6, command=self.on_open_league_presets_dialog, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=2)
+        ctk.CTkButton(btn_box, text="💾 存為範本", width=76, height=28, corner_radius=6, command=self.on_save_league_preset_dialog, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=2)
+        ctk.CTkButton(btn_box, text="📂 載入檔案", width=76, height=28, corner_radius=6, command=self.on_load_config_manual, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=2)
 
         # 滾動步驟區域 (CTkScrollableFrame)
         self.step_scroll = ctk.CTkScrollableFrame(card, fg_color="transparent", corner_radius=8)
@@ -1835,11 +1922,493 @@ class BaseballBotGUI:
             return
         self.on_reset_baseball_template()
 
+    def reload_league_presets(self):
+        """重新載入聯賽常用範本目錄 (configs/聯賽自動刷/) 下的所有範本檔案"""
+        self.league_presets = {}
+        if not hasattr(self, "league_presets_dir") or not os.path.exists(self.league_presets_dir):
+            return
+
+        for fname in sorted(os.listdir(self.league_presets_dir)):
+            if not fname.endswith(".json") or fname.startswith("."):
+                continue
+            fpath = os.path.join(self.league_presets_dir, fname)
+            key = os.path.splitext(fname)[0]
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                title = data.get("title") or data.get("name") or key
+                desc = data.get("desc", "")
+                p_cnt = len(data.get("priority_steps", []))
+                s_cnt = len(data.get("steps", []))
+                self.league_presets[key] = {
+                    "key": key,
+                    "title": title,
+                    "desc": desc,
+                    "data": data,
+                    "file_path": fpath,
+                    "priority_count": p_cnt,
+                    "steps_count": s_cnt
+                }
+            except Exception as e:
+                self.log_message(f"⚠️ 讀取聯賽範本檔案 {fname} 失敗: {e}")
+
+    def load_league_preset(self, preset_key: str, confirm: bool = True):
+        """載入指定的常用聯賽範本"""
+        preset_info = self.league_presets.get(preset_key)
+        if not preset_info:
+            fpath = os.path.join(self.league_presets_dir, f"{preset_key}.json")
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    preset_info = {
+                        "key": preset_key,
+                        "title": data.get("title", preset_key),
+                        "data": data,
+                        "file_path": fpath
+                    }
+                except Exception:
+                    pass
+
+        if not preset_info:
+            messagebox.showwarning("提示", f"找不到指定聯賽範本：{preset_key}")
+            return
+
+        title = preset_info.get("title", preset_key)
+        if confirm and (self.priority_steps_list or self.steps_list):
+            if not messagebox.askyesno("載入範本", f"載入範本「{title}」將取代目前設定與步驟清單，是否繼續？"):
+                return
+
+        data = preset_info.get("data")
+        if data:
+            self.apply_config_dict(data)
+            self.auto_save_current_config()
+            p_cnt = len(self.priority_steps_list)
+            s_cnt = len(self.steps_list)
+            self.log_message(f"已成功載入常用聯賽範本: {title} (優先動作: {p_cnt} 項，一般步驟: {s_cnt} 項)")
+
+    def delete_league_preset(self, preset_key: str, parent_dlg=None):
+        """刪除指定的常用聯賽範本"""
+        preset_info = self.league_presets.get(preset_key)
+        title = preset_info.get("title", preset_key) if preset_info else preset_key
+        if not messagebox.askyesno("確認刪除", f"確定要刪除聯賽範本「{title}」嗎？\n(檔案將從 configs/聯賽自動刷 移除)", parent=parent_dlg):
+            return
+        fpath = os.path.join(self.league_presets_dir, f"{preset_key}.json")
+        try:
+            if os.path.exists(fpath):
+                os.remove(fpath)
+            self.log_message(f"已刪除聯賽範本: {title}")
+            self.reload_league_presets()
+        except Exception as e:
+            messagebox.showerror("錯誤", f"刪除聯賽範本失敗: {e}", parent=parent_dlg)
+
+    def on_open_league_presets_dialog(self):
+        """開啟常用聯賽範本管理視窗 (可載入、新增、刪除多個範本)"""
+        self.reload_league_presets()
+
+        dlg = ctk.CTkToplevel(self.root)
+        dlg.title("💡 常用聯賽範本管理")
+        dlg.geometry("640x560")
+        dlg.minsize(560, 480)
+        dlg.configure(fg_color=COLOR_BG)
+        dlg.grab_set()
+        dlg.transient(self.root)
+
+        # 頂部資訊與控制列
+        f_top = ctk.CTkFrame(dlg, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
+        f_top.pack(fill="x", padx=16, pady=(16, 10))
+
+        inner_top = ctk.CTkFrame(f_top, fg_color="transparent")
+        inner_top.pack(fill="x", padx=14, pady=12)
+
+        lbl_t = ctk.CTkLabel(
+            inner_top,
+            text="💡 常用聯賽自動刷關範本庫",
+            font=ctk.CTkFont(family="Arial", size=15, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY
+        )
+        lbl_t.pack(side="left")
+
+        def _open_folder():
+            try:
+                os.makedirs(self.league_presets_dir, exist_ok=True)
+                import subprocess, sys
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", self.league_presets_dir])
+                else:
+                    os.startfile(self.league_presets_dir)
+            except Exception as ex:
+                messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=dlg)
+
+        btn_open = ctk.CTkButton(
+            inner_top, text="📂 開啟資料夾", width=90, height=28, corner_radius=6,
+            font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
+            command=_open_folder
+        )
+        btn_open.pack(side="right", padx=(6, 0))
+
+        def _do_reload():
+            self.reload_league_presets()
+            _render_list()
+
+        btn_reload = ctk.CTkButton(
+            inner_top, text="🔄 重整", width=60, height=28, corner_radius=6,
+            font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
+            command=_do_reload
+        )
+        btn_reload.pack(side="right")
+
+        # 中間滾動範本列表
+        scroll_frame = ctk.CTkScrollableFrame(dlg, fg_color="transparent", corner_radius=10)
+        scroll_frame.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+
+        def _render_list():
+            for w in scroll_frame.winfo_children():
+                w.destroy()
+
+            if not self.league_presets:
+                lbl_empty = ctk.CTkLabel(
+                    scroll_frame,
+                    text="目前尚無常用聯賽範本。\n點擊下方「＋ 將目前步驟儲存為新範本」即可存入！",
+                    font=ctk.CTkFont(size=13),
+                    text_color=COLOR_TEXT_DIM,
+                    justify="center"
+                )
+                lbl_empty.pack(pady=40)
+                return
+
+            for p_key, p_val in list(self.league_presets.items()):
+                card = ctk.CTkFrame(
+                    scroll_frame,
+                    fg_color=COLOR_CARD,
+                    corner_radius=10,
+                    border_width=1,
+                    border_color=COLOR_CARD_BORDER
+                )
+                card.pack(fill="x", pady=5, padx=2)
+
+                row_card = ctk.CTkFrame(card, fg_color="transparent")
+                row_card.pack(fill="x", padx=14, pady=10)
+
+                left_info = ctk.CTkFrame(row_card, fg_color="transparent")
+                left_info.pack(side="left", fill="both", expand=True)
+
+                title_text = p_val.get("title", p_key)
+                ctk.CTkLabel(
+                    left_info,
+                    text=f"⚾ {title_text}",
+                    font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
+                    text_color=COLOR_TEXT_PRIMARY,
+                    anchor="w"
+                ).pack(anchor="w")
+
+                p_cnt = p_val.get("priority_count", 0)
+                s_cnt = p_val.get("steps_count", 0)
+                desc_str = f"檔案：{p_key}.json | ⚡ 優先動作: {p_cnt} 項 | 📋 一般步驟: {s_cnt} 項"
+                if p_val.get("desc"):
+                    desc_str += f" | {p_val['desc']}"
+
+                ctk.CTkLabel(
+                    left_info,
+                    text=desc_str,
+                    font=ctk.CTkFont(size=11),
+                    text_color=COLOR_TEXT_MUTED,
+                    anchor="w"
+                ).pack(anchor="w", pady=(2, 0))
+
+                # 右側操作按鈕
+                btn_actions = ctk.CTkFrame(row_card, fg_color="transparent")
+                btn_actions.pack(side="right")
+
+                def _load_p(k=p_key):
+                    dlg.destroy()
+                    self.load_league_preset(k)
+
+                btn_load = ctk.CTkButton(
+                    btn_actions,
+                    text="▶ 載入此範本",
+                    width=96,
+                    height=30,
+                    corner_radius=6,
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    fg_color=COLOR_BTN_PRIMARY,
+                    hover_color=COLOR_BTN_PRIMARY_HOVER,
+                    command=_load_p
+                )
+                btn_load.pack(side="left", padx=(0, 6))
+
+                def _del_p(k=p_key):
+                    self.delete_league_preset(k, parent_dlg=dlg)
+                    _render_list()
+
+                btn_del = ctk.CTkButton(
+                    btn_actions,
+                    text="✕",
+                    width=30,
+                    height=30,
+                    corner_radius=6,
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                    fg_color="#EF4444",
+                    hover_color="#DC2626",
+                    command=_del_p
+                )
+                btn_del.pack(side="left")
+
+        _render_list()
+
+        # 底部按鈕列
+        f_bot = ctk.CTkFrame(dlg, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
+        f_bot.pack(fill="x", padx=16, pady=(0, 16))
+
+        inner_bot = ctk.CTkFrame(f_bot, fg_color="transparent")
+        inner_bot.pack(fill="x", padx=14, pady=10)
+
+        def _open_save():
+            dlg.destroy()
+            self.on_save_league_preset_dialog(default_mode="new")
+
+        btn_save_new = ctk.CTkButton(
+            inner_bot,
+            text="＋ 將目前步驟儲存為新範本",
+            height=32,
+            corner_radius=6,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLOR_BTN_START,
+            hover_color=COLOR_BTN_START_HOVER,
+            command=_open_save
+        )
+        btn_save_new.pack(side="left")
+
+        btn_close = ctk.CTkButton(
+            inner_bot,
+            text="關閉",
+            width=80,
+            height=32,
+            corner_radius=6,
+            font=ctk.CTkFont(size=12),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=dlg.destroy
+        )
+        btn_close.pack(side="right")
+
+    def on_save_league_preset_dialog(self, default_mode: str = "new"):
+        """開啟儲存聯賽範本對話框（新增為常用範本 / 覆蓋既有範本 / 另存新檔）"""
+        if not self.priority_steps_list and not self.steps_list:
+            if not messagebox.askyesno("提示", "目前沒有任何優先動作或一般步驟，確定要儲存空的聯賽設定嗎？", parent=self.root):
+                return
+
+        dlg = ctk.CTkToplevel(self.root)
+        dlg.title("💾 儲存聯賽範本")
+        dlg.geometry("520x460")
+        dlg.resizable(False, False)
+        dlg.configure(fg_color=COLOR_BG)
+        dlg.grab_set()
+        dlg.transient(self.root)
+
+        f_top = ctk.CTkFrame(dlg, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
+        f_top.pack(fill="x", padx=16, pady=(16, 8))
+
+        inner_top = ctk.CTkFrame(f_top, fg_color="transparent")
+        inner_top.pack(fill="x", padx=12, pady=10)
+
+        ctk.CTkLabel(
+            inner_top, text="💾 選擇聯賽範本儲存方式",
+            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY
+        ).pack(anchor="w")
+
+        row_dir = ctk.CTkFrame(inner_top, fg_color="transparent")
+        row_dir.pack(fill="x", pady=(4, 0))
+        folder_name = os.path.basename(self.league_presets_dir)
+        ctk.CTkLabel(
+            row_dir, text=f"範本資料夾：configs/{folder_name}/",
+            font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED
+        ).pack(side="left")
+
+        def _open_folder():
+            try:
+                os.makedirs(self.league_presets_dir, exist_ok=True)
+                import subprocess, sys
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", self.league_presets_dir])
+                else:
+                    os.startfile(self.league_presets_dir)
+            except Exception as ex:
+                messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=dlg)
+
+        btn_open = ctk.CTkButton(
+            row_dir, text="開啟資料夾", width=80, height=26, corner_radius=6,
+            font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
+            command=_open_folder
+        )
+        btn_open.pack(side="right")
+
+        self.reload_league_presets()
+        preset_keys = list(self.league_presets.keys())
+        mode_var = tk.StringVar(value="new" if (default_mode == "new" or not preset_keys) else "existing")
+        name_var = tk.StringVar(value=f"自訂聯賽_{len(preset_keys) + 1}")
+        desc_var = tk.StringVar(value="")
+        existing_var = tk.StringVar()
+        if preset_keys:
+            existing_var.set(f"{preset_keys[0]}: {self.league_presets[preset_keys[0]].get('title', preset_keys[0])}")
+
+        f_body = ctk.CTkFrame(dlg, fg_color="transparent")
+        f_body.pack(fill="both", expand=True, padx=16, pady=4)
+
+        rb1 = ctk.CTkRadioButton(f_body, text="新增為常用聯賽範本", value="new", variable=mode_var, font=ctk.CTkFont(size=12, weight="bold"))
+        rb1.pack(anchor="w", pady=(4, 4))
+
+        f_new = ctk.CTkFrame(f_body, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
+        f_new.pack(fill="x", padx=12, pady=(0, 8))
+
+        row_name = ctk.CTkFrame(f_new, fg_color="transparent")
+        row_name.pack(fill="x", padx=12, pady=(8, 4))
+        ctk.CTkLabel(row_name, text="範本名稱:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
+        entry_name = ctk.CTkEntry(row_name, textvariable=name_var, height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+        entry_name.pack(side="left", fill="x", expand=True)
+
+        row_desc = ctk.CTkFrame(f_new, fg_color="transparent")
+        row_desc.pack(fill="x", padx=12, pady=(0, 8))
+        ctk.CTkLabel(row_desc, text="說明備註:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
+        entry_desc = ctk.CTkEntry(row_desc, textvariable=desc_var, placeholder_text="(選填，如：適用 1920x1080 聯賽)", height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+        entry_desc.pack(side="left", fill="x", expand=True)
+
+        rb2 = ctk.CTkRadioButton(f_body, text="覆蓋既有聯賽範本", value="existing", variable=mode_var, font=ctk.CTkFont(size=12, weight="bold"))
+        rb2.pack(anchor="w", pady=(4, 4))
+
+        f_exist = ctk.CTkFrame(f_body, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
+        f_exist.pack(fill="x", padx=12, pady=(0, 8))
+
+        row_sel = ctk.CTkFrame(f_exist, fg_color="transparent")
+        row_sel.pack(fill="x", padx=12, pady=8)
+        ctk.CTkLabel(row_sel, text="現有範本:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
+        combo_exist = ctk.CTkComboBox(
+            row_sel,
+            variable=existing_var,
+            values=[f"{k}: {v.get('title', k)}" for k, v in self.league_presets.items()] if preset_keys else ["(尚無範本)"],
+            height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly" if preset_keys else "disabled"
+        )
+        combo_exist.pack(side="left", fill="x", expand=True)
+
+        rb3 = ctk.CTkRadioButton(f_body, text="另存新檔 (自訂檔案路徑)", value="custom", variable=mode_var, font=ctk.CTkFont(size=12, weight="bold"))
+        rb3.pack(anchor="w", pady=(4, 4))
+
+        def _update_ui_state(*args):
+            m = mode_var.get()
+            entry_name.configure(state="normal" if m == "new" else "disabled")
+            entry_desc.configure(state="normal" if m == "new" else "disabled")
+            combo_exist.configure(state="readonly" if (m == "existing" and preset_keys) else "disabled")
+
+        mode_var.trace_add("write", _update_ui_state)
+        _update_ui_state()
+
+        f_bottom = ctk.CTkFrame(dlg, fg_color="transparent")
+        f_bottom.pack(fill="x", side="bottom", padx=16, pady=14)
+
+        def _do_save():
+            m = mode_var.get()
+            if m == "new":
+                name = name_var.get().strip()
+                if not name:
+                    messagebox.showwarning("提示", "請輸入範本名稱！", parent=dlg)
+                    return
+                safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_", " ", "（", "）", "(", ")")).strip()
+                if not safe_name:
+                    safe_name = "custom_league_preset"
+                target_path = os.path.join(self.league_presets_dir, f"{safe_name}.json")
+                if os.path.exists(target_path):
+                    if not messagebox.askyesno("覆蓋確認", f"範本檔案「{safe_name}.json」已存在，是否確認覆蓋？", parent=dlg):
+                        return
+                data = self.serialize_current_config()
+                data["key"] = safe_name
+                data["title"] = name
+                data["desc"] = desc_var.get().strip()
+                try:
+                    os.makedirs(self.league_presets_dir, exist_ok=True)
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    self.reload_league_presets()
+                    self.auto_save_current_config()
+                    messagebox.showinfo("成功", f"常用聯賽範本已新增至:\n{os.path.basename(target_path)}", parent=dlg)
+                    dlg.destroy()
+                except Exception as ex:
+                    messagebox.showerror("錯誤", f"存檔失敗: {ex}", parent=dlg)
+
+            elif m == "existing":
+                if not preset_keys:
+                    messagebox.showwarning("提示", "目前沒有任何既有範本可覆蓋！請選擇「新增為常用聯賽範本」。", parent=dlg)
+                    return
+                sel_str = existing_var.get().strip()
+                sel_key = sel_str.split(":")[0].strip() if ":" in sel_str else sel_str
+                if not sel_key:
+                    messagebox.showwarning("提示", "請選擇要覆蓋的範本！", parent=dlg)
+                    return
+                target_path = os.path.join(self.league_presets_dir, f"{sel_key}.json")
+                title = self.league_presets.get(sel_key, {}).get("title", sel_key)
+                if not messagebox.askyesno("確認覆蓋", f"確定要覆蓋範本「{title}」嗎？\n原有的步驟內容將被取代。", parent=dlg):
+                    return
+                data = self.serialize_current_config()
+                data["key"] = sel_key
+                data["title"] = title
+                data["desc"] = self.league_presets.get(sel_key, {}).get("desc", "")
+                try:
+                    os.makedirs(self.league_presets_dir, exist_ok=True)
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    self.reload_league_presets()
+                    self.auto_save_current_config()
+                    messagebox.showinfo("成功", f"已成功覆蓋更新聯賽範本:\n{title}", parent=dlg)
+                    dlg.destroy()
+                except Exception as ex:
+                    messagebox.showerror("錯誤", f"更新範本失敗: {ex}", parent=dlg)
+
+            elif m == "custom":
+                dlg.destroy()
+                path = filedialog.asksaveasfilename(
+                    initialdir=self.league_presets_dir if os.path.exists(self.league_presets_dir) else self.config_dir,
+                    title="另存聯賽設定 JSON",
+                    defaultextension=".json",
+                    filetypes=[("JSON 設定檔", "*.json"), ("所有檔案", "*.*")]
+                )
+                if not path:
+                    return
+                try:
+                    data = self.serialize_current_config()
+                    data["title"] = os.path.splitext(os.path.basename(path))[0]
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    self.log_message(f"設定已匯出至: {os.path.basename(path)}")
+                    messagebox.showinfo("成功", f"設定已成功另存至:\n{path}")
+                except Exception as ex:
+                    messagebox.showerror("錯誤", f"儲存失敗: {ex}")
+
+        btn_ok = ctk.CTkButton(
+            f_bottom, text="確認儲存", width=100, height=32, corner_radius=6,
+            font=ctk.CTkFont(size=12, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=_do_save
+        )
+        btn_ok.pack(side="right", padx=(6, 0))
+
+        btn_cancel = ctk.CTkButton(
+            f_bottom, text="取消", width=70, height=32, corner_radius=6,
+            font=ctk.CTkFont(size=12), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
+            command=dlg.destroy
+        )
+        btn_cancel.pack(side="right")
+
     def on_reset_baseball_template(self):
-        """載入經典棒球聯賽範本"""
+        """載入預設聯賽範本（優先從範本庫載入，若無則產生預設步驟）"""
+        self.reload_league_presets()
+        # 若範本庫內有「經典棒球聯賽刷關 (預設)」則直接載入
+        target_default = "經典棒球聯賽刷關 (預設)"
+        if target_default in self.league_presets:
+            self.load_league_preset(target_default, confirm=False)
+            return
+
+        # 備援：若無檔案則建立預設步驟
         self._clear_all_priority_steps()
         self._clear_all_steps()
-        # 預設優先動作：異常連線彈窗處理
         self._create_priority_step_widget(
             name="異常連線中斷",
             keywords="連線中斷, 重新連線, 網路異常, 伺服器維護, 請重新登入",
@@ -1848,7 +2417,6 @@ class BaseballBotGUI:
             roi_name="中央區域",
             expanded=False
         )
-        # 預設循序步驟
         default_steps = [
             ("結算確認", "確認, 確定, 領取, 結算, 結束", 3.0, "右下角區域"),
             ("繼續下一場", "繼續, 下一步, 再來一場, 返回", 2.5, "右下角區域"),

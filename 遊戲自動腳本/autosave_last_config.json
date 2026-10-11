@@ -1,15 +1,16 @@
 {
-  "device": "127.0.0.1:5555",
-  "interval": 0.4,
+  "version": "1.0",
+  "device": "未偵測到裝置",
+  "interval": 0.39,
   "confidence": 0.4,
-  "idle_strategy": "常規等待",
+  "idle_strategy": "快速跳過",
   "auto_refresh": true,
   "lang_tc": true,
-  "lang_sc": false,
+  "lang_sc": true,
   "lang_en": true,
   "ocr_languages": {
     "tc": true,
-    "sc": false,
+    "sc": true,
     "en": true
   },
   "watchdog_enabled": false,
@@ -19,15 +20,19 @@
     "seconds": 60
   },
   "idle_tap": {
-    "enabled": false,
-    "area": "右下角區域",
+    "enabled": true,
+    "area": "自訂座標",
     "times": 3,
     "interval": 0.4,
-    "custom_x": 983,
-    "custom_y": 1023
+    "custom_x": 816,
+    "custom_y": 1064
   },
   "tg_token": "",
   "tg_chat_id": "",
+  "telegram_global": {
+    "token": "",
+    "chat_id": ""
+  },
   "priority_steps": [],
   "steps": []
 }

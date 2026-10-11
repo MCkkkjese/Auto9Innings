@@ -47,6 +47,14 @@ if sys.platform == "win32":
 
 logger = logging.getLogger("BattingAssist")
 
+# ==============================================================================
+# ⚠️ [AI 協作與系統架構註記]
+# 即時打擊輔助功能目前已全面關閉（BATTING_ASSIST_ENABLED = False）。
+# 在 AI 協作、除錯或新增聯賽/任務功能時，請直接跳過此模組，無需將其納入推理解析。
+# 原始演算法與實作程式碼皆完整保留於此檔案中。
+# ==============================================================================
+BATTING_ASSIST_ENABLED = False
+
 
 def list_emulator_windows(keyword: Optional[str] = None) -> List[Dict[str, Any]]:
     """
@@ -319,7 +327,10 @@ class BattingAssistEngine:
         return self.locked_window_info
 
     def start(self):
-        """啟動打擊輔助背景線程"""
+        """啟動打擊輔助背景線程 (功能已停用)"""
+        if not BATTING_ASSIST_ENABLED:
+            self._log("⚠️ 打擊輔助功能目前已停用，不啟動背景運算。")
+            return
         if self.is_running:
             return
         self.is_running = True

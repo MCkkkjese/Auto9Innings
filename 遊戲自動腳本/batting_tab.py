@@ -14,7 +14,11 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from batting_assist import BattingAssistEngine, ALGO_PRESETS, DEFAULT_CONFIG, list_emulator_windows, HAS_MSS
+# ==============================================================================
+# ⚠️ [AI 協作註記] 即時打擊輔助 GUI 目前已暫停使用並覆蓋鎖定遮罩。
+# AI 協作時請直接跳過此模組，優先處理聯賽刷關 (bot_core / league) 與 Scratch 任務清單 (task_flow)。
+# ==============================================================================
+from batting_assist import BattingAssistEngine, ALGO_PRESETS, DEFAULT_CONFIG, list_emulator_windows, HAS_MSS, BATTING_ASSIST_ENABLED
 from theme import DARK_BG, DARK_FG, DARK_FG_MUTED, DARK_BORDER, get_theme_palette
 
 PRESET_DESCRIPTIONS = {
@@ -796,7 +800,10 @@ class BattingAssistTab:
     # 事件處理
     # =========================================================================
     def on_toggle_engine(self):
-        """切換啟動/停止打擊輔助"""
+        """切換啟動/停止打擊輔助 (功能已停用)"""
+        if not BATTING_ASSIST_ENABLED:
+            messagebox.showwarning("警告", "正在開發，功能不完全")
+            return
         if not self.engine.is_running:
             self.on_apply_config()
             self.engine.start()
