@@ -16,7 +16,8 @@ import json
 import queue
 import datetime
 import subprocess
-from typing import Optional, Dict, Any, List, Tuple
+import shutil
+from typing import Optional, Dict, Any, List, Tuple, Callable
 
 import tkinter as tk
 from tkinter import messagebox, filedialog
@@ -69,9 +70,10 @@ COLOR_TEXT_DIM = "#6C7086"     # 邊緣提示資訊
 ROI_OPTIONS = ["右下角區域", "右半側螢幕", "下半部區域", "中央區域", "全畫面比對", "自訂特定區塊"]
 REPEAT_MODES = ["持續連點", "指定次數"]
 REPEAT_AREAS = ["右下角區域", "中央區域", "右上角 (Skip)", "右半側中央", "跟隨命中目標", "自訂座標"]
-ACTION_OPTIONS = ["點擊詞條", "自訂座標", "自訂特定區塊", "持續連點", "無動作(僅等待)", "📋 執行任務清單"]
+ACTION_OPTIONS = ["點擊目標中心 / 詞條", "自訂座標", "自訂特定區塊", "持續連點", "無動作(僅等待)", "📋 執行任務清單"]
 IDLE_STRATEGIES = ["常規等待", "快速跳過", "自動停止"]
-TARGET_TYPES = ["📝 僅文字", "✅ 勾選方塊 (打勾)", "❌ 關閉按鈕 (叉叉)"]
+TARGET_TYPES = ["📝 文字辨識 (OCR)", "🖼️ 圖片特徵 (模板比對)", "✅ 勾選方塊 (打勾)", "❌ 關閉按鈕 (叉叉)"]
+RECOGNITION_MODES = ["🖼️ 圖片特徵比對模式", "📝 文字辨識模式"]
 
 # 步驟卡片專屬邊框色 (拖曳時色彩跟隨)
 STEP_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4"]
@@ -79,6 +81,35 @@ STEP_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4"]
 # 預設 Telegram 設定
 DEFAULT_TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 DEFAULT_TG_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+# 獨立於 Git 倉庫之使用者存檔目錄持久化檔案路徑 (存放在使用者家目錄)
+USER_STORAGE_CONFIG_FILE = os.path.expanduser("~/.auto9innings_storage_path.json")
+
+
+def get_persisted_storage_dir() -> str:
+    """從使用者個人目錄讀取持久化存檔路徑 (完全不受 git pull/push 影響)"""
+    default_dir = os.path.expanduser("~/Documents/Auto9Innings_Data")
+    try:
+        if os.path.exists(USER_STORAGE_CONFIG_FILE):
+            with open(USER_STORAGE_CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            path = data.get("storage_dir", "").strip()
+            if path:
+                return os.path.abspath(path)
+    except Exception:
+        pass
+    return default_dir
+
+
+def persist_storage_dir(path: str):
+    """將存檔路徑寫入使用者個人目錄 (~/.auto9innings_storage_path.json)"""
+    try:
+        data = {"storage_dir": os.path.abspath(path)}
+        with open(USER_STORAGE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 
 
 def _num(var, default, cast=float):
@@ -88,6 +119,257 @@ def _num(var, default, cast=float):
         return cast(val)
     except Exception:
         return default
+
+
+def _normalize_target_type(t: str) -> str:
+    """正規化步驟辨識類型"""
+    if not t:
+        return "📝 文字辨識 (OCR)"
+    t = str(t)
+    if "圖片" in t or "image" in t.lower() or "模板" in t:
+        return "🖼️ 圖片特徵 (模板比對)"
+    if "打勾" in t or "check" in t.lower():
+        return "✅ 勾選方塊 (打勾)"
+    if "叉叉" in t or "cross" in t.lower() or "關閉" in t:
+        return "❌ 關閉按鈕 (叉叉)"
+    return "📝 文字辨識 (OCR)"
+
+
+def _normalize_action(a: str) -> str:
+    """正規化動作選項"""
+    if not a:
+        return "點擊目標中心 / 詞條"
+    a = str(a)
+    if a in ("點擊詞條", "點擊目標", "點擊目標中心", "點擊字元", "click_text", "click_target"):
+        return "點擊目標中心 / 詞條"
+    return a
+
+
+def imread_unicode(path: str, flags: int = cv2.IMREAD_COLOR) -> Optional[np.ndarray]:
+    """跨平台安全讀取包含中文檔名的圖片"""
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+        return cv2.imdecode(data, flags)
+    except Exception:
+        return None
+
+
+def imwrite_unicode(path: str, img: np.ndarray) -> bool:
+    """跨平台安全寫入包含中文檔名的圖片"""
+    try:
+        ext = os.path.splitext(path)[1]
+        if not ext:
+            ext = ".png"
+            path = path + ext
+        success, encoded = cv2.imencode(ext, img)
+        if success:
+            encoded.tofile(path)
+            return True
+        return False
+    except Exception:
+        return False
+
+
+# ==============================================================================
+# ✂️ 模板截圖選取視窗 (Template Snipping Tool)
+# ==============================================================================
+class TemplateSnipperDialog(ctk.CTkToplevel):
+    """
+    從當前遊戲畫面中拖曳框選局部按鈕/圖示，直接裁切儲存為圖片模板。
+    """
+    def __init__(
+        self,
+        parent,
+        screen_bgr: np.ndarray,
+        initial_name: str,
+        templates_dir: str,
+        on_save_callback: Callable[[str], None]
+    ):
+        super().__init__(parent)
+        self.title("✂️ 從畫面框選按鈕模板")
+        self.geometry("980x680")
+        self.minsize(860, 600)
+        self.configure(fg_color=COLOR_BG)
+        self.grab_set()
+        self.transient(parent)
+
+        self.screen_bgr = screen_bgr
+        self.templates_dir = templates_dir
+        self.on_save_callback = on_save_callback
+        self.crop_bgr = None
+
+        h, w = screen_bgr.shape[:2]
+        self.orig_w, self.orig_h = w, h
+
+        # 頂部提示列
+        top_frame = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=8)
+        top_frame.pack(fill="x", padx=12, pady=(10, 6))
+        ctk.CTkLabel(
+            top_frame,
+            text="✂️ 在下方畫面上「按住滑鼠左鍵並拖曳」框選目標按鈕，放開後即可預覽並儲存為模板圖片。",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#FBBF24"
+        ).pack(side="left", padx=12, pady=8)
+
+        # 畫布容器
+        canvas_container = ctk.CTkFrame(self, fg_color="#11111B", corner_radius=8)
+        canvas_container.pack(fill="both", expand=True, padx=12, pady=4)
+
+        self.canvas_w = 940
+        self.canvas_h = 500
+        self.canvas = tk.Canvas(
+            canvas_container,
+            bg="#11111B",
+            highlightthickness=0,
+            cursor="crosshair"
+        )
+        self.canvas.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # 縮放原圖至適合視窗
+        scale = min(self.canvas_w / w, self.canvas_h / h)
+        self.scale = scale
+        self.disp_w = int(w * scale)
+        self.disp_h = int(h * scale)
+
+        disp_resized = cv2.resize(screen_bgr, (self.disp_w, self.disp_h), interpolation=cv2.INTER_AREA)
+        disp_rgb = cv2.cvtColor(disp_resized, cv2.COLOR_BGR2RGB)
+        self.photo = ImageTk.PhotoImage(Image.fromarray(disp_rgb))
+
+        self.img_on_canvas = self.canvas.create_image(
+            self.canvas_w // 2, self.canvas_h // 2,
+            image=self.photo, anchor="center"
+        )
+
+        self.offset_x = (self.canvas_w - self.disp_w) // 2
+        self.offset_y = (self.canvas_h - self.disp_h) // 2
+
+        self.rect_id = None
+        self.start_x = 0
+        self.start_y = 0
+
+        self.canvas.bind("<Button-1>", self._on_mouse_down)
+        self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_mouse_up)
+
+        # 底部控制與預覽列
+        bot_frame = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=8)
+        bot_frame.pack(fill="x", padx=12, pady=(4, 10))
+
+        # 縮圖預覽
+        self.lbl_crop_thumb = ctk.CTkLabel(bot_frame, text="[請框選按鈕]", width=80, height=60, fg_color=COLOR_INPUT_BG, corner_radius=6)
+        self.lbl_crop_thumb.pack(side="left", padx=10, pady=8)
+
+        # 資訊與命名
+        info_box = ctk.CTkFrame(bot_frame, fg_color="transparent")
+        info_box.pack(side="left", fill="x", expand=True, padx=6)
+
+        self.lbl_crop_info = ctk.CTkLabel(info_box, text="選取尺寸: 尚未框選", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED)
+        self.lbl_crop_info.pack(anchor="w")
+
+        row_name = ctk.CTkFrame(info_box, fg_color="transparent")
+        row_name.pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(row_name, text="儲存檔名:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
+        clean_init = "".join(c for c in initial_name if c.isalnum() or c in ("_", "-")).strip() or "btn_template"
+        self.var_filename = tk.StringVar(value=f"{clean_init}.png")
+        self.entry_filename = ctk.CTkEntry(row_name, textvariable=self.var_filename, width=220, height=26, corner_radius=6, fg_color=COLOR_INPUT_BG)
+        self.entry_filename.pack(side="left", padx=(0, 8))
+
+        # 按鈕列
+        btn_box = ctk.CTkFrame(bot_frame, fg_color="transparent")
+        btn_box.pack(side="right", padx=10)
+
+        self.btn_save = ctk.CTkButton(
+            btn_box,
+            text="💾 儲存並套用",
+            width=100,
+            height=32,
+            corner_radius=6,
+            fg_color="#22C55E",
+            hover_color="#16A34A",
+            font=ctk.CTkFont(weight="bold"),
+            state="disabled",
+            command=self._do_save
+        )
+        self.btn_save.pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            btn_box,
+            text="取消",
+            width=68,
+            height=32,
+            corner_radius=6,
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self.destroy
+        ).pack(side="left")
+
+    def _on_mouse_down(self, e):
+        self.start_x = e.x
+        self.start_y = e.y
+        if self.rect_id:
+            self.canvas.delete(self.rect_id)
+            self.rect_id = None
+
+    def _on_mouse_drag(self, e):
+        if self.rect_id:
+            self.canvas.coords(self.rect_id, self.start_x, self.start_y, e.x, e.y)
+        else:
+            self.rect_id = self.canvas.create_rectangle(
+                self.start_x, self.start_y, e.x, e.y,
+                outline="#22C55E", width=2, dash=(4, 2)
+            )
+
+    def _on_mouse_up(self, e):
+        x1 = min(self.start_x, e.x) - self.offset_x
+        y1 = min(self.start_y, e.y) - self.offset_y
+        x2 = max(self.start_x, e.x) - self.offset_x
+        y2 = max(self.start_y, e.y) - self.offset_y
+
+        rx1 = max(0, min(self.orig_w, int(x1 / self.scale)))
+        ry1 = max(0, min(self.orig_h, int(y1 / self.scale)))
+        rx2 = max(0, min(self.orig_w, int(x2 / self.scale)))
+        ry2 = max(0, min(self.orig_h, int(y2 / self.scale)))
+
+        w = rx2 - rx1
+        h = ry2 - ry1
+
+        if w < 8 or h < 8:
+            self.lbl_crop_info.configure(text="選取範圍過小，請重新框選")
+            self.btn_save.configure(state="disabled")
+            self.crop_bgr = None
+            return
+
+        self.crop_bgr = self.screen_bgr[ry1:ry2, rx1:rx2].copy()
+        self.lbl_crop_info.configure(text=f"選取尺寸: {w} × {h} 像素 (範圍: X {rx1}~{rx2}, Y {ry1}~{ry2})")
+
+        # 產生預覽縮圖
+        rgb = cv2.cvtColor(self.crop_bgr, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+        pil_img.thumbnail((76, 56))
+        self.crop_photo = ImageTk.PhotoImage(pil_img)
+        self.lbl_crop_thumb.configure(image=self.crop_photo, text="")
+        self.btn_save.configure(state="normal")
+
+    def _do_save(self):
+        if self.crop_bgr is None:
+            return
+        fname = self.var_filename.get().strip()
+        if not fname:
+            fname = "template.png"
+        if not fname.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+            fname += ".png"
+
+        target_path = os.path.join(self.templates_dir, fname)
+        try:
+            os.makedirs(self.templates_dir, exist_ok=True)
+            success = imwrite_unicode(target_path, self.crop_bgr)
+            if success:
+                self.on_save_callback(fname)
+                self.destroy()
+            else:
+                messagebox.showerror("錯誤", f"無法儲存模板檔案: {target_path}", parent=self)
+        except Exception as ex:
+            messagebox.showerror("錯誤", f"儲存模板發生異常: {ex}", parent=self)
 
 
 # ==============================================================================
@@ -111,19 +393,15 @@ class BaseballBotGUI:
         self.root.configure(fg_color=COLOR_BG)
 
         self.config_dir = os.path.dirname(os.path.abspath(__file__))
-        save_name = "autosave_last_config.json" if instance_id == 1 else f"autosave_last_config_{instance_id}.json"
-        self.auto_save_file = os.path.join(self.config_dir, save_name)
-
-        # 常用聯賽範本儲存目錄 (configs/聯賽自動刷/)
-        self.league_presets_dir = os.path.join(self.config_dir, "configs", "聯賽自動刷")
-        os.makedirs(self.league_presets_dir, exist_ok=True)
-        self.league_presets: Dict[str, Dict[str, Any]] = {}
-        self.reload_league_presets()
 
         # 2. 自動化核心與工作執行緒
         self.bot = BaseballBot(log_callback=self.log_message, on_frame_callback=self.on_bot_frame_update)
         self.worker_thread = None
         self.is_running = False
+
+        # 獨立存檔與圖片資料夾初始化 (持久化讀取，預設 ~/Documents/Auto9Innings_Data，完全獨立於 git 倉庫)
+        self.league_presets: Dict[str, Dict[str, Any]] = {}
+        self.set_storage_dir(get_persisted_storage_dir(), seed=True)
 
         # 統計指標
         self.start_time: Optional[float] = None
@@ -162,6 +440,7 @@ class BaseballBotGUI:
         self.var_idle_strategy = tk.StringVar(value=IDLE_STRATEGIES[0])
         self.var_auto_refresh = tk.BooleanVar(value=True)
         self.var_preview_coords = tk.StringVar(value="")
+        self.var_recognition_mode = tk.StringVar(value="🖼️ 圖片特徵比對模式")
 
         # 語言辨識與過濾 (預設繁中+英文開啟，簡中關閉杜絕誤判)
         self.var_lang_tc = tk.BooleanVar(value=True)
@@ -198,6 +477,28 @@ class BaseballBotGUI:
         self.var_tg_token = tk.StringVar(value=DEFAULT_TG_TOKEN)
         self.var_tg_chat_id = tk.StringVar(value=DEFAULT_TG_CHAT_ID)
 
+        # 進階設定變更即刻自動儲存監聽
+        self._is_loading_config = False
+
+        def _on_adv_var_changed(*_):
+            if getattr(self, "_is_loading_config", False):
+                return
+            self.auto_save_current_config()
+
+        self.var_interval.trace_add("write", _on_adv_var_changed)
+        self.var_confidence.trace_add("write", _on_adv_var_changed)
+        self.var_idle_strategy.trace_add("write", _on_adv_var_changed)
+        self.var_watchdog_enabled.trace_add("write", _on_adv_var_changed)
+        self.var_watchdog_seconds.trace_add("write", _on_adv_var_changed)
+        self.var_idle_tap_enabled.trace_add("write", _on_adv_var_changed)
+        self.var_idle_tap_area.trace_add("write", _on_adv_var_changed)
+        self.var_idle_tap_times.trace_add("write", _on_adv_var_changed)
+        self.var_idle_tap_interval.trace_add("write", _on_adv_var_changed)
+        self.var_idle_tap_custom_x.trace_add("write", _on_adv_var_changed)
+        self.var_idle_tap_custom_y.trace_add("write", _on_adv_var_changed)
+        self.var_tg_token.trace_add("write", _on_adv_var_changed)
+        self.var_tg_chat_id.trace_add("write", _on_adv_var_changed)
+
         # 步驟清單
         self.priority_steps_list = []  # 最高優先動作 (if/elif 條件中斷)
         self.steps_list = []           # 一般循序步驟
@@ -220,10 +521,13 @@ class BaseballBotGUI:
     # 📐 介面排版建構 (Layout Structure)
     # ==========================================================================
     def _build_ui(self):
-        """建構主容器：頂部狀態導覽卡片 + 主內容 Tabview 分頁"""
-        # 主外層容器 (Padding 16)
+        """建構主容器：最上方獨立存檔目錄卡片 + 頂部狀態導覽卡片 + 主內容 Tabview 分頁"""
+        # 主外層容器 (Padding 14)
         main_box = ctk.CTkFrame(self.root, fg_color="transparent")
         main_box.pack(fill="both", expand=True, padx=14, pady=12)
+
+        # 0. 最上方獨立存檔目錄卡片 (定義自訂存檔位置並永久記憶)
+        self._build_storage_bar(main_box)
 
         # 1. 頂部狀態與控制卡片
         self._build_topbar(main_box)
@@ -343,6 +647,72 @@ class BaseballBotGUI:
         )
         badge.pack()
         badge.bind("<Button-1>", _warn_disabled)
+
+    # --------------------------------------------------------------------------
+    # 💾 最上方存檔與圖片資料夾卡片 (獨立於 Git，支援自訂與永久記憶)
+    # --------------------------------------------------------------------------
+    def _build_storage_bar(self, parent: ctk.CTkFrame):
+        bar = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
+        bar.pack(fill="x", pady=(0, 6))
+
+        inner = ctk.CTkFrame(bar, fg_color="transparent")
+        inner.pack(fill="x", padx=12, pady=6)
+
+        lbl = ctk.CTkLabel(
+            inner,
+            text="📁 存檔與圖片資料夾：",
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            text_color="#FBBF24"
+        )
+        lbl.pack(side="left", padx=(0, 4))
+
+        self.var_storage_display = tk.StringVar(value=self.storage_dir)
+        self.entry_storage = ctk.CTkEntry(
+            inner,
+            textvariable=self.var_storage_display,
+            font=ctk.CTkFont(family="Menlo", size=11),
+            fg_color=COLOR_INPUT_BG,
+            border_color=COLOR_INPUT_BORDER,
+            corner_radius=6,
+            height=28
+        )
+        self.entry_storage.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        def _on_entry_confirm(e=None):
+            p = self.var_storage_display.get().strip()
+            if p:
+                try:
+                    os.makedirs(p, exist_ok=True)
+                    self.set_storage_dir(p, seed=True)
+                    self.log_message(f"📁 已套用存檔資料夾：{p}")
+                except Exception as ex:
+                    messagebox.showerror("錯誤", f"無法建立目錄: {ex}", parent=self.root)
+
+        self.entry_storage.bind("<Return>", _on_entry_confirm)
+
+        ctk.CTkButton(
+            inner,
+            text="📁 變更位置",
+            width=88,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COLOR_BTN_PRIMARY,
+            hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=self.on_change_storage_dir
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            inner,
+            text="↗️ 開啟資料夾",
+            width=88,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self.on_open_storage_dir
+        ).pack(side="left")
 
     # --------------------------------------------------------------------------
     # 頂部狀態列 (大字體指示燈、統計數據、裝置連線與主控制大按鈕)
@@ -512,6 +882,19 @@ class BaseballBotGUI:
         )
         lbl_title.pack(side="left")
 
+        # 全域辨識模式切換開關 (圖片特徵 vs 文字OCR)
+        self.seg_mode = ctk.CTkSegmentedButton(
+            tools,
+            values=RECOGNITION_MODES,
+            variable=self.var_recognition_mode,
+            command=self._on_recognition_mode_changed,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            height=28,
+            selected_color=COLOR_BTN_PRIMARY,
+            selected_hover_color=COLOR_BTN_PRIMARY_HOVER
+        )
+        self.seg_mode.pack(side="left", padx=(12, 0))
+
         btn_box = ctk.CTkFrame(tools, fg_color="transparent")
         btn_box.pack(side="right")
 
@@ -597,21 +980,21 @@ class BaseballBotGUI:
         ctk.CTkLabel(grid, text="⏱ 掃描間隔 (秒):", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=0, column=0, sticky="w", pady=4)
         row_speed = ctk.CTkFrame(grid, fg_color="transparent")
         row_speed.grid(row=0, column=1, sticky="ew", padx=(6, 12), pady=4)
-        lbl_sp_val = ctk.CTkLabel(row_speed, text=f"{self.var_interval.get():.1f}s", width=42, font=ctk.CTkFont(family="Menlo", size=11))
+        self.lbl_sp_val = ctk.CTkLabel(row_speed, text=f"{self.var_interval.get():.1f}s", width=42, font=ctk.CTkFont(family="Menlo", size=11))
         slider_sp = ctk.CTkSlider(row_speed, from_=0.5, to=8.0, number_of_steps=75, variable=self.var_interval, height=16)
         slider_sp.pack(side="left", fill="x", expand=True)
-        lbl_sp_val.pack(side="left", padx=4)
-        slider_sp.configure(command=lambda v: [lbl_sp_val.configure(text=f"{v:.1f}s"), self.auto_save_current_config()])
+        self.lbl_sp_val.pack(side="left", padx=4)
+        slider_sp.configure(command=lambda v: [self.lbl_sp_val.configure(text=f"{v:.1f}s"), self.auto_save_current_config()])
 
-        # 2. 辨識信心門檻
-        ctk.CTkLabel(grid, text="🎯 辨識門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=0, column=2, sticky="w", pady=4)
+        # 2. 文字辨識信心門檻 (專屬 OCR，不影響圖片)
+        ctk.CTkLabel(grid, text="🎯 文字門檻 (OCR):", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=0, column=2, sticky="w", pady=4)
         row_conf = ctk.CTkFrame(grid, fg_color="transparent")
         row_conf.grid(row=0, column=3, sticky="ew", padx=(6, 0), pady=4)
-        lbl_cf_val = ctk.CTkLabel(row_conf, text=f"{self.var_confidence.get():.2f}", width=40, font=ctk.CTkFont(family="Menlo", size=11))
+        self.lbl_cf_val = ctk.CTkLabel(row_conf, text=f"{self.var_confidence.get():.2f}", width=40, font=ctk.CTkFont(family="Menlo", size=11))
         slider_cf = ctk.CTkSlider(row_conf, from_=0.4, to=0.95, number_of_steps=55, variable=self.var_confidence, height=16)
         slider_cf.pack(side="left", fill="x", expand=True)
-        lbl_cf_val.pack(side="left", padx=4)
-        slider_cf.configure(command=lambda v: [lbl_cf_val.configure(text=f"{v:.2f}"), setattr(self.bot, "confidence_threshold", float(v)), self.auto_save_current_config()])
+        self.lbl_cf_val.pack(side="left", padx=4)
+        slider_cf.configure(command=lambda v: [self.lbl_cf_val.configure(text=f"{v:.2f}"), setattr(self.bot, "confidence_threshold", float(v)), self.auto_save_current_config()])
 
         # 3. 語言辨識過濾 Checkboxes
         ctk.CTkLabel(grid, text="🔤 語言過濾:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=1, column=0, sticky="w", pady=4)
@@ -629,10 +1012,41 @@ class BaseballBotGUI:
         ctk.CTkEntry(wd_box, textvariable=self.var_watchdog_seconds, width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=11)).pack(side="left")
         ctk.CTkLabel(wd_box, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=2)
 
-        # 5. Telegram 通知設定
-        ctk.CTkLabel(grid, text="📱 Telegram:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#38BDF8").grid(row=2, column=0, sticky="w", pady=4)
+        # 5. 找不到目標時策略
+        ctk.CTkLabel(grid, text="💤 找不到目標時:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=2, column=0, sticky="w", pady=4)
+        row_idle = ctk.CTkFrame(grid, fg_color="transparent")
+        row_idle.grid(row=2, column=1, sticky="w", padx=(6, 12), pady=4)
+        ctk.CTkOptionMenu(
+            row_idle,
+            variable=self.var_idle_strategy,
+            values=IDLE_STRATEGIES,
+            width=120,
+            height=24,
+            corner_radius=4,
+            font=ctk.CTkFont(size=11)
+        ).pack(side="left")
+
+        # 6. 等待時背景連點
+        ctk.CTkLabel(grid, text="⚡ 等待時連點:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=2, column=2, sticky="w", pady=4)
+        tap_box = ctk.CTkFrame(grid, fg_color="transparent")
+        tap_box.grid(row=2, column=3, sticky="w", padx=(6, 0), pady=4)
+        ctk.CTkCheckBox(tap_box, text="連點", variable=self.var_idle_tap_enabled, corner_radius=4, height=18, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(
+            tap_box,
+            variable=self.var_idle_tap_area,
+            values=["右下角區域", "中央區域", "右上角 (Skip)", "右半側中央"],
+            width=100,
+            height=24,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10)
+        ).pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(tap_box, textvariable=self.var_idle_tap_times, width=32, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left")
+        ctk.CTkLabel(tap_box, text="次", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=2)
+
+        # 7. Telegram 通知設定
+        ctk.CTkLabel(grid, text="📱 Telegram:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#38BDF8").grid(row=3, column=0, sticky="w", pady=4)
         tg_box = ctk.CTkFrame(grid, fg_color="transparent")
-        tg_box.grid(row=2, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=4)
+        tg_box.grid(row=3, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=4)
         ctk.CTkLabel(tg_box, text="Token:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
         ctk.CTkEntry(tg_box, textvariable=self.var_tg_token, width=150, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 8))
         ctk.CTkLabel(tg_box, text="Chat ID:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
@@ -771,9 +1185,26 @@ class BaseballBotGUI:
     # ==========================================================================
     # 🧩 步驟卡片生成與事件綁定 (Priority & Normal Steps)
     # ==========================================================================
+    def _on_recognition_mode_changed(self, mode=None):
+        mode_val = self.var_recognition_mode.get()
+        is_img = ("圖片" in mode_val)
+        for p in self.priority_steps_list:
+            if "_refresh_target_ui" in p and callable(p["_refresh_target_ui"]):
+                p["_refresh_target_ui"]()
+        for s in self.steps_list:
+            if "_refresh_target_ui" in s and callable(s["_refresh_target_ui"]):
+                s["_refresh_target_ui"]()
+        self.log_message(f"🔄 辨識模式已切換為：{'🖼️ 圖片特徵比對模式 (0-OCR / 極致節能)' if is_img else '📝 文字辨識模式 (RapidOCR)'}")
+        self.auto_save_current_config()
+
     def on_add_priority_step(self):
         n = len(self.priority_steps_list) + 1
-        self._create_priority_step_widget(name=f"優先 {n}", keywords="", expanded=True)
+        is_img = ("圖片" in self.var_recognition_mode.get())
+        self._create_priority_step_widget(
+            name=f"優先 {n}",
+            target_type="🖼️ 圖片特徵 (模板比對)" if is_img else "📝 文字辨識 (OCR)",
+            expanded=True
+        )
 
     def on_add_task_trigger_step(self):
         n = len(self.priority_steps_list) + 1
@@ -814,9 +1245,12 @@ class BaseballBotGUI:
         self,
         name: str = "",
         keywords: str = "",
-        target_type: str = "📝 僅文字",
+        target_type: str = "📝 文字辨識 (OCR)",
+        template_image: str = "",
+        image_threshold: float = 0.80,
+        image_multiscale: bool = False,
         exclude_keywords: str = "",
-        action: str = "點擊詞條",
+        action: str = "點擊目標中心 / 詞條",
         custom_x: int = 960,
         custom_y: int = 540,
         delay: float = 2.0,
@@ -841,16 +1275,21 @@ class BaseballBotGUI:
         card = ctk.CTkFrame(self.frame_priority_cards, fg_color=COLOR_CARD_ITEM, corner_radius=8, border_width=1, border_color=color)
         card.pack(fill="x", pady=4, padx=2)
 
+        action = _normalize_action(action)
         if action not in ACTION_OPTIONS:
-            action = "點擊詞條"
+            action = ACTION_OPTIONS[0]
+        target_type = _normalize_target_type(target_type)
         if target_type not in TARGET_TYPES:
-            target_type = "📝 僅文字"
+            target_type = TARGET_TYPES[0]
 
         p = {
             "type": "priority",
             "enabled": tk.BooleanVar(value=enabled),
             "name": tk.StringVar(value=name),
             "target_type": tk.StringVar(value=target_type),
+            "template_image": tk.StringVar(value=template_image),
+            "image_threshold": tk.DoubleVar(value=image_threshold),
+            "image_multiscale": tk.BooleanVar(value=image_multiscale),
             "keywords": tk.StringVar(value=keywords),
             "exclude_keywords": tk.StringVar(value=exclude_keywords),
             "action": tk.StringVar(value=action),
@@ -891,20 +1330,25 @@ class BaseballBotGUI:
 
         ctk.CTkEntry(head, textvariable=p["name"], width=80, height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 4))
 
-        ctk.CTkOptionMenu(head, variable=p["target_type"], values=TARGET_TYPES, width=110, height=26, corner_radius=6, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 4))
-
         btn_toggle = ctk.CTkButton(head, text="▸", width=26, height=26, corner_radius=4, command=lambda: p["expanded"].set(not p["expanded"].get()), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER)
         btn_toggle.pack(side="right", padx=2)
 
         ctk.CTkButton(head, text="✕", width=26, height=26, corner_radius=4, command=lambda: self.on_delete_priority_step(p), fg_color=COLOR_STOPPED, hover_color="#DC2626").pack(side="right", padx=2)
 
+        # 文字模式輸入容器 (關鍵字 + ✓ + ✕)
+        box_text_target = ctk.CTkFrame(head, fg_color="transparent")
         def _add_p_sym(tag):
             k = p["keywords"].get().strip()
             p["keywords"].set(f"{k}, {tag}" if k else tag)
-        ctk.CTkButton(head, text="✓", width=26, height=26, corner_radius=4, command=lambda: _add_p_sym("[打勾]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
-        ctk.CTkButton(head, text="✕", width=26, height=26, corner_radius=4, command=lambda: _add_p_sym("[叉叉]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
+        ctk.CTkButton(box_text_target, text="✕", width=26, height=26, corner_radius=4, command=lambda: _add_p_sym("[叉叉]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
+        ctk.CTkButton(box_text_target, text="✓", width=26, height=26, corner_radius=4, command=lambda: _add_p_sym("[打勾]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
+        ctk.CTkEntry(box_text_target, textvariable=p["keywords"], placeholder_text="關鍵字 (以逗號分隔)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True)
 
-        ctk.CTkEntry(head, textvariable=p["keywords"], height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True)
+        # 圖片模板模式容器 (檔名 + 選擇 + 截圖)
+        box_image_target = ctk.CTkFrame(head, fg_color="transparent")
+        ctk.CTkButton(box_image_target, text="✂️ 截圖", width=56, height=26, corner_radius=5, command=lambda: self.on_snip_template_dialog(p), fg_color="#0284C7", hover_color="#0369A1", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="📂 選擇", width=56, height=26, corner_radius=5, command=lambda: self.on_browse_template_dialog(p), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="right", padx=1)
+        ctk.CTkEntry(box_image_target, textvariable=p["template_image"], placeholder_text="模板圖檔 (如: 開始比賽.png)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True, padx=(0, 2))
 
         # 展開設定內容
         lbl_sum = ctk.CTkLabel(card, text="", font=ctk.CTkFont(family="Arial", size=11), text_color=COLOR_TEXT_MUTED, anchor="w")
@@ -986,11 +1430,101 @@ class BaseballBotGUI:
         p["action"].trace_add("write", _refresh_act_ui)
         _refresh_act_ui()
 
-        # 排除字詞列
+        # 排除字詞列 (僅文字辨識模式顯示)
         re = ctk.CTkFrame(detail, fg_color="transparent")
-        re.pack(fill="x", pady=(4, 0))
         ctk.CTkLabel(re, text="排除字詞:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#F87171").pack(side="left", padx=(0, 4))
         ctk.CTkEntry(re, textvariable=p["exclude_keywords"], height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=10)).pack(side="left", fill="x", expand=True)
+
+        # 圖片模板細項面板 (僅圖片模式顯示)
+        box_image_detail = ctk.CTkFrame(detail, fg_color="#181825", corner_radius=6, border_width=1, border_color="#334155")
+        row_id1 = ctk.CTkFrame(box_image_detail, fg_color="transparent")
+        row_id1.pack(fill="x", padx=8, pady=(4, 2))
+
+        lbl_thumb = tk.Label(row_id1, bg="#11111B", fg=COLOR_TEXT_DIM, font=("Arial", 10), text="（未選圖）", width=8, height=2)
+        lbl_thumb.pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(row_id1, text="比對門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 2))
+        lbl_thresh_val = ctk.CTkLabel(row_id1, text=f"{p['image_threshold'].get():.2f}", width=34, font=ctk.CTkFont(family="Menlo", size=11))
+        slider_thresh = ctk.CTkSlider(row_id1, from_=0.50, to=0.98, number_of_steps=48, variable=p["image_threshold"], width=130, height=16)
+        slider_thresh.pack(side="left", padx=(2, 2))
+        lbl_thresh_val.pack(side="left", padx=(0, 6))
+        slider_thresh.configure(command=lambda v: [lbl_thresh_val.configure(text=f"{float(v):.2f}"), self.auto_save_current_config()])
+
+        ctk.CTkCheckBox(
+            row_id1,
+            text="多尺度容錯 (0.95x~1.05x)",
+            variable=p["image_multiscale"],
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_PRIMARY,
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4
+        ).pack(side="left", padx=(4, 6))
+
+        ctk.CTkButton(
+            row_id1,
+            text="📁 模板資料夾",
+            width=76,
+            height=22,
+            corner_radius=4,
+            command=self.on_open_templates_folder,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER
+        ).pack(side="right")
+
+        def _update_p_thumb(*_):
+            img_name = p["template_image"].get().strip()
+            if not img_name:
+                lbl_thumb.configure(image="", text="（未選圖）", fg=COLOR_TEXT_DIM, width=8, height=2)
+                p["_thumb_img"] = None
+                return
+            full_path = self.bot.resolve_template_path(img_name) if hasattr(self, "bot") else None
+            if not full_path or not os.path.exists(full_path):
+                full_path = os.path.join(self.templates_dir, img_name) if not os.path.isabs(img_name) else img_name
+            if os.path.exists(full_path):
+                try:
+                    bgr = imread_unicode(full_path)
+                    if bgr is not None:
+                        th_h, th_w = bgr.shape[:2]
+                        max_dim = 36
+                        scale = min(max_dim / max(1, th_w), max_dim / max(1, th_h))
+                        tw, th = max(1, int(th_w * scale)), max(1, int(th_h * scale))
+                        resized = cv2.resize(bgr, (tw, th), interpolation=cv2.INTER_AREA)
+                        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                        pil_img = Image.fromarray(rgb)
+                        tk_img = ImageTk.PhotoImage(pil_img)
+                        lbl_thumb.configure(image=tk_img, text="", width=tw, height=th)
+                        p["_thumb_img"] = tk_img
+                        return
+                except Exception:
+                    pass
+            lbl_thumb.configure(image="", text="⚠️ 缺檔", fg="#EF4444", width=8, height=2)
+            p["_thumb_img"] = None
+
+        p["template_image"].trace_add("write", _update_p_thumb)
+
+        def _refresh_p_target_ui(*_):
+            is_img = ("圖片" in self.var_recognition_mode.get())
+            p["target_type"].set("🖼️ 圖片特徵 (模板比對)" if is_img else "📝 文字辨識 (OCR)")
+            if is_img:
+                box_text_target.pack_forget()
+                box_image_target.pack(side="left", fill="x", expand=True, padx=(0, 4))
+                re.pack_forget()
+                box_image_detail.pack(fill="x", pady=(4, 0))
+                _update_p_thumb()
+            else:
+                box_image_target.pack_forget()
+                box_text_target.pack(side="left", fill="x", expand=True, padx=(0, 4))
+                box_image_detail.pack_forget()
+                re.pack(fill="x", pady=(4, 0))
+            if not p["expanded"].get():
+                lbl_sum.configure(text=summary())
+
+        p["_refresh_target_ui"] = _refresh_p_target_ui
+        _refresh_p_target_ui()
 
         # 條件存在時重複執行（until消失）
         row_while = ctk.CTkFrame(detail, fg_color="transparent")
@@ -1118,6 +1652,7 @@ class BaseballBotGUI:
         _refresh_p_tg_ui()
 
         def summary() -> str:
+            is_img = ("圖片" in self.var_recognition_mode.get())
             act = p["action"].get()
             if act in ("自訂座標", "自訂特定區塊"):
                 act += f" ({p['custom_x'].get()}, {p['custom_y'].get()})"
@@ -1125,7 +1660,17 @@ class BaseballBotGUI:
                 t_m = p["task_target_mode"].get()
                 t_i = p["task_target_item"].get()
                 act = f"📋 跳轉: {t_i if t_m != '📋 完整任務清單' and t_i else t_m}"
-            parts = [f"↳ {act}", p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
+
+            if is_img:
+                tpl_val = p["template_image"].get().strip()
+                tpl_name = os.path.basename(tpl_val) if tpl_val else "(未選圖)"
+                th = _num(p["image_threshold"], 0.80)
+                parts = [f"🖼️ 模板: {tpl_name} ({th:.2f})", f"↳ {act}", p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
+                if p["image_multiscale"].get():
+                    parts.append("多尺度")
+            else:
+                parts = [f"↳ {act}", p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
+
             if p["while_condition"].get():
                 parts.append("while重複")
             if p["repeat_enabled"].get():
@@ -1136,9 +1681,10 @@ class BaseballBotGUI:
                 if "自訂" in area:
                     area = f"({_num(p['repeat_custom_x'], 0, int)}, {_num(p['repeat_custom_y'], 0, int)})"
                 parts.append(f"{rep}@{area}")
-            ex = p["exclude_keywords"].get().strip()
-            if ex:
-                parts.append(f"排除: {ex}")
+            if not is_img:
+                ex = p["exclude_keywords"].get().strip()
+                if ex:
+                    parts.append(f"排除: {ex}")
             if p["tg_enabled"].get():
                 parts.append("📱TG")
             return "  ·  ".join(parts)
@@ -1164,7 +1710,73 @@ class BaseballBotGUI:
     # --------------------------------------------------------------------------
     def on_add_empty_step(self):
         n = len(self.steps_list) + 1
-        self._create_step_widget(name=f"步驟 {n}", keywords="", expanded=True)
+        is_img = ("圖片" in self.var_recognition_mode.get())
+        self._create_step_widget(
+            name=f"步驟 {n}",
+            target_type="🖼️ 圖片特徵 (模板比對)" if is_img else "📝 文字辨識 (OCR)",
+            expanded=True
+        )
+
+    def on_add_image_step(self):
+        self.on_add_empty_step()
+
+    def on_browse_template_dialog(self, step: dict):
+        os.makedirs(self.templates_dir, exist_ok=True)
+        fpath = filedialog.askopenfilename(
+            title="選擇圖片模板",
+            initialdir=self.templates_dir,
+            filetypes=[("圖片檔案", "*.png;*.jpg;*.jpeg;*.bmp"), ("PNG 圖片", "*.png"), ("所有檔案", "*.*")]
+        )
+        if fpath:
+            fname = os.path.basename(fpath)
+            dest = os.path.join(self.templates_dir, fname)
+            if os.path.abspath(fpath) != os.path.abspath(dest):
+                try:
+                    import shutil
+                    shutil.copy2(fpath, dest)
+                except Exception:
+                    pass
+            step["template_image"].set(fname)
+            self.auto_save_current_config()
+            self.log_message(f"已指定圖片模板: {fname}")
+
+    def on_snip_template_dialog(self, step: dict):
+        screen = self.current_screen_bgr
+        if screen is None and self.bot.device:
+            self.log_message("正在擷取最新遊戲畫面以供框選...")
+            screen = self.bot.capture_screen()
+            if screen is not None:
+                self.current_screen_bgr = screen
+                self._render_preview(screen)
+        if screen is None:
+            messagebox.showwarning("提示", "目前沒有遊戲畫面截圖。\n請先點擊「📸 擷取畫面」或確認模擬器已連線。", parent=self.root)
+            return
+
+        step_name = step["name"].get().strip() or "按鈕模板"
+        def _on_snip_saved(fname):
+            step["template_image"].set(fname)
+            self.auto_save_current_config()
+            self.log_message(f"✂️ 成功儲存並綁定模板: {fname}")
+
+        TemplateSnipperDialog(
+            parent=self.root,
+            screen_bgr=screen,
+            initial_name=step_name,
+            templates_dir=self.templates_dir,
+            on_save_callback=_on_snip_saved
+        )
+
+    def on_open_templates_folder(self):
+        os.makedirs(self.templates_dir, exist_ok=True)
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", self.templates_dir])
+            elif sys.platform == "win32":
+                os.startfile(self.templates_dir)
+            else:
+                subprocess.Popen(["xdg-open", self.templates_dir])
+        except Exception as ex:
+            messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=self.root)
 
     def on_delete_step(self, step):
         if step in self.steps_list:
@@ -1189,9 +1801,12 @@ class BaseballBotGUI:
         self,
         name: str = "",
         keywords: str = "",
-        target_type: str = "📝 僅文字",
+        target_type: str = "📝 文字辨識 (OCR)",
+        template_image: str = "",
+        image_threshold: float = 0.80,
+        image_multiscale: bool = False,
         exclude_keywords: str = "",
-        action: str = "點擊詞條",
+        action: str = "點擊目標中心 / 詞條",
         custom_x: int = 960,
         custom_y: int = 540,
         delay: float = 2.5,
@@ -1217,16 +1832,21 @@ class BaseballBotGUI:
         card = ctk.CTkFrame(self.frame_normal_cards, fg_color=COLOR_CARD_ITEM, corner_radius=8, border_width=1, border_color=color)
         card.pack(fill="x", pady=4, padx=2)
 
+        action = _normalize_action(action)
         if action not in ACTION_OPTIONS:
-            action = "點擊詞條"
+            action = ACTION_OPTIONS[0]
+        target_type = _normalize_target_type(target_type)
         if target_type not in TARGET_TYPES:
-            target_type = "📝 僅文字"
+            target_type = TARGET_TYPES[0]
 
         s = {
             "type": "normal",
             "enabled": tk.BooleanVar(value=enabled),
             "name": tk.StringVar(value=name),
             "target_type": tk.StringVar(value=target_type),
+            "template_image": tk.StringVar(value=template_image),
+            "image_threshold": tk.DoubleVar(value=image_threshold),
+            "image_multiscale": tk.BooleanVar(value=image_multiscale),
             "keywords": tk.StringVar(value=keywords),
             "exclude_keywords": tk.StringVar(value=exclude_keywords),
             "action": tk.StringVar(value=action),
@@ -1269,20 +1889,25 @@ class BaseballBotGUI:
 
         ctk.CTkEntry(head, textvariable=s["name"], width=80, height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 4))
 
-        ctk.CTkOptionMenu(head, variable=s["target_type"], values=TARGET_TYPES, width=110, height=26, corner_radius=6, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 4))
-
         btn_toggle = ctk.CTkButton(head, text="▸", width=26, height=26, corner_radius=4, command=lambda: s["expanded"].set(not s["expanded"].get()), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER)
         btn_toggle.pack(side="right", padx=2)
 
         ctk.CTkButton(head, text="✕", width=26, height=26, corner_radius=4, command=lambda: self.on_delete_step(s), fg_color=COLOR_STOPPED, hover_color="#DC2626").pack(side="right", padx=2)
 
+        # 文字模式輸入容器 (關鍵字 + ✓ + ✕)
+        box_text_target = ctk.CTkFrame(head, fg_color="transparent")
         def _add_s_sym(tag):
             k = s["keywords"].get().strip()
             s["keywords"].set(f"{k}, {tag}" if k else tag)
-        ctk.CTkButton(head, text="✓", width=26, height=26, corner_radius=4, command=lambda: _add_s_sym("[打勾]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
-        ctk.CTkButton(head, text="✕", width=26, height=26, corner_radius=4, command=lambda: _add_s_sym("[叉叉]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
+        ctk.CTkButton(box_text_target, text="✕", width=26, height=26, corner_radius=4, command=lambda: _add_s_sym("[叉叉]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
+        ctk.CTkButton(box_text_target, text="✓", width=26, height=26, corner_radius=4, command=lambda: _add_s_sym("[打勾]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
+        ctk.CTkEntry(box_text_target, textvariable=s["keywords"], placeholder_text="關鍵字 (以逗號分隔)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True)
 
-        ctk.CTkEntry(head, textvariable=s["keywords"], height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True)
+        # 圖片模板模式容器 (檔名 + 選擇 + 截圖)
+        box_image_target = ctk.CTkFrame(head, fg_color="transparent")
+        ctk.CTkButton(box_image_target, text="✂️ 截圖", width=56, height=26, corner_radius=5, command=lambda: self.on_snip_template_dialog(s), fg_color="#0284C7", hover_color="#0369A1", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="📂 選擇", width=56, height=26, corner_radius=5, command=lambda: self.on_browse_template_dialog(s), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="right", padx=1)
+        ctk.CTkEntry(box_image_target, textvariable=s["template_image"], placeholder_text="模板圖檔 (如: 開始比賽.png)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True, padx=(0, 2))
 
         # 展開設定內容
         lbl_sum = ctk.CTkLabel(card, text="", font=ctk.CTkFont(family="Arial", size=11), text_color=COLOR_TEXT_MUTED, anchor="w")
@@ -1364,11 +1989,101 @@ class BaseballBotGUI:
         s["action"].trace_add("write", _refresh_s_act_ui)
         _refresh_s_act_ui()
 
-        # 排除字詞列
+        # 排除字詞列 (僅文字辨識模式顯示)
         re = ctk.CTkFrame(detail, fg_color="transparent")
-        re.pack(fill="x", pady=(4, 0))
         ctk.CTkLabel(re, text="排除字詞:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#F87171").pack(side="left", padx=(0, 4))
         ctk.CTkEntry(re, textvariable=s["exclude_keywords"], height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=10)).pack(side="left", fill="x", expand=True)
+
+        # 圖片模板細項面板 (僅圖片模式顯示)
+        box_image_detail = ctk.CTkFrame(detail, fg_color="#181825", corner_radius=6, border_width=1, border_color="#334155")
+        row_id1 = ctk.CTkFrame(box_image_detail, fg_color="transparent")
+        row_id1.pack(fill="x", padx=8, pady=(4, 2))
+
+        lbl_thumb = tk.Label(row_id1, bg="#11111B", fg=COLOR_TEXT_DIM, font=("Arial", 10), text="（未選圖）", width=8, height=2)
+        lbl_thumb.pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(row_id1, text="比對門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 2))
+        lbl_thresh_val = ctk.CTkLabel(row_id1, text=f"{s['image_threshold'].get():.2f}", width=34, font=ctk.CTkFont(family="Menlo", size=11))
+        slider_thresh = ctk.CTkSlider(row_id1, from_=0.50, to=0.98, number_of_steps=48, variable=s["image_threshold"], width=130, height=16)
+        slider_thresh.pack(side="left", padx=(2, 2))
+        lbl_thresh_val.pack(side="left", padx=(0, 6))
+        slider_thresh.configure(command=lambda v: [lbl_thresh_val.configure(text=f"{float(v):.2f}"), self.auto_save_current_config()])
+
+        ctk.CTkCheckBox(
+            row_id1,
+            text="多尺度容錯 (0.95x~1.05x)",
+            variable=s["image_multiscale"],
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_PRIMARY,
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4
+        ).pack(side="left", padx=(4, 6))
+
+        ctk.CTkButton(
+            row_id1,
+            text="📁 模板資料夾",
+            width=76,
+            height=22,
+            corner_radius=4,
+            command=self.on_open_templates_folder,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER
+        ).pack(side="right")
+
+        def _update_s_thumb(*_):
+            img_name = s["template_image"].get().strip()
+            if not img_name:
+                lbl_thumb.configure(image="", text="（未選圖）", fg=COLOR_TEXT_DIM, width=8, height=2)
+                s["_thumb_img"] = None
+                return
+            full_path = self.bot.resolve_template_path(img_name) if hasattr(self, "bot") else None
+            if not full_path or not os.path.exists(full_path):
+                full_path = os.path.join(self.templates_dir, img_name) if not os.path.isabs(img_name) else img_name
+            if os.path.exists(full_path):
+                try:
+                    bgr = imread_unicode(full_path)
+                    if bgr is not None:
+                        th_h, th_w = bgr.shape[:2]
+                        max_dim = 36
+                        scale = min(max_dim / max(1, th_w), max_dim / max(1, th_h))
+                        tw, th = max(1, int(th_w * scale)), max(1, int(th_h * scale))
+                        resized = cv2.resize(bgr, (tw, th), interpolation=cv2.INTER_AREA)
+                        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                        pil_img = Image.fromarray(rgb)
+                        tk_img = ImageTk.PhotoImage(pil_img)
+                        lbl_thumb.configure(image=tk_img, text="", width=tw, height=th)
+                        s["_thumb_img"] = tk_img
+                        return
+                except Exception:
+                    pass
+            lbl_thumb.configure(image="", text="⚠️ 缺檔", fg="#EF4444", width=8, height=2)
+            s["_thumb_img"] = None
+
+        s["template_image"].trace_add("write", _update_s_thumb)
+
+        def _refresh_s_target_ui(*_):
+            is_img = ("圖片" in self.var_recognition_mode.get())
+            s["target_type"].set("🖼️ 圖片特徵 (模板比對)" if is_img else "📝 文字辨識 (OCR)")
+            if is_img:
+                box_text_target.pack_forget()
+                box_image_target.pack(side="left", fill="x", expand=True, padx=(0, 4))
+                re.pack_forget()
+                box_image_detail.pack(fill="x", pady=(4, 0))
+                _update_s_thumb()
+            else:
+                box_image_target.pack_forget()
+                box_text_target.pack(side="left", fill="x", expand=True, padx=(0, 4))
+                box_image_detail.pack_forget()
+                re.pack(fill="x", pady=(4, 0))
+            if not s["expanded"].get():
+                lbl_sum.configure(text=summary())
+
+        s["_refresh_target_ui"] = _refresh_s_target_ui
+        _refresh_s_target_ui()
 
         # ⚡ 命中後連點區塊
         row_rep = ctk.CTkFrame(detail, fg_color="transparent")
@@ -1509,6 +2224,7 @@ class BaseballBotGUI:
         _refresh_s_tg_ui()
 
         def summary() -> str:
+            is_img = ("圖片" in self.var_recognition_mode.get())
             act = s["action"].get()
             if act in ("自訂座標", "自訂特定區塊"):
                 act += f" ({s['custom_x'].get()}, {s['custom_y'].get()})"
@@ -1516,7 +2232,17 @@ class BaseballBotGUI:
                 t_m = s["task_target_mode"].get()
                 t_i = s["task_target_item"].get()
                 act = f"📋 跳轉: {t_i if t_m != '📋 完整任務清單' and t_i else t_m}"
-            parts = [f"↳ {act}", s["roi"].get(), f"延遲 {_num(s['delay'], 2.5):g}s"]
+
+            if is_img:
+                tpl_val = s["template_image"].get().strip()
+                tpl_name = os.path.basename(tpl_val) if tpl_val else "(未選圖)"
+                th = _num(s["image_threshold"], 0.80)
+                parts = [f"🖼️ 模板: {tpl_name} ({th:.2f})", f"↳ {act}", s["roi"].get(), f"延遲 {_num(s['delay'], 2.5):g}s"]
+                if s["image_multiscale"].get():
+                    parts.append("多尺度")
+            else:
+                parts = [f"↳ {act}", s["roi"].get(), f"延遲 {_num(s['delay'], 2.5):g}s"]
+
             if s["repeat_enabled"].get():
                 rep = "連點"
                 if s["repeat_mode"].get() == "指定次數":
@@ -1527,9 +2253,10 @@ class BaseballBotGUI:
                 parts.append(f"{rep}@{area}")
             if s["timeout_enabled"].get():
                 parts.append(f"{_num(s['timeout_seconds'], 20, int)}s超時跳過")
-            ex = s["exclude_keywords"].get().strip()
-            if ex:
-                parts.append(f"排除: {ex}")
+            if not is_img:
+                ex = s["exclude_keywords"].get().strip()
+                if ex:
+                    parts.append(f"排除: {ex}")
             if s["tg_enabled"].get():
                 parts.append("📱TG")
             return "  ·  ".join(parts)
@@ -1615,6 +2342,7 @@ class BaseballBotGUI:
     def serialize_current_config(self) -> dict:
         return {
             "version": "1.0",
+            "recognition_mode": self.var_recognition_mode.get(),
             "device": self.var_device.get(),
             "interval": self.var_interval.get(),
             "confidence": self.var_confidence.get(),
@@ -1652,7 +2380,10 @@ class BaseballBotGUI:
                 {
                     "name": p["name"].get(),
                     "keywords": p["keywords"].get(),
-                    "target_type": p["target_type"].get() if "target_type" in p else "📝 僅文字",
+                    "target_type": _normalize_target_type(p["target_type"].get() if "target_type" in p else ""),
+                    "template_image": self._ensure_template_in_storage(p["template_image"].get()) if "template_image" in p else "",
+                    "image_threshold": _num(p.get("image_threshold", 0.80), 0.80),
+                    "image_multiscale": bool(p["image_multiscale"].get()) if "image_multiscale" in p else False,
                     "exclude_keywords": p["exclude_keywords"].get() if "exclude_keywords" in p else "",
                     "action": p["action"].get(),
                     "custom_x": p["custom_x"].get(),
@@ -1679,7 +2410,10 @@ class BaseballBotGUI:
                 {
                     "name": s["name"].get(),
                     "keywords": s["keywords"].get(),
-                    "target_type": s["target_type"].get() if "target_type" in s else "📝 僅文字",
+                    "target_type": _normalize_target_type(s["target_type"].get() if "target_type" in s else ""),
+                    "template_image": self._ensure_template_in_storage(s["template_image"].get()) if "template_image" in s else "",
+                    "image_threshold": _num(s.get("image_threshold", 0.80), 0.80),
+                    "image_multiscale": bool(s["image_multiscale"].get()) if "image_multiscale" in s else False,
                     "exclude_keywords": s["exclude_keywords"].get() if "exclude_keywords" in s else "",
                     "action": s["action"].get(),
                     "custom_x": s["custom_x"].get(),
@@ -1708,6 +2442,15 @@ class BaseballBotGUI:
     def apply_config_dict(self, cfg: dict):
         if not isinstance(cfg, dict):
             return
+        self._is_loading_config = True
+        if "recognition_mode" in cfg:
+            self.var_recognition_mode.set(str(cfg["recognition_mode"]))
+        else:
+            has_img = any(
+                (s.get("template_image") or "圖片" in str(s.get("target_type", "")))
+                for s in (cfg.get("steps", []) + cfg.get("priority_steps", []))
+            )
+            self.var_recognition_mode.set("🖼️ 圖片特徵比對模式" if has_img else "📝 文字辨識模式")
         if "device" in cfg and cfg["device"]:
             self.var_device.set(cfg["device"])
         if "interval" in cfg:
@@ -1742,6 +2485,15 @@ class BaseballBotGUI:
                 self.var_lang_sc.get(),
                 self.var_lang_en.get()
             )
+            try:
+                self.bot.confidence_threshold = float(self.var_confidence.get())
+            except Exception:
+                pass
+
+        if hasattr(self, "lbl_sp_val") and self.lbl_sp_val:
+            self.lbl_sp_val.configure(text=f"{self.var_interval.get():.1f}s")
+        if hasattr(self, "lbl_cf_val") and self.lbl_cf_val:
+            self.lbl_cf_val.configure(text=f"{self.var_confidence.get():.2f}")
 
         # 看門狗防卡死
         if "watchdog" in cfg and isinstance(cfg["watchdog"], dict):
@@ -1775,7 +2527,7 @@ class BaseballBotGUI:
         p_list = cfg.get("priority_steps")
         if p_list is None and "priority" in cfg and isinstance(cfg["priority"], dict):
             p_old = cfg["priority"]
-            if p_old.get("keywords") or p_old.get("enabled"):
+            if p_old.get("keywords") or p_old.get("enabled") or p_old.get("template_image"):
                 p_list = [p_old]
 
         if isinstance(p_list, list):
@@ -1797,9 +2549,12 @@ class BaseballBotGUI:
                 self._create_priority_step_widget(
                     name=str(p_data.get("name", "優先動作")),
                     keywords=str(kw),
-                    target_type=str(p_data.get("target_type", "📝 僅文字")),
+                    target_type=str(p_data.get("target_type", "📝 文字辨識 (OCR)")),
+                    template_image=str(p_data.get("template_image", "")),
+                    image_threshold=float(p_data.get("image_threshold", 0.80)),
+                    image_multiscale=bool(p_data.get("image_multiscale", False)),
                     exclude_keywords=str(ex_kw),
-                    action=str(p_data.get("action", "點擊詞條")),
+                    action=str(p_data.get("action", "點擊目標中心 / 詞條")),
                     custom_x=int(p_data.get("custom_x", 960)),
                     custom_y=int(p_data.get("custom_y", 540)),
                     delay=float(p_data.get("delay", 2.0)),
@@ -1841,9 +2596,12 @@ class BaseballBotGUI:
                 self._create_step_widget(
                     name=str(s_data.get("name", "步驟")),
                     keywords=str(kw),
-                    target_type=str(s_data.get("target_type", "📝 僅文字")),
+                    target_type=str(s_data.get("target_type", "📝 文字辨識 (OCR)")),
+                    template_image=str(s_data.get("template_image", "")),
+                    image_threshold=float(s_data.get("image_threshold", 0.80)),
+                    image_multiscale=bool(s_data.get("image_multiscale", False)),
                     exclude_keywords=str(ex_kw),
-                    action=str(s_data.get("action", "點擊詞條")),
+                    action=str(s_data.get("action", "點擊目標中心 / 詞條")),
                     custom_x=int(s_data.get("custom_x", 960)),
                     custom_y=int(s_data.get("custom_y", 540)),
                     delay=float(s_data.get("delay", 2.5)),
@@ -1865,6 +2623,10 @@ class BaseballBotGUI:
                     task_cooldown=float(s_data.get("task_cooldown", 60.0)),
                     expanded=False
                 )
+
+        self._is_loading_config = False
+        # 刷新所有卡片外觀與辨識模式
+        self._on_recognition_mode_changed()
 
     def auto_save_current_config(self):
         try:
@@ -1916,6 +2678,272 @@ class BaseballBotGUI:
                 messagebox.showinfo("成功", f"已成功載入設定:\n{path}")
             except Exception as e:
                 messagebox.showerror("錯誤", f"載入失敗: {e}")
+
+    # ==========================================================================
+    # 📁 獨立存檔與圖片資料夾管理 (完全脫離 Git 倉庫，永久記憶)
+    # ==========================================================================
+    def set_storage_dir(self, new_dir: str, seed: bool = True):
+        """動態切換自訂存檔與圖片資料夾，並同步更新核心模組與範本庫"""
+        if not new_dir:
+            new_dir = os.path.expanduser("~/Documents/Auto9Innings_Data")
+        self.storage_dir = os.path.abspath(os.path.expanduser(new_dir))
+        self.templates_dir = os.path.join(self.storage_dir, "templates")
+        self.league_presets_dir = os.path.join(self.storage_dir, "聯賽範本")
+        self.task_presets_dir = os.path.join(self.storage_dir, "任務範本")
+        self.auto_save_file = os.path.join(self.storage_dir, "baseball_last_config.json")
+        self.task_save_file = os.path.join(self.storage_dir, "task_flow_save.json")
+
+        try:
+            os.makedirs(self.storage_dir, exist_ok=True)
+            os.makedirs(self.templates_dir, exist_ok=True)
+            os.makedirs(self.league_presets_dir, exist_ok=True)
+            os.makedirs(self.task_presets_dir, exist_ok=True)
+        except Exception as ex:
+            self.log_message(f"⚠️ 建立存檔資料夾異常: {ex}")
+
+        persist_storage_dir(self.storage_dir)
+
+        if hasattr(self, "var_storage_display"):
+            self.var_storage_display.set(self.storage_dir)
+
+        if hasattr(self, "bot") and self.bot:
+            self.bot.set_templates_dir(self.templates_dir)
+
+        if hasattr(self, "task_tab") and self.task_tab:
+            self.task_tab.presets_dir = self.task_presets_dir
+            self.task_tab.save_file = self.task_save_file
+            if hasattr(self.task_tab, "reload_presets"):
+                self.task_tab.reload_presets()
+
+        if seed:
+            self._seed_default_assets()
+
+        self._refresh_all_step_thumbs()
+        self.reload_league_presets()
+
+    def _seed_default_assets(self):
+        """將專案初期的預設聯賽範本、任務範本與圖片模板安全拷貝至獨立存檔目錄"""
+        import shutil
+        # 1. 拷貝聯賽常用範本
+        cand_league_dirs = [
+            os.path.join(self.config_dir, "configs", "聯賽自動刷"),
+            os.path.join(self.config_dir, "configs"),
+            os.path.join(self.config_dir, "聯賽範本"),
+        ]
+        for src_dir in cand_league_dirs:
+            if os.path.isdir(src_dir):
+                for fname in os.listdir(src_dir):
+                    if fname.endswith(".json") and not fname.startswith("."):
+                        src = os.path.join(src_dir, fname)
+                        dst = os.path.join(self.league_presets_dir, fname)
+                        if not os.path.exists(dst):
+                            try:
+                                shutil.copy2(src, dst)
+                            except Exception:
+                                pass
+
+        # 2. 拷貝圖片模板
+        cand_tpl_dirs = [
+            os.path.join(self.config_dir, "templates"),
+            os.path.join(self.config_dir, "configs", "templates"),
+        ]
+        for src_dir in cand_tpl_dirs:
+            if os.path.isdir(src_dir):
+                for fname in os.listdir(src_dir):
+                    if fname.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")) and not fname.startswith("."):
+                        src = os.path.join(src_dir, fname)
+                        dst = os.path.join(self.templates_dir, fname)
+                        if not os.path.exists(dst):
+                            try:
+                                shutil.copy2(src, dst)
+                            except Exception:
+                                pass
+
+        # 3. 拷貝任務範本
+        cand_task_dirs = [
+            os.path.join(self.config_dir, "task_presets"),
+            os.path.join(self.config_dir, "configs", "任務自動刷"),
+        ]
+        for src_dir in cand_task_dirs:
+            if os.path.isdir(src_dir):
+                for fname in os.listdir(src_dir):
+                    if fname.endswith(".json") and not fname.startswith("."):
+                        src = os.path.join(src_dir, fname)
+                        dst = os.path.join(self.task_presets_dir, fname)
+                        if not os.path.exists(dst):
+                            try:
+                                shutil.copy2(src, dst)
+                            except Exception:
+                                pass
+
+        # 4. 拷貝預設/歷史設定
+        cand_configs = [
+            (os.path.join(self.config_dir, "baseball_last_config.json"), self.auto_save_file),
+            (os.path.join(self.config_dir, "tasks_flow.json"), self.task_save_file),
+        ]
+        for src, dst in cand_configs:
+            if os.path.exists(src) and not os.path.exists(dst):
+                try:
+                    shutil.copy2(src, dst)
+                except Exception:
+                    pass
+
+    def _refresh_all_step_thumbs(self):
+        """重新觸發所有步驟卡片的縮圖載入"""
+        for p in getattr(self, "priority_steps_list", []):
+            if "template_image" in p:
+                try:
+                    p["template_image"].set(p["template_image"].get())
+                except Exception:
+                    pass
+        for s in getattr(self, "steps_list", []):
+            if "template_image" in s:
+                try:
+                    s["template_image"].set(s["template_image"].get())
+                except Exception:
+                    pass
+
+    def _ensure_template_in_storage(self, img_name: str) -> str:
+        """確保模板圖片檔案存在於存檔目錄的 templates/ 中，回傳相對圖檔名稱"""
+        if not img_name:
+            return ""
+        img_name = str(img_name).strip()
+        if not img_name:
+            return ""
+
+        import shutil
+        # 若為絕對路徑
+        if os.path.isabs(img_name) and os.path.exists(img_name):
+            base = os.path.basename(img_name)
+            dest = os.path.join(self.templates_dir, base)
+            if os.path.abspath(img_name) != os.path.abspath(dest):
+                try:
+                    os.makedirs(self.templates_dir, exist_ok=True)
+                    shutil.copy2(img_name, dest)
+                except Exception:
+                    pass
+            return base
+        elif os.path.isabs(img_name):
+            return os.path.basename(img_name)
+
+        # 若為純檔名或相對路徑
+        base = os.path.basename(img_name)
+        dest = os.path.join(self.templates_dir, base)
+        if os.path.exists(dest):
+            return base
+
+        for cand in [
+            os.path.join(self.config_dir, "templates", base),
+            os.path.join(self.config_dir, "configs", "templates", base),
+            os.path.join(self.config_dir, base),
+            img_name,
+        ]:
+            if os.path.exists(cand):
+                try:
+                    os.makedirs(self.templates_dir, exist_ok=True)
+                    shutil.copy2(cand, dest)
+                except Exception:
+                    pass
+                break
+        return base
+
+    def on_change_storage_dir(self):
+        """開啟目錄選擇器變更存檔與圖片資料夾"""
+        d = filedialog.askdirectory(
+            parent=self.root,
+            initialdir=self.storage_dir if os.path.exists(self.storage_dir) else os.path.expanduser("~/Documents"),
+            title="📁 選擇存檔與圖片儲存資料夾"
+        )
+        if d:
+            self.set_storage_dir(d, seed=True)
+            self.log_message(f"📁 存檔與圖片資料夾已切換至: {d}")
+            messagebox.showinfo(
+                "存檔路徑已更新",
+                f"存檔與圖片資料夾已成功切換至：\n{d}\n\n"
+                "未來所有聯賽設定、任務清單與圖片模板均將永久儲存於此目錄，\n"
+                "不受 git pull / git push 影響。",
+                parent=self.root
+            )
+
+    def on_open_storage_dir(self):
+        """開啟存檔與圖片資料夾"""
+        try:
+            os.makedirs(self.storage_dir, exist_ok=True)
+            import subprocess, sys
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", self.storage_dir])
+            elif sys.platform == "win32":
+                os.startfile(self.storage_dir)
+            else:
+                subprocess.Popen(["xdg-open", self.storage_dir])
+        except Exception as ex:
+            messagebox.showerror("錯誤", f"無法開啟存檔資料夾: {ex}", parent=self.root)
+
+    def on_open_templates_folder(self):
+        """開啟圖片模板資料夾 (templates/)"""
+        try:
+            os.makedirs(self.templates_dir, exist_ok=True)
+            import subprocess, sys
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", self.templates_dir])
+            elif sys.platform == "win32":
+                os.startfile(self.templates_dir)
+            else:
+                subprocess.Popen(["xdg-open", self.templates_dir])
+        except Exception as ex:
+            messagebox.showerror("錯誤", f"無法開啟圖片模板資料夾: {ex}", parent=self.root)
+
+    def on_browse_template_dialog(self, step_or_p: dict):
+        """開啟檔案選擇器挑選模板圖片，並自動同步備份至存檔資料夾"""
+        initial_dir = self.templates_dir if os.path.exists(self.templates_dir) else self.storage_dir
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title="選擇模板圖片",
+            initialdir=initial_dir,
+            filetypes=[
+                ("圖片檔案", "*.png *.jpg *.jpeg *.bmp"),
+                ("PNG 圖片", "*.png"),
+                ("所有檔案", "*.*")
+            ]
+        )
+        if path:
+            fname = self._ensure_template_in_storage(path)
+            step_or_p["template_image"].set(fname)
+            self.auto_save_current_config()
+            self.log_message(f"🖼️ 已套用模板圖片: {fname} (存於 templates/)")
+
+    def on_snip_template_dialog(self, step_or_p: dict):
+        """從當前畫面或即時截圖進行局部框選裁切，儲存為圖片模板"""
+        screen_bgr = self.current_screen_bgr
+        if screen_bgr is None:
+            if hasattr(self, "bot") and self.bot and self.bot.device:
+                self.log_message("正在即時截取最新遊戲畫面以供框選...")
+                screen_bgr = self.bot.capture_screen()
+                if screen_bgr is not None:
+                    self.current_screen_bgr = screen_bgr
+                    self._render_preview(screen_bgr)
+        if screen_bgr is None:
+            messagebox.showwarning(
+                "提示",
+                "目前尚無遊戲畫面可用於框選！\n請先確認 ADB 裝置已連線，並點擊上方「📸 截圖」獲取最新畫面。",
+                parent=self.root
+            )
+            return
+
+        initial_name = step_or_p.get("name", tk.StringVar()).get().strip() or "btn_template"
+
+        def on_saved(filename: str):
+            step_or_p["template_image"].set(filename)
+            self.auto_save_current_config()
+            self.log_message(f"✂️ 已框選並儲存模板圖片: {filename}")
+
+        TemplateSnipperDialog(
+            parent=self.root,
+            screen_bgr=screen_bgr,
+            initial_name=initial_name,
+            templates_dir=self.templates_dir,
+            on_save_callback=on_saved
+        )
 
     def _init_default_steps(self):
         if self.auto_load_last_config():
@@ -1991,7 +3019,7 @@ class BaseballBotGUI:
         """刪除指定的常用聯賽範本"""
         preset_info = self.league_presets.get(preset_key)
         title = preset_info.get("title", preset_key) if preset_info else preset_key
-        if not messagebox.askyesno("確認刪除", f"確定要刪除聯賽範本「{title}」嗎？\n(檔案將從 configs/聯賽自動刷 移除)", parent=parent_dlg):
+        if not messagebox.askyesno("確認刪除", f"確定要刪除聯賽範本「{title}」嗎？\n(檔案將從 聯賽範本/ 移除)", parent=parent_dlg):
             return
         fpath = os.path.join(self.league_presets_dir, f"{preset_key}.json")
         try:
@@ -2220,9 +3248,8 @@ class BaseballBotGUI:
 
         row_dir = ctk.CTkFrame(inner_top, fg_color="transparent")
         row_dir.pack(fill="x", pady=(4, 0))
-        folder_name = os.path.basename(self.league_presets_dir)
         ctk.CTkLabel(
-            row_dir, text=f"範本資料夾：configs/{folder_name}/",
+            row_dir, text=f"範本儲存目錄：{self.league_presets_dir}",
             font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED
         ).pack(side="left")
 
@@ -2604,6 +3631,7 @@ class BaseballBotGUI:
 
     def _get_active_steps_config(self) -> list:
         cfg = []
+        is_img_mode = ("圖片" in self.var_recognition_mode.get())
         for s in self.steps_list:
             raw_kws = s["keywords"].get()
             kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
@@ -2611,11 +3639,21 @@ class BaseballBotGUI:
             ex_kws = [k.strip() for k in raw_ex.replace("，", ",").split(",") if k.strip()]
             delay = _num(s["delay"], 2.5)
             rep_on = s["repeat_enabled"].get() if "repeat_enabled" in s else False
-            tt = s["target_type"].get() if "target_type" in s else "📝 僅文字"
-            is_sym = ("打勾" in tt or "叉叉" in tt or "混合" in tt)
+            tt = "🖼️ 圖片特徵 (模板比對)" if is_img_mode else "📝 文字辨識 (OCR)"
+            is_img = is_img_mode
+            is_sym = ("打勾" in tt or "叉叉" in tt)
+            tpl_img = s["template_image"].get().strip() if "template_image" in s else ""
+            img_th = _num(s.get("image_threshold", 0.80), 0.80)
+            img_ms = bool(s["image_multiscale"].get()) if "image_multiscale" in s else False
+
+            is_valid_target = (is_img and bool(tpl_img)) or (not is_img and (bool(kws) or is_sym))
+
             cfg.append({
                 "name": s["name"].get().strip() or "步驟",
                 "target_type": tt,
+                "template_image": tpl_img,
+                "image_threshold": img_th,
+                "image_multiscale": img_ms,
                 "keywords": kws,
                 "exclude_keywords": ex_kws,
                 "action": "custom_coord" if s["action"].get() in ("自訂座標", "自訂特定區塊") else s["action"].get(),
@@ -2624,7 +3662,7 @@ class BaseballBotGUI:
                 "delay": delay,
                 "delay_min": max(0.05, delay - 0.15),
                 "delay_max": delay + 0.15,
-                "enabled": s["enabled"].get() and (bool(kws) or is_sym),
+                "enabled": s["enabled"].get() and is_valid_target,
                 "roi": self._map_roi_name_to_tuple(s["roi"].get()),
                 "roi_name": s["roi"].get(),
                 "repeat_enabled": rep_on,
@@ -2651,19 +3689,29 @@ class BaseballBotGUI:
 
     def _get_active_priority_steps_config(self) -> list:
         cfg = []
+        is_img_mode = ("圖片" in self.var_recognition_mode.get())
         for p in self.priority_steps_list:
             raw_kws = p["keywords"].get()
             kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
             raw_ex = p["exclude_keywords"].get() if "exclude_keywords" in p else ""
             ex_kws = [k.strip() for k in raw_ex.replace("，", ",").split(",") if k.strip()]
             rep_on = p["repeat_enabled"].get() if "repeat_enabled" in p else False
-            tt = p["target_type"].get() if "target_type" in p else "📝 僅文字"
-            is_sym = ("打勾" in tt or "叉叉" in tt or "混合" in tt)
+            tt = "🖼️ 圖片特徵 (模板比對)" if is_img_mode else "📝 文字辨識 (OCR)"
+            is_img = is_img_mode
+            is_sym = ("打勾" in tt or "叉叉" in tt)
+            tpl_img = p["template_image"].get().strip() if "template_image" in p else ""
+            img_th = _num(p.get("image_threshold", 0.80), 0.80)
+            img_ms = bool(p["image_multiscale"].get()) if "image_multiscale" in p else False
+
+            is_valid_target = (is_img and bool(tpl_img)) or (not is_img and (bool(kws) or is_sym))
             delay = _num(p["delay"], 1.0)
             cfg.append({
                 "type": "priority",
                 "name": p["name"].get().strip() or "優先動作",
                 "target_type": tt,
+                "template_image": tpl_img,
+                "image_threshold": img_th,
+                "image_multiscale": img_ms,
                 "keywords": kws,
                 "exclude_keywords": ex_kws,
                 "action": "custom_coord" if p["action"].get() in ("自訂座標", "自訂特定區塊") else p["action"].get(),
@@ -2692,7 +3740,7 @@ class BaseballBotGUI:
                 "task_target_mode": p["task_target_mode"].get() if "task_target_mode" in p else "📋 完整任務清單",
                 "task_target_item": p["task_target_item"].get() if "task_target_item" in p else "",
                 "task_cooldown": _num(p["task_cooldown"], 60.0) if "task_cooldown" in p else 60.0,
-                "enabled": p["enabled"].get() and (bool(kws) or is_sym),
+                "enabled": p["enabled"].get() and is_valid_target,
                 "max_continuous": 25,
             })
         return cfg
@@ -2787,13 +3835,23 @@ class BaseballBotGUI:
             self.hit_count += 1
         if screen_bgr is not None:
             self.current_screen_bgr = screen_bgr
-            self._render_preview(screen_bgr)
+            self._render_preview(screen_bgr, matched=matched)
 
-    def _render_preview(self, screen_bgr: np.ndarray):
+    def _render_preview(self, screen_bgr: np.ndarray, matched=None):
         if screen_bgr is None:
             return
         try:
-            h, w = screen_bgr.shape[:2]
+            display_bgr = screen_bgr
+            if matched is not None and isinstance(matched, (list, tuple)) and len(matched) >= 4:
+                display_bgr = screen_bgr.copy()
+                try:
+                    tx, ty = int(matched[2]), int(matched[3])
+                    cv2.circle(display_bgr, (tx, ty), 16, (0, 255, 0), 2)
+                    cv2.drawMarker(display_bgr, (tx, ty), (0, 255, 0), cv2.MARKER_CROSS, 24, 2)
+                except Exception:
+                    pass
+
+            h, w = display_bgr.shape[:2]
             self.raw_screen_w, self.raw_screen_h = w, h
             avail_w = max(100, getattr(self, "canvas_w", 480) - 8)
             avail_h = max(100, getattr(self, "canvas_h", 270) - 8)
@@ -2803,7 +3861,7 @@ class BaseballBotGUI:
             new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
             self.preview_img_w, self.preview_img_h = new_w, new_h
 
-            resized = cv2.resize(screen_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            resized = cv2.resize(display_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
             pil_img = Image.fromarray(rgb)
             self.preview_image_tk = ImageTk.PhotoImage(pil_img)

@@ -1075,12 +1075,16 @@ class TaskFlowTab:
         self.selected_coord: Optional[Tuple[int, int]] = None
         self._drag_data = None
 
-        self.config_dir = os.path.dirname(os.path.abspath(__file__))
-        self.presets_dir = os.path.join(self.config_dir, "task_presets")
+        if self.gui and hasattr(self.gui, "task_presets_dir"):
+            self.presets_dir = self.gui.task_presets_dir
+            self.save_file = self.gui.task_save_file
+        else:
+            self.config_dir = os.path.dirname(os.path.abspath(__file__))
+            self.presets_dir = os.path.join(self.config_dir, "task_presets")
+            tf_name = "tasks_flow.json" if self.instance_id == 1 else f"tasks_flow_{self.instance_id}.json"
+            self.save_file = os.path.join(self.config_dir, tf_name)
         os.makedirs(self.presets_dir, exist_ok=True)
         self.presets: Dict[str, Dict[str, Any]] = {}
-        tf_name = "tasks_flow.json" if self.instance_id == 1 else f"tasks_flow_{self.instance_id}.json"
-        self.save_file = os.path.join(self.config_dir, tf_name)
 
         self._build_ui()
         self.reload_presets()

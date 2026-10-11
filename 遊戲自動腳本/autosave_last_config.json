@@ -1,5 +1,6 @@
 {
   "version": "1.0",
+  "recognition_mode": "📝 文字辨識模式",
   "device": "未偵測到裝置",
   "interval": 0.39,
   "confidence": 0.4,
@@ -33,6 +34,35 @@
     "token": "",
     "chat_id": ""
   },
-  "priority_steps": [],
+  "priority_steps": [
+    {
+      "name": "優先 1",
+      "keywords": "AUTO,DUTO",
+      "target_type": "📝 文字辨識 (OCR)",
+      "template_image": "",
+      "image_threshold": 0.8,
+      "image_multiscale": false,
+      "exclude_keywords": "AUTOPLAYING,AUTOXNG,AUTOPLAN",
+      "action": "點擊目標中心 / 詞條",
+      "custom_x": 0,
+      "custom_y": 0,
+      "delay": 0.2,
+      "roi": "全畫面比對",
+      "while_condition": true,
+      "repeat_enabled": true,
+      "repeat_mode": "持續連點",
+      "repeat_count": 15,
+      "repeat_speed": 0.5,
+      "repeat_area": "自訂座標",
+      "repeat_custom_x": 816,
+      "repeat_custom_y": 712,
+      "enabled": true,
+      "tg_enabled": true,
+      "tg_message": "已開始自動聯賽",
+      "task_target_mode": "📋 完整任務清單",
+      "task_target_item": "",
+      "task_cooldown": 60.0
+    }
+  ],
   "steps": []
 }
