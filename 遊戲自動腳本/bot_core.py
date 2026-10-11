@@ -370,22 +370,23 @@ class BaseballBot:
         """動態更新自訂模板圖片儲存目錄並清空快取"""
         if templates_dir:
             self.templates_dir = os.path.abspath(templates_dir)
-            os.makedirs(self.templates_dir, exist_ok=True)
             self._template_cache.clear()
 
     def resolve_template_path(self, path_str: str) -> Optional[str]:
-        """解析模板圖片路徑 (支援絕對路徑、相對 configs/templates/ 或工作目錄)"""
+        """解析模板圖片路徑 (支援絕對路徑、相對自訂存檔目錄、專案 templates 或 configs/templates)"""
         if not path_str or not str(path_str).strip():
             return None
         p = str(path_str).strip()
         if os.path.isabs(p) and os.path.isfile(p):
-            return p
+            return os.path.abspath(p)
         candidates = [
             p,
             os.path.join(self.templates_dir, p),
             os.path.join(self.templates_dir, os.path.basename(p)),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), p),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", os.path.basename(p)),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", "templates", os.path.basename(p)),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", "templates", p),
         ]
         for c in candidates:
             if os.path.isfile(c):

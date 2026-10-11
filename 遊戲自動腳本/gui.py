@@ -136,30 +136,15 @@ def get_persisted_storage_dir() -> str:
                 data = json.load(f)
             path = data.get("storage_dir", "").strip()
             if path:
-                return os.path.abspath(path)
+                if os.path.isdir(path):
+                    return os.path.abspath(path)
+                elif os.path.isdir(os.path.dirname(path)):
+                    return os.path.abspath(os.path.dirname(path))
     except Exception:
         pass
 
-    # 預設路徑：優先使用 ~/Documents/Auto9Innings_Data，若受環境限制則安全降級
-    docs_dir = os.path.expanduser("~/Documents/Auto9Innings_Data")
-    try:
-        os.makedirs(docs_dir, exist_ok=True)
-        test_file = os.path.join(docs_dir, ".test_write")
-        with open(test_file, "w") as f:
-            f.write("ok")
-        os.remove(test_file)
-        return docs_dir
-    except Exception:
-        pass
-
-    fallback_dir = os.path.expanduser("~/.auto9innings_data")
-    try:
-        os.makedirs(fallback_dir, exist_ok=True)
-        return fallback_dir
-    except Exception:
-        pass
-
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "storage_data"))
+    # 預設路徑：以目前專案腳本所在目錄為預設，絕不自動建立額外資料夾
+    return os.path.abspath(os.path.dirname(__file__))
 
 
 def persist_storage_dir(path: str):
@@ -253,16 +238,20 @@ def imread_unicode(path: str, flags: int = cv2.IMREAD_COLOR) -> Optional[np.ndar
 
 
 def imwrite_unicode(path: str, img: np.ndarray) -> bool:
-    """跨平台安全寫入包含中文檔名的圖片"""
+    """跨平台安全寫入包含中文檔名與路徑的圖片"""
     try:
-        ext = os.path.splitext(path)[1]
+        p = os.path.abspath(path)
+        ext = os.path.splitext(p)[1]
         if not ext:
             ext = ".png"
-            path = path + ext
+            p = p + ext
+        parent_dir = os.path.dirname(p)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
         success, encoded = cv2.imencode(ext, img)
         if success:
-            encoded.tofile(path)
-            return True
+            encoded.tofile(p)
+            return os.path.exists(p) and os.path.getsize(p) > 0
         return False
     except Exception:
         return False
@@ -285,14 +274,15 @@ class TemplateSnipperDialog(ctk.CTkToplevel):
     ):
         super().__init__(parent)
         self.title("✂️ 從畫面框選按鈕模板")
-        self.geometry("980x680")
-        self.minsize(860, 600)
+        self.geometry("980x700")
+        self.minsize(860, 620)
         self.configure(fg_color=COLOR_BG)
         self.grab_set()
         self.transient(parent)
 
         self.screen_bgr = screen_bgr
-        self.templates_dir = templates_dir
+        self.save_dir = templates_dir if (templates_dir and os.path.exists(templates_dir)) else os.path.dirname(os.path.abspath(__file__))
+        self.templates_dir = self.save_dir
         self.on_save_callback = on_save_callback
         self.crop_bgr = None
 
@@ -314,7 +304,7 @@ class TemplateSnipperDialog(ctk.CTkToplevel):
         canvas_container.pack(fill="both", expand=True, padx=12, pady=4)
 
         self.canvas_w = 940
-        self.canvas_h = 500
+        self.canvas_h = 490
         self.canvas = tk.Canvas(
             canvas_container,
             bg="#11111B",
@@ -364,13 +354,21 @@ class TemplateSnipperDialog(ctk.CTkToplevel):
         self.lbl_crop_info = ctk.CTkLabel(info_box, text="選取尺寸: 尚未框選", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED)
         self.lbl_crop_info.pack(anchor="w")
 
+        row_dir = ctk.CTkFrame(info_box, fg_color="transparent")
+        row_dir.pack(fill="x", pady=(2, 2))
+        ctk.CTkLabel(row_dir, text="儲存目錄:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
+        self.lbl_save_dir = ctk.CTkLabel(row_dir, text=self.save_dir, font=ctk.CTkFont(family="Menlo", size=10), text_color=COLOR_TEXT_MUTED, anchor="w")
+        self.lbl_save_dir.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ctk.CTkButton(row_dir, text="📁 變更目錄", width=76, height=24, font=ctk.CTkFont(size=10), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, command=self._choose_save_dir).pack(side="left")
+
         row_name = ctk.CTkFrame(info_box, fg_color="transparent")
         row_name.pack(fill="x", pady=(2, 0))
         ctk.CTkLabel(row_name, text="儲存檔名:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
         clean_init = "".join(c for c in initial_name if c.isalnum() or c in ("_", "-")).strip() or "btn_template"
         self.var_filename = tk.StringVar(value=f"{clean_init}.png")
-        self.entry_filename = ctk.CTkEntry(row_name, textvariable=self.var_filename, width=220, height=26, corner_radius=6, fg_color=COLOR_INPUT_BG)
-        self.entry_filename.pack(side="left", padx=(0, 8))
+        self.entry_filename = ctk.CTkEntry(row_name, textvariable=self.var_filename, width=180, height=26, corner_radius=6, fg_color=COLOR_INPUT_BG)
+        self.entry_filename.pack(side="left", padx=(0, 6))
+        ctk.CTkButton(row_name, text="另存為...", width=64, height=26, font=ctk.CTkFont(size=10), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, command=self._choose_save_as).pack(side="left")
 
         # 按鈕列
         btn_box = ctk.CTkFrame(bot_frame, fg_color="transparent")
@@ -400,6 +398,29 @@ class TemplateSnipperDialog(ctk.CTkToplevel):
             hover_color=COLOR_BTN_DARK_HOVER,
             command=self.destroy
         ).pack(side="left")
+
+    def _choose_save_dir(self):
+        d = filedialog.askdirectory(parent=self, initialdir=self.save_dir, title="選擇模板圖片儲存目錄")
+        if d:
+            self.save_dir = os.path.abspath(d)
+            self.templates_dir = self.save_dir
+            self.lbl_save_dir.configure(text=self.save_dir)
+
+    def _choose_save_as(self):
+        fn = self.var_filename.get().strip() or "template.png"
+        f = filedialog.asksaveasfilename(
+            parent=self,
+            title="選擇模板儲存位置與檔名",
+            initialdir=self.save_dir,
+            initialfile=fn,
+            defaultextension=".png",
+            filetypes=[("PNG 圖片", "*.png"), ("所有檔案", "*.*")]
+        )
+        if f:
+            self.save_dir = os.path.dirname(os.path.abspath(f))
+            self.templates_dir = self.save_dir
+            self.var_filename.set(os.path.basename(f))
+            self.lbl_save_dir.configure(text=self.save_dir)
 
     def _on_mouse_down(self, e):
         self.start_x = e.x
@@ -450,6 +471,7 @@ class TemplateSnipperDialog(ctk.CTkToplevel):
 
     def _do_save(self):
         if self.crop_bgr is None:
+            messagebox.showwarning("提示", "尚未框選按鈕範圍！請在畫面上拖曳框選。", parent=self)
             return
         fname = self.var_filename.get().strip()
         if not fname:
@@ -457,15 +479,15 @@ class TemplateSnipperDialog(ctk.CTkToplevel):
         if not fname.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
             fname += ".png"
 
-        target_path = os.path.join(self.templates_dir, fname)
+        target_path = os.path.join(self.save_dir, fname)
         try:
-            os.makedirs(self.templates_dir, exist_ok=True)
             success = imwrite_unicode(target_path, self.crop_bgr)
             if success:
-                self.on_save_callback(fname)
+                self.on_save_callback(target_path)
+                messagebox.showinfo("截圖成功", f"✅ 模板圖片已成功儲存至：\n{target_path}\n\n已自動套用至步驟！", parent=self)
                 self.destroy()
             else:
-                messagebox.showerror("錯誤", f"無法儲存模板檔案: {target_path}", parent=self)
+                messagebox.showerror("錯誤", f"無法儲存模板檔案至: {target_path}\n請檢查是否有寫入權限或磁碟空間。", parent=self)
         except Exception as ex:
             messagebox.showerror("錯誤", f"儲存模板發生異常: {ex}", parent=self)
 
@@ -500,7 +522,7 @@ class BaseballBotGUI:
         # 獨立存檔與圖片資料夾初始化 (持久化讀取，預設 ~/Documents/Auto9Innings_Data，完全獨立於 git 倉庫)
         self.league_presets: Dict[str, Dict[str, Any]] = {}
         self.var_storage_display = tk.StringVar(value="")
-        self.set_storage_dir(get_persisted_storage_dir(), seed=True)
+        self.set_storage_dir(get_persisted_storage_dir(), seed=False)
 
         # 最新框選裁切模板檔名快取
         self.last_snipped_template = ""
@@ -765,11 +787,11 @@ class BaseballBotGUI:
     # 💾 專案存檔設定對話框 (按下存檔後跳出的視窗，自訂存檔目錄與確認儲存)
     # --------------------------------------------------------------------------
     def on_open_save_dialog(self):
-        """開啟專案存檔設定視窗 (支援自訂存檔目錄、開啟資料夾、立即儲存所有設定)"""
+        """開啟專案存檔視窗：詢問使用者要存到哪裡，可直接自訂路徑與檔名儲存，不生成任何多餘資料夾"""
         dlg = ctk.CTkToplevel(self.root)
-        dlg.title("💾 專案存檔與自訂存檔位置")
-        dlg.geometry("620x460")
-        dlg.minsize(580, 420)
+        dlg.title("💾 儲存設定")
+        dlg.geometry("580x300")
+        dlg.minsize(520, 260)
         dlg.resizable(False, False)
         dlg.configure(fg_color=COLOR_BG)
         dlg.grab_set()
@@ -784,180 +806,130 @@ class BaseballBotGUI:
 
         ctk.CTkLabel(
             header_box,
-            text="💾 專案存檔設定 (Storage Settings)",
+            text="💾 儲存設定 (Save Settings)",
             font=ctk.CTkFont(family="Arial", size=16, weight="bold"),
             text_color="#FBBF24"
         ).pack(anchor="w")
 
         ctk.CTkLabel(
             header_box,
-            text="自訂存檔資料夾完全獨立於 Git 倉庫，不受 git push / pull 影響，所有設定將永久妥善保存。",
-            font=ctk.CTkFont(size=11),
-            text_color=COLOR_TEXT_MUTED
-        ).pack(anchor="w", pady=(2, 0))
-
-        # 1. 存檔目錄設定區塊 (自訂存檔位置)
-        sec_dir = ctk.CTkFrame(card, fg_color=COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
-        sec_dir.pack(fill="x", padx=16, pady=(0, 10))
-
-        sec_dir_inner = ctk.CTkFrame(sec_dir, fg_color="transparent")
-        sec_dir_inner.pack(fill="x", padx=12, pady=10)
-
-        ctk.CTkLabel(
-            sec_dir_inner,
-            text="📁 目前存檔資料夾位置：",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            text="請選擇或輸入設定檔要儲存到哪裡（.json 檔案）：",
+            font=ctk.CTkFont(size=12),
             text_color=COLOR_TEXT_PRIMARY
-        ).pack(anchor="w", pady=(0, 6))
+        ).pack(anchor="w", pady=(4, 0))
 
-        row_input = ctk.CTkFrame(sec_dir_inner, fg_color="transparent")
-        row_input.pack(fill="x")
+        # 路徑輸入與選擇區塊
+        sec_path = ctk.CTkFrame(card, fg_color=COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
+        sec_path.pack(fill="x", padx=16, pady=(8, 12))
 
-        var_dlg_dir = tk.StringVar(value=self.storage_dir)
-        entry_dlg_dir = ctk.CTkEntry(
-            row_input,
-            textvariable=var_dlg_dir,
+        sec_path_inner = ctk.CTkFrame(sec_path, fg_color="transparent")
+        sec_path_inner.pack(fill="x", padx=12, pady=12)
+
+        default_save_path = getattr(self, "auto_save_file", None)
+        if not default_save_path:
+            default_save_path = os.path.join(self.storage_dir, "baseball_last_config.json")
+
+        var_save_file = tk.StringVar(value=default_save_path)
+        entry_save_file = ctk.CTkEntry(
+            sec_path_inner,
+            textvariable=var_save_file,
             font=ctk.CTkFont(family="Menlo", size=11),
-            height=30,
+            height=32,
             corner_radius=6,
             fg_color="#181825",
             border_color="#334155"
         )
-        entry_dlg_dir.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        entry_save_file.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
-        def _do_change_dir():
-            d = filedialog.askdirectory(
+        def _do_browse_save():
+            curr = var_save_file.get().strip()
+            init_d = os.path.dirname(curr) if curr and os.path.isdir(os.path.dirname(curr)) else self.storage_dir
+            init_f = os.path.basename(curr) if curr else "baseball_config.json"
+            if not init_f.endswith(".json"):
+                init_f += ".json"
+            f = filedialog.asksaveasfilename(
                 parent=dlg,
-                initialdir=self.storage_dir,
-                title="📁 選擇存檔資料夾"
+                title="選擇存檔位置與檔案名稱",
+                initialdir=init_d,
+                initialfile=init_f,
+                defaultextension=".json",
+                filetypes=[("JSON 設定檔", "*.json"), ("所有檔案", "*.*")]
             )
-            if d:
-                self.set_storage_dir(d, seed=True)
-                var_dlg_dir.set(self.storage_dir)
-                lbl_tpl_count.configure(text=f"• 圖片特徵模板：templates/ (共 {_get_tpl_count()} 個檔案)")
-                lbl_status_msg.configure(text=f"📁 已切換存檔目錄至：{d}")
-                self.log_message(f"📁 存檔資料夾已於設定視窗中變更為: {d}")
-
-        def _do_open_dir():
-            self.on_open_storage_dir()
+            if f:
+                var_save_file.set(os.path.abspath(f))
 
         ctk.CTkButton(
-            row_input,
-            text="📁 變更位置",
-            width=84,
-            height=30,
+            sec_path_inner,
+            text="📁 選擇位置",
+            width=88,
+            height=32,
             corner_radius=6,
             font=ctk.CTkFont(size=11, weight="bold"),
             fg_color=COLOR_BTN_PRIMARY,
             hover_color=COLOR_BTN_PRIMARY_HOVER,
-            command=_do_change_dir
-        ).pack(side="left", padx=(0, 4))
-
-        ctk.CTkButton(
-            row_input,
-            text="↗️ 開啟",
-            width=64,
-            height=30,
-            corner_radius=6,
-            font=ctk.CTkFont(size=11),
-            fg_color=COLOR_BTN_DARK,
-            hover_color=COLOR_BTN_DARK_HOVER,
-            command=_do_open_dir
+            command=_do_browse_save
         ).pack(side="left")
 
-        # 2. 儲存內容清單預覽區塊
-        sec_info = ctk.CTkFrame(card, fg_color="transparent")
-        sec_info.pack(fill="both", expand=True, padx=16, pady=(0, 8))
-
-        ctk.CTkLabel(
-            sec_info,
-            text="📋 點擊儲存時將自動同步寫入以下設定項目：",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#60A5FA"
-        ).pack(anchor="w", pady=(0, 4))
-
-        info_box = ctk.CTkFrame(sec_info, fg_color=COLOR_INPUT_BG, corner_radius=6, border_width=1, border_color=COLOR_CARD_BORDER)
-        info_box.pack(fill="both", expand=True)
-
-        def _get_tpl_count():
-            try:
-                if os.path.exists(self.templates_dir):
-                    return len([f for f in os.listdir(self.templates_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))])
-            except Exception:
-                pass
-            return 0
-
-        p_cnt = len(self.priority_steps_list)
-        s_cnt = len(self.steps_list)
-
-        ctk.CTkLabel(
-            info_box,
-            text=f"• 聯賽自動刷設定：{os.path.basename(self.auto_save_file)} (優先動作: {p_cnt} 項，一般步驟: {s_cnt} 項)",
-            font=ctk.CTkFont(family="Menlo", size=11),
-            text_color=COLOR_TEXT_PRIMARY,
-            anchor="w"
-        ).pack(fill="x", padx=12, pady=(8, 2))
-
-        ctk.CTkLabel(
-            info_box,
-            text=f"• 任務清單設定：{os.path.basename(self.task_save_file)}",
-            font=ctk.CTkFont(family="Menlo", size=11),
-            text_color=COLOR_TEXT_PRIMARY,
-            anchor="w"
-        ).pack(fill="x", padx=12, pady=2)
-
-        lbl_tpl_count = ctk.CTkLabel(
-            info_box,
-            text=f"• 圖片特徵模板：templates/ (共 {_get_tpl_count()} 個檔案)",
-            font=ctk.CTkFont(family="Menlo", size=11),
-            text_color=COLOR_TEXT_PRIMARY,
-            anchor="w"
-        )
-        lbl_tpl_count.pack(fill="x", padx=12, pady=(2, 8))
-
         # 狀態訊息
-        lbl_status_msg = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=12, weight="bold"), text_color="#10B981")
-        lbl_status_msg.pack(pady=(0, 4))
+        lbl_msg = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11, weight="bold"), text_color="#10B981")
+        lbl_msg.pack(fill="x", padx=16, pady=(0, 8))
 
-        def _do_save_all():
-            p = var_dlg_dir.get().strip()
-            if p and p != self.storage_dir:
-                try:
-                    os.makedirs(p, exist_ok=True)
-                    self.set_storage_dir(p, seed=True)
-                except Exception as ex:
-                    messagebox.showerror("錯誤", f"無法切換至新存檔目錄: {ex}", parent=dlg)
-                    return
+        def _do_save_file():
+            p = var_save_file.get().strip()
+            if not p:
+                messagebox.showwarning("提示", "請輸入或選擇儲存路徑！", parent=dlg)
+                return
+            if not p.lower().endswith(".json"):
+                p += ".json"
+                var_save_file.set(p)
+
+            target_path = os.path.abspath(p)
             try:
-                self.save_all_settings(show_msg=False)
-                lbl_status_msg.configure(text=f"✅ 已成功將所有設定儲存至：\n{self.storage_dir}")
-                self.log_message(f"💾 所有設定已手動儲存至: {self.storage_dir}")
-            except Exception as ex:
-                messagebox.showerror("儲存失敗", f"無法儲存設定: {ex}", parent=dlg)
+                parent_dir = os.path.dirname(target_path)
+                if parent_dir and not os.path.exists(parent_dir):
+                    os.makedirs(parent_dir, exist_ok=True)
 
-        # 底部按鈕列
-        btn_row = ctk.CTkFrame(card, fg_color="transparent")
-        btn_row.pack(fill="x", padx=16, pady=(0, 14))
+                cfg = self.serialize_current_config()
+                with open(target_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+                self.auto_save_file = target_path
+                self.storage_dir = os.path.dirname(target_path)
+                self.templates_dir = self.storage_dir
+                persist_storage_dir(self.storage_dir)
+                if hasattr(self, "bot") and self.bot:
+                    self.bot.set_templates_dir(self.templates_dir)
+
+                lbl_msg.configure(text=f"✅ 已成功儲存至：{os.path.basename(target_path)}")
+                self.log_message(f"💾 設定已成功儲存至: {target_path}")
+                messagebox.showinfo("儲存成功", f"✅ 設定已成功儲存至：\n{target_path}", parent=dlg)
+                dlg.destroy()
+            except Exception as ex:
+                messagebox.showerror("儲存失敗", f"無法寫入檔案: {ex}", parent=dlg)
+
+        # 底部按鈕
+        btn_box = ctk.CTkFrame(card, fg_color="transparent")
+        btn_box.pack(fill="x", padx=16, pady=(0, 14), side="bottom")
 
         ctk.CTkButton(
-            btn_row,
-            text="💾 立即儲存所有設定",
-            width=160,
+            btn_box,
+            text="💾 確認儲存",
+            width=120,
             height=34,
             corner_radius=6,
             font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
             fg_color="#10B981",
             hover_color="#059669",
-            command=_do_save_all
-        ).pack(side="left")
+            command=_do_save_file
+        ).pack(side="right", padx=(6, 0))
 
         ctk.CTkButton(
-            btn_row,
-            text="關閉",
-            width=80,
+            btn_box,
+            text="取消",
+            width=70,
             height=34,
             corner_radius=6,
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=11),
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER,
             command=dlg.destroy
@@ -1059,7 +1031,7 @@ class BaseballBotGUI:
         # 儲存設定與自訂存檔位置
         self.btn_top_save = ctk.CTkButton(
             right_box,
-            text="💾 存檔設定",
+            text="💾 儲存設定",
             width=85,
             height=34,
             corner_radius=8,
@@ -1161,17 +1133,15 @@ class BaseballBotGUI:
         )
         self.seg_mode.pack(side="right")
 
-        # 第二行：步驟增刪與範本儲存按鈕群 (整齊平鋪排開)
+        # 第二行：步驟增刪與設定存檔按鈕群 (整齊平鋪排開)
         tools_row2 = ctk.CTkFrame(tools, fg_color="transparent")
         tools_row2.pack(fill="x")
 
-        ctk.CTkButton(tools_row2, text="＋ 優先動作", width=74, height=28, corner_radius=6, command=self.on_add_priority_step, fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=(0, 3))
-        ctk.CTkButton(tools_row2, text="⚡ 事件跳轉", width=74, height=28, corner_radius=6, command=self.on_add_task_trigger_step, fg_color="#8B5CF6", hover_color="#7C3AED", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
-        ctk.CTkButton(tools_row2, text="＋ 一般步驟", width=74, height=28, corner_radius=6, command=self.on_add_empty_step, fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
-        ctk.CTkButton(tools_row2, text="💡 常用範本", width=74, height=28, corner_radius=6, command=self.on_open_league_presets_dialog, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=3)
-        ctk.CTkButton(tools_row2, text="💾 儲存設定", width=74, height=28, corner_radius=6, command=self.on_open_save_dialog, fg_color="#10B981", hover_color="#059669", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
-        ctk.CTkButton(tools_row2, text="💾 存為範本", width=74, height=28, corner_radius=6, command=self.on_save_league_preset_dialog, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=3)
-        ctk.CTkButton(tools_row2, text="📂 載入檔案", width=74, height=28, corner_radius=6, command=self.on_load_config_manual, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=3)
+        ctk.CTkButton(tools_row2, text="＋ 優先動作", width=80, height=28, corner_radius=6, command=self.on_add_priority_step, fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(tools_row2, text="⚡ 事件跳轉", width=80, height=28, corner_radius=6, command=self.on_add_task_trigger_step, fg_color="#8B5CF6", hover_color="#7C3AED", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
+        ctk.CTkButton(tools_row2, text="＋ 一般步驟", width=80, height=28, corner_radius=6, command=self.on_add_empty_step, fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
+        ctk.CTkButton(tools_row2, text="💾 儲存設定", width=84, height=28, corner_radius=6, command=self.on_open_save_dialog, fg_color="#10B981", hover_color="#059669", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=4)
+        ctk.CTkButton(tools_row2, text="📂 載入設定", width=84, height=28, corner_radius=6, command=self.on_load_config_manual, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
 
         # 滾動步驟區域 (CTkScrollableFrame)
         self.step_scroll = ctk.CTkScrollableFrame(card, fg_color="transparent", corner_radius=8)
@@ -1775,7 +1745,7 @@ class BaseballBotGUI:
         combo_task_mode = ctk.CTkOptionMenu(
             row_tf1,
             variable=p["task_target_mode"],
-            values=["📋 完整任務清單", "🧩 指定積木步驟", "💡 常用日常範本"],
+            values=["📋 完整任務清單", "🧩 指定積木步驟", "📂 已儲存任務檔"],
             width=120,
             height=22,
             corner_radius=4,
@@ -1792,9 +1762,9 @@ class BaseballBotGUI:
                 if choices and p["task_target_item"].get() not in choices:
                     p["task_target_item"].set(choices[0])
                 combo_task_item.pack(side="left", padx=(2, 4))
-            elif m == "💡 常用日常範本":
+            elif "任務檔" in m or "範本" in m:
                 choices = self.task_tab.get_preset_choices() if hasattr(self, "task_tab") else []
-                combo_task_item.configure(values=choices if choices else ["(無範本)"])
+                combo_task_item.configure(values=choices if choices else ["(無存檔)"])
                 if choices and p["task_target_item"].get() not in choices:
                     p["task_target_item"].set(choices[0])
                 combo_task_item.pack(side="left", padx=(2, 4))
@@ -1867,6 +1837,30 @@ class BaseballBotGUI:
 
         ctk.CTkButton(
             row_id2,
+            text="✂️ 截圖",
+            width=54,
+            height=24,
+            corner_radius=4,
+            command=lambda: self.on_snip_template_dialog(p),
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#0284C7",
+            hover_color="#0369A1"
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            row_id2,
+            text="📂 瀏覽",
+            width=54,
+            height=24,
+            corner_radius=4,
+            command=lambda: self.on_browse_template_dialog(p),
+            font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            row_id2,
             text="📥 帶入最新截圖",
             width=96,
             height=24,
@@ -1879,8 +1873,8 @@ class BaseballBotGUI:
 
         ctk.CTkButton(
             row_id2,
-            text="📁 模板資料夾",
-            width=84,
+            text="📁 開啟資料夾",
+            width=76,
             height=24,
             corner_radius=4,
             command=self.on_open_templates_folder,
@@ -1895,10 +1889,8 @@ class BaseballBotGUI:
                 lbl_thumb.configure(image="", text="（未選圖）", fg=COLOR_TEXT_DIM, width=8, height=2)
                 p["_thumb_img"] = None
                 return
-            full_path = self.bot.resolve_template_path(img_name) if hasattr(self, "bot") else None
-            if not full_path or not os.path.exists(full_path):
-                full_path = os.path.join(self.templates_dir, img_name) if not os.path.isabs(img_name) else img_name
-            if os.path.exists(full_path):
+            full_path = self.resolve_image_path(img_name)
+            if full_path and os.path.exists(full_path):
                 try:
                     bgr = imread_unicode(full_path)
                     if bgr is not None:
@@ -2105,61 +2097,34 @@ class BaseballBotGUI:
     def on_add_image_step(self):
         self.on_add_empty_step()
 
-    def on_browse_template_dialog(self, step: dict):
-        os.makedirs(self.templates_dir, exist_ok=True)
+    def on_browse_template_dialog(self, step_or_p: dict):
+        curr_dir = self.storage_dir if os.path.exists(self.storage_dir) else self.config_dir
         fpath = filedialog.askopenfilename(
+            parent=self.root,
             title="選擇圖片模板",
-            initialdir=self.templates_dir,
+            initialdir=curr_dir,
             filetypes=[("圖片檔案", "*.png;*.jpg;*.jpeg;*.bmp"), ("PNG 圖片", "*.png"), ("所有檔案", "*.*")]
         )
         if fpath:
             fname = os.path.basename(fpath)
-            dest = os.path.join(self.templates_dir, fname)
-            if os.path.abspath(fpath) != os.path.abspath(dest):
-                try:
-                    import shutil
-                    shutil.copy2(fpath, dest)
-                except Exception:
-                    pass
-            step["template_image"].set(fname)
+            # 若在目前存檔目錄下，記錄檔名；否則記錄絕對路徑
+            if self.storage_dir and os.path.commonpath([os.path.abspath(fpath), os.path.abspath(self.storage_dir)]) == os.path.abspath(self.storage_dir):
+                step_or_p["template_image"].set(fname)
+            else:
+                step_or_p["template_image"].set(os.path.abspath(fpath))
             self.auto_save_current_config()
-            self.log_message(f"已指定圖片模板: {fname}")
-
-    def on_snip_template_dialog(self, step: dict):
-        screen = self.current_screen_bgr
-        if screen is None and self.bot.device:
-            self.log_message("正在擷取最新遊戲畫面以供框選...")
-            screen = self.bot.capture_screen()
-            if screen is not None:
-                self.current_screen_bgr = screen
-                self._render_preview(screen)
-        if screen is None:
-            messagebox.showwarning("提示", "目前沒有遊戲畫面截圖。\n請先點擊「📸 擷取畫面」或確認模擬器已連線。", parent=self.root)
-            return
-
-        step_name = step["name"].get().strip() or "按鈕模板"
-        def _on_snip_saved(fname):
-            step["template_image"].set(fname)
-            self.auto_save_current_config()
-            self.log_message(f"✂️ 成功儲存並綁定模板: {fname}")
-
-        TemplateSnipperDialog(
-            parent=self.root,
-            screen_bgr=screen,
-            initial_name=step_name,
-            templates_dir=self.templates_dir,
-            on_save_callback=_on_snip_saved
-        )
+            self._refresh_all_step_thumbs()
+            self.log_message(f"已指定圖片模板: {fpath}")
 
     def on_open_templates_folder(self):
-        os.makedirs(self.templates_dir, exist_ok=True)
+        target = self.storage_dir if os.path.exists(self.storage_dir) else self.config_dir
         try:
             if sys.platform == "darwin":
-                subprocess.Popen(["open", self.templates_dir])
+                subprocess.Popen(["open", target])
             elif sys.platform == "win32":
-                os.startfile(self.templates_dir)
+                os.startfile(target)
             else:
-                subprocess.Popen(["xdg-open", self.templates_dir])
+                subprocess.Popen(["xdg-open", target])
         except Exception as ex:
             messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=self.root)
 
@@ -2399,7 +2364,7 @@ class BaseballBotGUI:
         combo_task_mode = ctk.CTkOptionMenu(
             row_tf1,
             variable=s["task_target_mode"],
-            values=["📋 完整任務清單", "🧩 指定積木步驟", "💡 常用日常範本"],
+            values=["📋 完整任務清單", "🧩 指定積木步驟", "📂 已儲存任務檔"],
             width=120,
             height=22,
             corner_radius=4,
@@ -2416,9 +2381,9 @@ class BaseballBotGUI:
                 if choices and s["task_target_item"].get() not in choices:
                     s["task_target_item"].set(choices[0])
                 combo_task_item.pack(side="left", padx=(2, 4))
-            elif m == "💡 常用日常範本":
+            elif "任務檔" in m or "範本" in m:
                 choices = self.task_tab.get_preset_choices() if hasattr(self, "task_tab") else []
-                combo_task_item.configure(values=choices if choices else ["(無範本)"])
+                combo_task_item.configure(values=choices if choices else ["(無存檔)"])
                 if choices and s["task_target_item"].get() not in choices:
                     s["task_target_item"].set(choices[0])
                 combo_task_item.pack(side="left", padx=(2, 4))
@@ -2491,6 +2456,30 @@ class BaseballBotGUI:
 
         ctk.CTkButton(
             row_id2,
+            text="✂️ 截圖",
+            width=54,
+            height=24,
+            corner_radius=4,
+            command=lambda: self.on_snip_template_dialog(s),
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#0284C7",
+            hover_color="#0369A1"
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            row_id2,
+            text="📂 瀏覽",
+            width=54,
+            height=24,
+            corner_radius=4,
+            command=lambda: self.on_browse_template_dialog(s),
+            font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            row_id2,
             text="📥 帶入最新截圖",
             width=96,
             height=24,
@@ -2503,8 +2492,8 @@ class BaseballBotGUI:
 
         ctk.CTkButton(
             row_id2,
-            text="📁 模板資料夾",
-            width=84,
+            text="📁 開啟資料夾",
+            width=76,
             height=24,
             corner_radius=4,
             command=self.on_open_templates_folder,
@@ -2519,10 +2508,8 @@ class BaseballBotGUI:
                 lbl_thumb.configure(image="", text="（未選圖）", fg=COLOR_TEXT_DIM, width=8, height=2)
                 s["_thumb_img"] = None
                 return
-            full_path = self.bot.resolve_template_path(img_name) if hasattr(self, "bot") else None
-            if not full_path or not os.path.exists(full_path):
-                full_path = os.path.join(self.templates_dir, img_name) if not os.path.isabs(img_name) else img_name
-            if os.path.exists(full_path):
+            full_path = self.resolve_image_path(img_name)
+            if full_path and os.path.exists(full_path):
                 try:
                     bgr = imread_unicode(full_path)
                     if bgr is not None:
@@ -3149,9 +3136,7 @@ class BaseballBotGUI:
                     "儲存成功",
                     f"✅ 所有設定已成功儲存至自訂資料夾：\n{self.storage_dir}\n\n"
                     f"• 聯賽設定：{os.path.basename(self.auto_save_file)}\n"
-                    f"• 任務清單：{os.path.basename(self.task_save_file)}\n"
-                    f"• 圖片模板：templates/\n\n"
-                    "此目錄完全獨立於 Git 倉庫，不受 git push / pull 影響！",
+                    f"• 任務清單：{os.path.basename(self.task_save_file)}",
                     parent=self.root
                 )
         except Exception as ex:
@@ -3207,24 +3192,16 @@ class BaseballBotGUI:
     # ==========================================================================
     # 📁 獨立存檔與圖片資料夾管理 (完全脫離 Git 倉庫，永久記憶)
     # ==========================================================================
-    def set_storage_dir(self, new_dir: str, seed: bool = True):
-        """動態切換自訂存檔與圖片資料夾，並同步更新核心模組與範本庫"""
+    def set_storage_dir(self, new_dir: str, seed: bool = False):
+        """動態切換自訂存檔目錄，不生成任何多餘資料夾"""
         if not new_dir:
-            new_dir = os.path.expanduser("~/Documents/Auto9Innings_Data")
+            new_dir = os.path.dirname(os.path.abspath(__file__))
         self.storage_dir = os.path.abspath(os.path.expanduser(new_dir))
-        self.templates_dir = os.path.join(self.storage_dir, "templates")
-        self.league_presets_dir = os.path.join(self.storage_dir, "聯賽範本")
-        self.task_presets_dir = os.path.join(self.storage_dir, "任務範本")
+        self.templates_dir = self.storage_dir
+        self.league_presets_dir = self.storage_dir
+        self.task_presets_dir = self.storage_dir
         self.auto_save_file = os.path.join(self.storage_dir, f"baseball_last_config{'' if self.instance_id == 1 else f'_{self.instance_id}'}.json")
         self.task_save_file = os.path.join(self.storage_dir, f"task_flow_save{'' if self.instance_id == 1 else f'_{self.instance_id}'}.json")
-
-        try:
-            os.makedirs(self.storage_dir, exist_ok=True)
-            os.makedirs(self.templates_dir, exist_ok=True)
-            os.makedirs(self.league_presets_dir, exist_ok=True)
-            os.makedirs(self.task_presets_dir, exist_ok=True)
-        except Exception as ex:
-            self.log_message(f"⚠️ 建立存檔資料夾異常: {ex}")
 
         persist_storage_dir(self.storage_dir)
 
@@ -3237,94 +3214,42 @@ class BaseballBotGUI:
         if hasattr(self, "task_tab") and self.task_tab:
             self.task_tab.presets_dir = self.task_presets_dir
             self.task_tab.save_file = self.task_save_file
-            if hasattr(self.task_tab, "reload_presets"):
-                self.task_tab.reload_presets()
-
-        if seed:
-            self._seed_default_assets()
 
         self._refresh_all_step_thumbs()
-        self.reload_league_presets()
 
     def _seed_default_assets(self):
-        """將專案初期的預設聯賽範本、任務範本與圖片模板安全拷貝至獨立存檔目錄"""
-        import shutil
-        # 1. 拷貝聯賽常用範本
-        cand_league_dirs = [
-            os.path.join(self.config_dir, "configs", "聯賽自動刷"),
-            os.path.join(self.config_dir, "configs"),
-            os.path.join(self.config_dir, "聯賽範本"),
-        ]
-        def _safe_listdir(p):
-            try:
-                return os.listdir(p) if os.path.isdir(p) else []
-            except Exception:
-                return []
+        """不主動在使用者電腦生成多餘資料夾或拷貝檔案"""
+        pass
 
-        for src_dir in cand_league_dirs:
-            if os.path.isdir(src_dir):
-                for fname in _safe_listdir(src_dir):
-                    if fname.endswith(".json") and not fname.startswith("."):
-                        src = os.path.join(src_dir, fname)
-                        dst = os.path.join(self.league_presets_dir, fname)
-                        if not os.path.exists(dst):
-                            try:
-                                shutil.copy2(src, dst)
-                            except Exception:
-                                pass
-
-        # 2. 拷貝圖片模板
-        cand_tpl_dirs = [
-            os.path.join(self.config_dir, "templates"),
-            os.path.join(self.config_dir, "configs", "templates"),
+    def resolve_image_path(self, img_name: str) -> Optional[str]:
+        """跨目錄解析步驟設定的圖片模板，確保縮圖與辨識 100% 讀取得到"""
+        if not img_name or not str(img_name).strip():
+            return None
+        p = str(img_name).strip()
+        if os.path.isabs(p) and os.path.isfile(p):
+            return os.path.abspath(p)
+        candidates = [
+            p,
+            os.path.join(self.storage_dir, p),
+            os.path.join(self.storage_dir, os.path.basename(p)),
+            os.path.join(self.config_dir, "templates", os.path.basename(p)),
+            os.path.join(self.config_dir, "templates", p),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", os.path.basename(p)),
+            os.path.join(os.getcwd(), p),
+            os.path.join(os.getcwd(), os.path.basename(p)),
         ]
-        for src_dir in cand_tpl_dirs:
-            if os.path.isdir(src_dir):
-                for fname in _safe_listdir(src_dir):
-                    if fname.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")) and not fname.startswith("."):
-                        src = os.path.join(src_dir, fname)
-                        dst = os.path.join(self.templates_dir, fname)
-                        if not os.path.exists(dst):
-                            try:
-                                shutil.copy2(src, dst)
-                            except Exception:
-                                pass
-
-        # 3. 拷貝任務範本
-        cand_task_dirs = [
-            os.path.join(self.config_dir, "task_presets"),
-            os.path.join(self.config_dir, "configs", "任務自動刷"),
-        ]
-        for src_dir in cand_task_dirs:
-            if os.path.isdir(src_dir):
-                for fname in _safe_listdir(src_dir):
-                    if fname.endswith(".json") and not fname.startswith("."):
-                        src = os.path.join(src_dir, fname)
-                        dst = os.path.join(self.task_presets_dir, fname)
-                        if not os.path.exists(dst):
-                            try:
-                                shutil.copy2(src, dst)
-                            except Exception:
-                                pass
-
-        # 4. 拷貝預設/歷史設定
-        cand_configs = [
-            (os.path.join(self.config_dir, "autosave_last_config.json"), self.auto_save_file),
-            (os.path.join(self.config_dir, "baseball_last_config.json"), self.auto_save_file),
-            (os.path.join(self.config_dir, "tasks_flow.json"), self.task_save_file),
-            (os.path.join(self.config_dir, "task_flow_save.json"), self.task_save_file),
-        ]
-        if self.instance_id > 1:
-            cand_configs.extend([
-                (os.path.join(self.config_dir, f"autosave_last_config_{self.instance_id}.json"), self.auto_save_file),
-                (os.path.join(self.config_dir, f"tasks_flow_{self.instance_id}.json"), self.task_save_file),
-            ])
-        for src, dst in cand_configs:
-            if os.path.exists(src) and not os.path.exists(dst):
-                try:
-                    shutil.copy2(src, dst)
-                except Exception:
-                    pass
+        if hasattr(self, "auto_save_file") and self.auto_save_file:
+            save_p_dir = os.path.dirname(self.auto_save_file)
+            candidates.append(os.path.join(save_p_dir, os.path.basename(p)))
+            candidates.append(os.path.join(save_p_dir, p))
+        if hasattr(self, "bot") and self.bot:
+            bot_res = self.bot.resolve_template_path(p)
+            if bot_res and os.path.isfile(bot_res):
+                return bot_res
+        for c in candidates:
+            if c and os.path.isfile(c):
+                return os.path.abspath(c)
+        return None
 
     def _refresh_all_step_thumbs(self):
         """重新觸發所有步驟卡片的縮圖載入"""
@@ -3342,113 +3267,37 @@ class BaseballBotGUI:
                     pass
 
     def _ensure_template_in_storage(self, img_name: str) -> str:
-        """確保模板圖片檔案存在於存檔目錄的 templates/ 中，回傳相對圖檔名稱"""
-        if not img_name:
-            return ""
-        img_name = str(img_name).strip()
-        if not img_name:
-            return ""
-
-        import shutil
-        # 若為絕對路徑
-        if os.path.isabs(img_name) and os.path.exists(img_name):
-            base = os.path.basename(img_name)
-            dest = os.path.join(self.templates_dir, base)
-            if os.path.abspath(img_name) != os.path.abspath(dest):
-                try:
-                    os.makedirs(self.templates_dir, exist_ok=True)
-                    shutil.copy2(img_name, dest)
-                except Exception:
-                    pass
-            return base
-        elif os.path.isabs(img_name):
-            return os.path.basename(img_name)
-
-        # 若為純檔名或相對路徑
-        base = os.path.basename(img_name)
-        dest = os.path.join(self.templates_dir, base)
-        if os.path.exists(dest):
-            return base
-
-        for cand in [
-            os.path.join(self.config_dir, "templates", base),
-            os.path.join(self.config_dir, "configs", "templates", base),
-            os.path.join(self.config_dir, base),
-            img_name,
-        ]:
-            if os.path.exists(cand):
-                try:
-                    os.makedirs(self.templates_dir, exist_ok=True)
-                    shutil.copy2(cand, dest)
-                except Exception:
-                    pass
-                break
-        return base
+        """回傳圖檔路徑或檔名，不額外建立資料夾或強制拷貝"""
+        return str(img_name).strip() if img_name else ""
 
     def on_change_storage_dir(self):
-        """開啟目錄選擇器變更存檔與圖片資料夾"""
+        """開啟目錄選擇器變更存檔資料夾"""
         d = filedialog.askdirectory(
             parent=self.root,
-            initialdir=self.storage_dir if os.path.exists(self.storage_dir) else os.path.expanduser("~/Documents"),
-            title="📁 選擇存檔與圖片儲存資料夾"
+            initialdir=self.storage_dir if os.path.exists(self.storage_dir) else self.config_dir,
+            title="📁 選擇存檔資料夾"
         )
         if d:
-            self.set_storage_dir(d, seed=True)
-            self.log_message(f"📁 存檔與圖片資料夾已切換至: {d}")
+            self.set_storage_dir(d, seed=False)
+            self.log_message(f"📁 存檔資料夾已切換至: {d}")
             messagebox.showinfo(
                 "存檔路徑已更新",
-                f"存檔與圖片資料夾已成功切換至：\n{d}\n\n"
-                "未來所有聯賽設定、任務清單與圖片模板均將永久儲存於此目錄，\n"
-                "不受 git pull / git push 影響。",
+                f"存檔資料夾已成功切換至：\n{d}",
                 parent=self.root
             )
 
     def on_open_storage_dir(self):
-        """開啟存檔與圖片資料夾"""
+        """開啟存檔資料夾"""
+        target = self.storage_dir if os.path.exists(self.storage_dir) else self.config_dir
         try:
-            os.makedirs(self.storage_dir, exist_ok=True)
-            import subprocess, sys
             if sys.platform == "darwin":
-                subprocess.Popen(["open", self.storage_dir])
+                subprocess.Popen(["open", target])
             elif sys.platform == "win32":
-                os.startfile(self.storage_dir)
+                os.startfile(target)
             else:
-                subprocess.Popen(["xdg-open", self.storage_dir])
+                subprocess.Popen(["xdg-open", target])
         except Exception as ex:
             messagebox.showerror("錯誤", f"無法開啟存檔資料夾: {ex}", parent=self.root)
-
-    def on_open_templates_folder(self):
-        """開啟圖片模板資料夾 (templates/)"""
-        try:
-            os.makedirs(self.templates_dir, exist_ok=True)
-            import subprocess, sys
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", self.templates_dir])
-            elif sys.platform == "win32":
-                os.startfile(self.templates_dir)
-            else:
-                subprocess.Popen(["xdg-open", self.templates_dir])
-        except Exception as ex:
-            messagebox.showerror("錯誤", f"無法開啟圖片模板資料夾: {ex}", parent=self.root)
-
-    def on_browse_template_dialog(self, step_or_p: dict):
-        """開啟檔案選擇器挑選模板圖片，並自動同步備份至存檔資料夾"""
-        initial_dir = self.templates_dir if os.path.exists(self.templates_dir) else self.storage_dir
-        path = filedialog.askopenfilename(
-            parent=self.root,
-            title="選擇模板圖片",
-            initialdir=initial_dir,
-            filetypes=[
-                ("圖片檔案", "*.png *.jpg *.jpeg *.bmp"),
-                ("PNG 圖片", "*.png"),
-                ("所有檔案", "*.*")
-            ]
-        )
-        if path:
-            fname = self._ensure_template_in_storage(path)
-            step_or_p["template_image"].set(fname)
-            self.auto_save_current_config()
-            self.log_message(f"🖼️ 已套用模板圖片: {fname} (存於 templates/)")
 
     def on_snip_template_dialog(self, step_or_p: dict):
         """從當前畫面或即時截圖進行局部框選裁切，儲存為圖片模板"""
@@ -3463,24 +3312,30 @@ class BaseballBotGUI:
         if screen_bgr is None:
             messagebox.showwarning(
                 "提示",
-                "目前尚無遊戲畫面可用於框選！\n請先確認 ADB 裝置已連線，並點擊上方「📸 截圖」獲取最新畫面。",
+                "目前尚無遊戲畫面可用於框選！\n請先確認模擬器已連線，並點擊右側「📸 截圖」獲取最新畫面。",
                 parent=self.root
             )
             return
 
         initial_name = step_or_p.get("name", tk.StringVar()).get().strip() or "btn_template"
 
-        def on_saved(filename: str):
-            self.last_snipped_template = filename
-            step_or_p["template_image"].set(filename)
+        def on_saved(saved_path: str):
+            fname = os.path.basename(saved_path)
+            self.last_snipped_template = saved_path
+            # 若位於目前存檔目錄下，儲存檔名；否則儲存絕對路徑
+            if self.storage_dir and os.path.commonpath([os.path.abspath(saved_path), os.path.abspath(self.storage_dir)]) == os.path.abspath(self.storage_dir):
+                step_or_p["template_image"].set(fname)
+            else:
+                step_or_p["template_image"].set(os.path.abspath(saved_path))
             self.auto_save_current_config()
-            self.log_message(f"✂️ 已框選並儲存模板圖片: {filename}")
+            self._refresh_all_step_thumbs()
+            self.log_message(f"✂️ 已框選並儲存模板圖片: {saved_path}")
 
         TemplateSnipperDialog(
             parent=self.root,
             screen_bgr=screen_bgr,
             initial_name=initial_name,
-            templates_dir=self.templates_dir,
+            templates_dir=self.storage_dir,
             on_save_callback=on_saved
         )
 
@@ -3490,525 +3345,26 @@ class BaseballBotGUI:
         self.on_reset_baseball_template()
 
     def reload_league_presets(self):
-        """重新載入聯賽常用範本目錄 (configs/聯賽自動刷/) 下的所有範本檔案"""
+        """相容保留：不載入額外範本庫"""
         self.league_presets = {}
-        if not hasattr(self, "league_presets_dir") or not os.path.exists(self.league_presets_dir):
-            return
-
-        try:
-            entries = sorted(os.listdir(self.league_presets_dir))
-        except Exception as ex:
-            entries = []
-
-        for fname in entries:
-            if not fname.endswith(".json") or fname.startswith("."):
-                continue
-            fpath = os.path.join(self.league_presets_dir, fname)
-            key = os.path.splitext(fname)[0]
-            try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                title = data.get("title") or data.get("name") or key
-                desc = data.get("desc", "")
-                p_cnt = len(data.get("priority_steps", []))
-                s_cnt = len(data.get("steps", []))
-                self.league_presets[key] = {
-                    "key": key,
-                    "title": title,
-                    "desc": desc,
-                    "data": data,
-                    "file_path": fpath,
-                    "priority_count": p_cnt,
-                    "steps_count": s_cnt
-                }
-            except Exception as e:
-                self.log_message(f"⚠️ 讀取聯賽範本檔案 {fname} 失敗: {e}")
 
     def load_league_preset(self, preset_key: str, confirm: bool = True):
-        """載入指定的常用聯賽範本"""
-        preset_info = self.league_presets.get(preset_key)
-        if not preset_info:
-            fpath = os.path.join(self.league_presets_dir, f"{preset_key}.json")
-            if os.path.exists(fpath):
-                try:
-                    with open(fpath, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    preset_info = {
-                        "key": preset_key,
-                        "title": data.get("title", preset_key),
-                        "data": data,
-                        "file_path": fpath
-                    }
-                except Exception:
-                    pass
-
-        if not preset_info:
-            messagebox.showwarning("提示", f"找不到指定聯賽範本：{preset_key}")
-            return
-
-        title = preset_info.get("title", preset_key)
-        if confirm and (self.priority_steps_list or self.steps_list):
-            if not messagebox.askyesno("載入範本", f"載入範本「{title}」將取代目前設定與步驟清單，是否繼續？"):
-                return
-
-        data = preset_info.get("data")
-        if data:
-            self.apply_config_dict(data)
-            self.auto_save_current_config()
-            p_cnt = len(self.priority_steps_list)
-            s_cnt = len(self.steps_list)
-            self.log_message(f"已成功載入常用聯賽範本: {title} (優先動作: {p_cnt} 項，一般步驟: {s_cnt} 項)")
+        """相容保留：轉調載入設定檔"""
+        self.on_load_config_manual()
 
     def delete_league_preset(self, preset_key: str, parent_dlg=None):
-        """刪除指定的常用聯賽範本"""
-        preset_info = self.league_presets.get(preset_key)
-        title = preset_info.get("title", preset_key) if preset_info else preset_key
-        if not messagebox.askyesno("確認刪除", f"確定要刪除聯賽範本「{title}」嗎？\n(檔案將從 聯賽範本/ 移除)", parent=parent_dlg):
-            return
-        fpath = os.path.join(self.league_presets_dir, f"{preset_key}.json")
-        try:
-            if os.path.exists(fpath):
-                os.remove(fpath)
-            self.log_message(f"已刪除聯賽範本: {title}")
-            self.reload_league_presets()
-        except Exception as e:
-            messagebox.showerror("錯誤", f"刪除聯賽範本失敗: {e}", parent=parent_dlg)
+        pass
 
     def on_open_league_presets_dialog(self):
-        """開啟常用聯賽範本管理視窗 (可載入、新增、刪除多個範本)"""
-        self.reload_league_presets()
-
-        dlg = ctk.CTkToplevel(self.root)
-        dlg.title("💡 常用聯賽範本管理")
-        dlg.geometry("640x560")
-        dlg.minsize(560, 480)
-        dlg.configure(fg_color=COLOR_BG)
-        dlg.grab_set()
-        dlg.transient(self.root)
-
-        # 頂部資訊與控制列
-        f_top = ctk.CTkFrame(dlg, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        f_top.pack(fill="x", padx=16, pady=(16, 10))
-
-        inner_top = ctk.CTkFrame(f_top, fg_color="transparent")
-        inner_top.pack(fill="x", padx=14, pady=12)
-
-        lbl_t = ctk.CTkLabel(
-            inner_top,
-            text="💡 常用聯賽自動刷關範本庫",
-            font=ctk.CTkFont(family="Arial", size=15, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        )
-        lbl_t.pack(side="left")
-
-        def _open_folder():
-            try:
-                os.makedirs(self.league_presets_dir, exist_ok=True)
-                import subprocess, sys
-                if sys.platform == "darwin":
-                    subprocess.Popen(["open", self.league_presets_dir])
-                else:
-                    os.startfile(self.league_presets_dir)
-            except Exception as ex:
-                messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=dlg)
-
-        btn_open = ctk.CTkButton(
-            inner_top, text="📂 開啟資料夾", width=90, height=28, corner_radius=6,
-            font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
-            command=_open_folder
-        )
-        btn_open.pack(side="right", padx=(6, 0))
-
-        def _do_reload():
-            self.reload_league_presets()
-            _render_list()
-
-        btn_reload = ctk.CTkButton(
-            inner_top, text="🔄 重整", width=60, height=28, corner_radius=6,
-            font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
-            command=_do_reload
-        )
-        btn_reload.pack(side="right")
-
-        # 中間滾動範本列表
-        scroll_frame = ctk.CTkScrollableFrame(dlg, fg_color="transparent", corner_radius=10)
-        scroll_frame.pack(fill="both", expand=True, padx=16, pady=(0, 10))
-
-        def _render_list():
-            for w in scroll_frame.winfo_children():
-                w.destroy()
-
-            if not self.league_presets:
-                lbl_empty = ctk.CTkLabel(
-                    scroll_frame,
-                    text="目前尚無常用聯賽範本。\n點擊下方「＋ 將目前步驟儲存為新範本」即可存入！",
-                    font=ctk.CTkFont(size=13),
-                    text_color=COLOR_TEXT_DIM,
-                    justify="center"
-                )
-                lbl_empty.pack(pady=40)
-                return
-
-            for p_key, p_val in list(self.league_presets.items()):
-                card = ctk.CTkFrame(
-                    scroll_frame,
-                    fg_color=COLOR_CARD,
-                    corner_radius=10,
-                    border_width=1,
-                    border_color=COLOR_CARD_BORDER
-                )
-                card.pack(fill="x", pady=5, padx=2)
-
-                row_card = ctk.CTkFrame(card, fg_color="transparent")
-                row_card.pack(fill="x", padx=14, pady=10)
-
-                left_info = ctk.CTkFrame(row_card, fg_color="transparent")
-                left_info.pack(side="left", fill="both", expand=True)
-
-                title_text = p_val.get("title", p_key)
-                ctk.CTkLabel(
-                    left_info,
-                    text=f"⚾ {title_text}",
-                    font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
-                    text_color=COLOR_TEXT_PRIMARY,
-                    anchor="w"
-                ).pack(anchor="w")
-
-                p_cnt = p_val.get("priority_count", 0)
-                s_cnt = p_val.get("steps_count", 0)
-                desc_str = f"檔案：{p_key}.json | ⚡ 優先動作: {p_cnt} 項 | 📋 一般步驟: {s_cnt} 項"
-                if p_val.get("desc"):
-                    desc_str += f" | {p_val['desc']}"
-
-                ctk.CTkLabel(
-                    left_info,
-                    text=desc_str,
-                    font=ctk.CTkFont(size=11),
-                    text_color=COLOR_TEXT_MUTED,
-                    anchor="w"
-                ).pack(anchor="w", pady=(2, 0))
-
-                # 右側操作按鈕
-                btn_actions = ctk.CTkFrame(row_card, fg_color="transparent")
-                btn_actions.pack(side="right")
-
-                def _load_p(k=p_key):
-                    dlg.destroy()
-                    self.load_league_preset(k)
-
-                btn_load = ctk.CTkButton(
-                    btn_actions,
-                    text="▶ 載入此範本",
-                    width=96,
-                    height=30,
-                    corner_radius=6,
-                    font=ctk.CTkFont(size=11, weight="bold"),
-                    fg_color=COLOR_BTN_PRIMARY,
-                    hover_color=COLOR_BTN_PRIMARY_HOVER,
-                    command=_load_p
-                )
-                btn_load.pack(side="left", padx=(0, 6))
-
-                def _del_p(k=p_key):
-                    self.delete_league_preset(k, parent_dlg=dlg)
-                    _render_list()
-
-                btn_del = ctk.CTkButton(
-                    btn_actions,
-                    text="✕",
-                    width=30,
-                    height=30,
-                    corner_radius=6,
-                    font=ctk.CTkFont(size=12, weight="bold"),
-                    fg_color="#EF4444",
-                    hover_color="#DC2626",
-                    command=_del_p
-                )
-                btn_del.pack(side="left")
-
-        _render_list()
-
-        # 底部按鈕列
-        f_bot = ctk.CTkFrame(dlg, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        f_bot.pack(fill="x", padx=16, pady=(0, 16))
-
-        inner_bot = ctk.CTkFrame(f_bot, fg_color="transparent")
-        inner_bot.pack(fill="x", padx=14, pady=10)
-
-        def _open_save():
-            dlg.destroy()
-            self.on_save_league_preset_dialog(default_mode="new")
-
-        btn_save_new = ctk.CTkButton(
-            inner_bot,
-            text="＋ 將目前步驟儲存為新範本",
-            height=32,
-            corner_radius=6,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=COLOR_BTN_START,
-            hover_color=COLOR_BTN_START_HOVER,
-            command=_open_save
-        )
-        btn_save_new.pack(side="left")
-
-        btn_close = ctk.CTkButton(
-            inner_bot,
-            text="關閉",
-            width=80,
-            height=32,
-            corner_radius=6,
-            font=ctk.CTkFont(size=12),
-            fg_color=COLOR_BTN_DARK,
-            hover_color=COLOR_BTN_DARK_HOVER,
-            command=dlg.destroy
-        )
-        btn_close.pack(side="right")
+        """開啟載入設定檔對話框（直接選擇電腦上的設定檔）"""
+        self.on_load_config_manual()
 
     def on_save_league_preset_dialog(self, default_mode: str = "new"):
-        """開啟儲存聯賽範本對話框（新增為常用範本 / 覆蓋既有範本 / 另存新檔）"""
-        if not self.priority_steps_list and not self.steps_list:
-            if not messagebox.askyesno("提示", "目前沒有任何優先動作或一般步驟，確定要儲存空的聯賽設定嗎？", parent=self.root):
-                return
-
-        dlg = ctk.CTkToplevel(self.root)
-        dlg.title("💾 儲存聯賽範本")
-        dlg.geometry("520x460")
-        dlg.resizable(False, False)
-        dlg.configure(fg_color=COLOR_BG)
-        dlg.grab_set()
-        dlg.transient(self.root)
-
-        f_top = ctk.CTkFrame(dlg, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
-        f_top.pack(fill="x", padx=16, pady=(16, 8))
-
-        inner_top = ctk.CTkFrame(f_top, fg_color="transparent")
-        inner_top.pack(fill="x", padx=12, pady=10)
-
-        ctk.CTkLabel(
-            inner_top, text="💾 選擇聯賽範本儲存方式",
-            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
-        ).pack(anchor="w")
-
-        row_dir = ctk.CTkFrame(inner_top, fg_color="transparent")
-        row_dir.pack(fill="x", pady=(4, 0))
-        lbl_dir = ctk.CTkLabel(
-            row_dir, text=f"範本儲存目錄：{self.league_presets_dir}",
-            font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED
-        )
-        lbl_dir.pack(side="left")
-
-        def _open_folder():
-            try:
-                os.makedirs(self.league_presets_dir, exist_ok=True)
-                import subprocess, sys
-                if sys.platform == "darwin":
-                    subprocess.Popen(["open", self.league_presets_dir])
-                elif sys.platform == "win32":
-                    os.startfile(self.league_presets_dir)
-                else:
-                    subprocess.Popen(["xdg-open", self.league_presets_dir])
-            except Exception as ex:
-                messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=dlg)
-
-        def _change_dir():
-            d = filedialog.askdirectory(
-                parent=dlg,
-                initialdir=self.storage_dir,
-                title="📁 選擇存檔資料夾"
-            )
-            if d:
-                self.set_storage_dir(d, seed=True)
-                lbl_dir.configure(text=f"範本儲存目錄：{self.league_presets_dir}")
-                self.reload_league_presets()
-                p_keys = list(self.league_presets.keys())
-                combo_exist.configure(
-                    values=[f"{k}: {v.get('title', k)}" for k, v in self.league_presets.items()] if p_keys else ["(尚無範本)"],
-                    state="readonly" if p_keys else "disabled"
-                )
-                if p_keys:
-                    existing_var.set(f"{p_keys[0]}: {self.league_presets[p_keys[0]].get('title', p_keys[0])}")
-                else:
-                    existing_var.set("(尚無範本)")
-                self.log_message(f"📁 存檔資料夾已於儲存視窗中變更為: {d}")
-
-        btn_open = ctk.CTkButton(
-            row_dir, text="↗️ 開啟", width=60, height=26, corner_radius=6,
-            font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
-            command=_open_folder
-        )
-        btn_open.pack(side="right")
-
-        btn_change = ctk.CTkButton(
-            row_dir, text="📁 變更目錄", width=76, height=26, corner_radius=6,
-            font=ctk.CTkFont(size=11, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER,
-            command=_change_dir
-        )
-        btn_change.pack(side="right", padx=(0, 4))
-
-        self.reload_league_presets()
-        preset_keys = list(self.league_presets.keys())
-        mode_var = tk.StringVar(value="new" if (default_mode == "new" or not preset_keys) else "existing")
-        name_var = tk.StringVar(value=f"自訂聯賽_{len(preset_keys) + 1}")
-        desc_var = tk.StringVar(value="")
-        existing_var = tk.StringVar()
-        if preset_keys:
-            existing_var.set(f"{preset_keys[0]}: {self.league_presets[preset_keys[0]].get('title', preset_keys[0])}")
-
-        f_body = ctk.CTkFrame(dlg, fg_color="transparent")
-        f_body.pack(fill="both", expand=True, padx=16, pady=4)
-
-        rb1 = ctk.CTkRadioButton(f_body, text="新增為常用聯賽範本", value="new", variable=mode_var, font=ctk.CTkFont(size=12, weight="bold"))
-        rb1.pack(anchor="w", pady=(4, 4))
-
-        f_new = ctk.CTkFrame(f_body, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
-        f_new.pack(fill="x", padx=12, pady=(0, 8))
-
-        row_name = ctk.CTkFrame(f_new, fg_color="transparent")
-        row_name.pack(fill="x", padx=12, pady=(8, 4))
-        ctk.CTkLabel(row_name, text="範本名稱:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
-        entry_name = ctk.CTkEntry(row_name, textvariable=name_var, height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
-        entry_name.pack(side="left", fill="x", expand=True)
-
-        row_desc = ctk.CTkFrame(f_new, fg_color="transparent")
-        row_desc.pack(fill="x", padx=12, pady=(0, 8))
-        ctk.CTkLabel(row_desc, text="說明備註:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
-        entry_desc = ctk.CTkEntry(row_desc, textvariable=desc_var, placeholder_text="(選填，如：適用 1920x1080 聯賽)", height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
-        entry_desc.pack(side="left", fill="x", expand=True)
-
-        rb2 = ctk.CTkRadioButton(f_body, text="覆蓋既有聯賽範本", value="existing", variable=mode_var, font=ctk.CTkFont(size=12, weight="bold"))
-        rb2.pack(anchor="w", pady=(4, 4))
-
-        f_exist = ctk.CTkFrame(f_body, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
-        f_exist.pack(fill="x", padx=12, pady=(0, 8))
-
-        row_sel = ctk.CTkFrame(f_exist, fg_color="transparent")
-        row_sel.pack(fill="x", padx=12, pady=8)
-        ctk.CTkLabel(row_sel, text="現有範本:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
-        combo_exist = ctk.CTkComboBox(
-            row_sel,
-            variable=existing_var,
-            values=[f"{k}: {v.get('title', k)}" for k, v in self.league_presets.items()] if preset_keys else ["(尚無範本)"],
-            height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly" if preset_keys else "disabled"
-        )
-        combo_exist.pack(side="left", fill="x", expand=True)
-
-        rb3 = ctk.CTkRadioButton(f_body, text="另存新檔 (自訂檔案路徑)", value="custom", variable=mode_var, font=ctk.CTkFont(size=12, weight="bold"))
-        rb3.pack(anchor="w", pady=(4, 4))
-
-        def _update_ui_state(*args):
-            m = mode_var.get()
-            entry_name.configure(state="normal" if m == "new" else "disabled")
-            entry_desc.configure(state="normal" if m == "new" else "disabled")
-            combo_exist.configure(state="readonly" if (m == "existing" and preset_keys) else "disabled")
-
-        mode_var.trace_add("write", _update_ui_state)
-        _update_ui_state()
-
-        f_bottom = ctk.CTkFrame(dlg, fg_color="transparent")
-        f_bottom.pack(fill="x", side="bottom", padx=16, pady=14)
-
-        def _do_save():
-            m = mode_var.get()
-            if m == "new":
-                name = name_var.get().strip()
-                if not name:
-                    messagebox.showwarning("提示", "請輸入範本名稱！", parent=dlg)
-                    return
-                safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_", " ", "（", "）", "(", ")")).strip()
-                if not safe_name:
-                    safe_name = "custom_league_preset"
-                target_path = os.path.join(self.league_presets_dir, f"{safe_name}.json")
-                if os.path.exists(target_path):
-                    if not messagebox.askyesno("覆蓋確認", f"範本檔案「{safe_name}.json」已存在，是否確認覆蓋？", parent=dlg):
-                        return
-                data = self.serialize_current_config()
-                data["key"] = safe_name
-                data["title"] = name
-                data["desc"] = desc_var.get().strip()
-                try:
-                    os.makedirs(self.league_presets_dir, exist_ok=True)
-                    with open(target_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    self.reload_league_presets()
-                    self.auto_save_current_config()
-                    messagebox.showinfo("成功", f"常用聯賽範本已新增至:\n{os.path.basename(target_path)}", parent=dlg)
-                    dlg.destroy()
-                except Exception as ex:
-                    messagebox.showerror("錯誤", f"存檔失敗: {ex}", parent=dlg)
-
-            elif m == "existing":
-                if not preset_keys:
-                    messagebox.showwarning("提示", "目前沒有任何既有範本可覆蓋！請選擇「新增為常用聯賽範本」。", parent=dlg)
-                    return
-                sel_str = existing_var.get().strip()
-                sel_key = sel_str.split(":")[0].strip() if ":" in sel_str else sel_str
-                if not sel_key:
-                    messagebox.showwarning("提示", "請選擇要覆蓋的範本！", parent=dlg)
-                    return
-                target_path = os.path.join(self.league_presets_dir, f"{sel_key}.json")
-                title = self.league_presets.get(sel_key, {}).get("title", sel_key)
-                if not messagebox.askyesno("確認覆蓋", f"確定要覆蓋範本「{title}」嗎？\n原有的步驟內容將被取代。", parent=dlg):
-                    return
-                data = self.serialize_current_config()
-                data["key"] = sel_key
-                data["title"] = title
-                data["desc"] = self.league_presets.get(sel_key, {}).get("desc", "")
-                try:
-                    os.makedirs(self.league_presets_dir, exist_ok=True)
-                    with open(target_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    self.reload_league_presets()
-                    self.auto_save_current_config()
-                    messagebox.showinfo("成功", f"已成功覆蓋更新聯賽範本:\n{title}", parent=dlg)
-                    dlg.destroy()
-                except Exception as ex:
-                    messagebox.showerror("錯誤", f"更新範本失敗: {ex}", parent=dlg)
-
-            elif m == "custom":
-                dlg.destroy()
-                path = filedialog.asksaveasfilename(
-                    initialdir=self.league_presets_dir if os.path.exists(self.league_presets_dir) else self.config_dir,
-                    title="另存聯賽設定 JSON",
-                    defaultextension=".json",
-                    filetypes=[("JSON 設定檔", "*.json"), ("所有檔案", "*.*")]
-                )
-                if not path:
-                    return
-                try:
-                    data = self.serialize_current_config()
-                    data["title"] = os.path.splitext(os.path.basename(path))[0]
-                    with open(path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    self.log_message(f"設定已匯出至: {os.path.basename(path)}")
-                    messagebox.showinfo("成功", f"設定已成功另存至:\n{path}")
-                except Exception as ex:
-                    messagebox.showerror("錯誤", f"儲存失敗: {ex}")
-
-        btn_ok = ctk.CTkButton(
-            f_bottom, text="確認儲存", width=100, height=32, corner_radius=6,
-            font=ctk.CTkFont(size=12, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER,
-            command=_do_save
-        )
-        btn_ok.pack(side="right", padx=(6, 0))
-
-        btn_cancel = ctk.CTkButton(
-            f_bottom, text="取消", width=70, height=32, corner_radius=6,
-            font=ctk.CTkFont(size=12), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
-            command=dlg.destroy
-        )
-        btn_cancel.pack(side="right")
+        """開啟儲存設定對話框（直接詢問使用者要存到哪裡）"""
+        self.on_open_save_dialog()
 
     def on_reset_baseball_template(self):
-        """載入預設聯賽範本（優先從範本庫載入，若無則產生預設步驟）"""
-        self.reload_league_presets()
-        # 若範本庫內有「經典棒球聯賽刷關 (預設)」則直接載入
-        target_default = "經典棒球聯賽刷關 (預設)"
-        if target_default in self.league_presets:
-            self.load_league_preset(target_default, confirm=False)
-            return
-
-        # 備援：若無檔案則建立預設步驟
+        """建立經典棒球聯賽刷關預設步驟"""
         self._clear_all_priority_steps()
         self._clear_all_steps()
         self._create_priority_step_widget(
@@ -4027,7 +3383,7 @@ class BaseballBotGUI:
         ]
         for name, kw, d, r in default_steps:
             self._create_step_widget(name=name, keywords=kw, delay=d, roi_name=r, expanded=False)
-        self.log_message("已重設為經典棒球聯賽自動刷關範本。")
+        self.log_message("已重設為經典棒球聯賽自動刷關預設步驟。")
 
     # ==========================================================================
     # 🔌 裝置連線與 ADB 控制
@@ -4336,7 +3692,7 @@ class BaseballBotGUI:
         step_name = step_cfg.get("name", "事件步驟")
 
         blocks_to_run = []
-        if mode == "💡 常用日常範本" and target_item:
+        if ("任務檔" in mode or "範本" in mode) and target_item:
             preset_key = target_item.split(":")[0].strip()
             preset = self.task_tab.get_preset_data(preset_key) if hasattr(self.task_tab, "get_preset_data") else None
             if not preset:
@@ -4344,9 +3700,9 @@ class BaseballBotGUI:
                 preset = DAILY_PRESETS.get(preset_key)
             if preset:
                 blocks_to_run = [dict(b) for b in preset.get("blocks", [])]
-                self.log_message(f"📋 [任務跳轉] 載入日常範本「{preset.get('title', preset_key)}」(共 {len(blocks_to_run)} 個步驟)")
+                self.log_message(f"📋 [任務跳轉] 載入任務設定「{preset.get('title', preset_key)}」(共 {len(blocks_to_run)} 個步驟)")
             else:
-                self.log_message(f"⚠️ [任務跳轉] 找不到日常範本「{target_item}」，執行完整任務清單備援")
+                self.log_message(f"⚠️ [任務跳轉] 找不到任務設定「{target_item}」，執行完整任務清單備援")
                 blocks_to_run = self.task_tab._serialize_all_blocks()
         elif mode == "🧩 指定積木步驟" and target_item:
             single_block = self.task_tab.get_block_data_by_choice(target_item)
@@ -4690,7 +4046,7 @@ class BaseballBotGUI:
         return min(self.raw_screen_w, max(0, rx)), min(self.raw_screen_h, max(0, ry))
 
     def on_crop_preview_selection(self):
-        """將在預覽畫布上框選的區域直接快速裁切儲存為模板圖片，無需彈出確認視窗"""
+        """將在預覽畫布上框選的區域裁切儲存為模板圖片，詢問使用者儲存位置，並自動套用至當前步驟"""
         if self.current_screen_bgr is None or not self.preview_crop_coords:
             messagebox.showwarning("提示", "尚未在預覽畫面上框選任何區域！\n請先用滑鼠在遊戲畫面上按住並拖曳出框選矩形。", parent=self.root)
             return
@@ -4702,14 +4058,14 @@ class BaseballBotGUI:
             messagebox.showwarning("提示", "框選範圍過小，請重新框選！", parent=self.root)
             return
 
-        # 自動生成檔名 (優先使用目前展開步驟之名稱，否則以時間戳命名)
+        # 找出當前展開之步驟 (優先使用)
         active_step = None
-        for p in self.priority_steps_list:
+        for p in getattr(self, "priority_steps_list", []):
             if p.get("expanded") and p["expanded"].get():
                 active_step = p
                 break
         if not active_step:
-            for s in self.steps_list:
+            for s in getattr(self, "steps_list", []):
                 if s.get("expanded") and s["expanded"].get():
                     active_step = s
                     break
@@ -4718,20 +4074,51 @@ class BaseballBotGUI:
         if active_step:
             step_name = active_step["name"].get().strip()
             clean_name = "".join(c for c in step_name if c.isalnum() or c in ("_", "-")).strip()
-            fname = f"{clean_name}_{ts[-4:]}.png" if clean_name else f"snip_{ts}.png"
+            init_fname = f"{clean_name}.png" if clean_name else f"snip_{ts}.png"
         else:
-            fname = f"snip_{ts}.png"
+            init_fname = f"template_{ts}.png"
 
-        target_path = os.path.join(self.templates_dir, fname)
+        init_dir = self.storage_dir if (self.storage_dir and os.path.isdir(self.storage_dir)) else self.config_dir
+        save_path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="✂️ 儲存圖片模板 (請選擇儲存位置與檔名)",
+            initialdir=init_dir,
+            initialfile=init_fname,
+            defaultextension=".png",
+            filetypes=[("PNG 圖片", "*.png"), ("所有檔案", "*.*")]
+        )
+        if not save_path:
+            return
+
         try:
-            os.makedirs(self.templates_dir, exist_ok=True)
-            success = imwrite_unicode(target_path, crop_bgr)
+            success = imwrite_unicode(save_path, crop_bgr)
             if not success:
-                messagebox.showerror("錯誤", f"無法寫入圖檔至: {target_path}", parent=self.root)
+                messagebox.showerror("錯誤", f"無法寫入圖檔至:\n{save_path}\n請檢查是否有寫入權限或磁碟空間。", parent=self.root)
                 return
 
-            self.last_snipped_template = fname
-            self.log_message(f"✂️ 快速截圖成功: {fname} ({cw}×{ch})，已儲存至 templates/，請在步驟卡片點擊【📥 帶入截圖】！")
+            self.last_snipped_template = save_path
+            fname = os.path.basename(save_path)
+
+            # 若位於目前存檔目錄下，儲存檔名；否則儲存絕對路徑
+            if self.storage_dir and os.path.commonpath([os.path.abspath(save_path), os.path.abspath(self.storage_dir)]) == os.path.abspath(self.storage_dir):
+                tpl_ref = fname
+            else:
+                tpl_ref = os.path.abspath(save_path)
+
+            applied_msg = ""
+            target_step = active_step
+            if not target_step and getattr(self, "steps_list", []):
+                target_step = self.steps_list[0]
+
+            if target_step:
+                target_step["template_image"].set(tpl_ref)
+                if "target_type" in target_step:
+                    target_step["target_type"].set("🖼️ 圖片特徵 (模板比對)")
+                applied_msg = f"\n\n已自動套用至步驟：「{target_step['name'].get()}」！"
+
+            self.auto_save_current_config()
+            self._refresh_all_step_thumbs()
+            self.log_message(f"✂️ 截圖儲存成功: {save_path} ({cw}×{ch}){applied_msg.replace(chr(10), ' ')}")
 
             # 清除畫布選取標記與重置裁切按鈕
             self.preview_canvas.delete("selection_box")
@@ -4741,8 +4128,9 @@ class BaseballBotGUI:
                 self.btn_crop_selection.configure(state="disabled", text="✂️ 裁切截圖", fg_color=COLOR_BTN_DARK)
 
             self.var_preview_coords.set(f"✅ 已成功截圖: {fname} ({cw}×{ch})")
+            messagebox.showinfo("截圖成功", f"✅ 圖片模板已成功儲存至：\n{save_path}{applied_msg}", parent=self.root)
         except Exception as ex:
-            self.log_message(f"❌ 快速截圖失敗: {ex}")
+            self.log_message(f"❌ 截圖儲存失敗: {ex}")
             messagebox.showerror("截圖失敗", f"無法儲存截圖: {ex}", parent=self.root)
 
     def on_apply_last_snippet(self, step_or_p: dict):

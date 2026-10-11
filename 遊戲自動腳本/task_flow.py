@@ -1079,11 +1079,9 @@ class TaskFlowTab:
             self.presets_dir = self.gui.task_presets_dir
             self.save_file = self.gui.task_save_file
         else:
-            self.config_dir = os.path.dirname(os.path.abspath(__file__))
-            self.presets_dir = os.path.join(self.config_dir, "task_presets")
+            self.presets_dir = self.config_dir
             tf_name = "tasks_flow.json" if self.instance_id == 1 else f"tasks_flow_{self.instance_id}.json"
             self.save_file = os.path.join(self.config_dir, tf_name)
-        os.makedirs(self.presets_dir, exist_ok=True)
         self.presets: Dict[str, Dict[str, Any]] = {}
 
         self._build_ui()
@@ -1174,7 +1172,7 @@ class TaskFlowTab:
 
         lbl_pre = ctk.CTkLabel(
             tool_pre,
-            text="💡 常用範本",
+            text="💾 任務存檔管理",
             font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
             text_color=COLOR_TEXT_PRIMARY
         )
@@ -1182,29 +1180,29 @@ class TaskFlowTab:
 
         btn_new_pre = ctk.CTkButton(
             tool_pre,
-            text="存為範本",
-            width=64,
+            text="💾 存檔",
+            width=54,
             height=26,
             corner_radius=6,
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=11, weight="bold"),
             fg_color=COLOR_BTN_PRIMARY,
             hover_color=COLOR_BTN_PRIMARY_HOVER,
             command=self.on_save_config_dialog
         )
         btn_new_pre.pack(side="right", padx=(4, 0))
 
-        btn_reload = ctk.CTkButton(
+        btn_load = ctk.CTkButton(
             tool_pre,
-            text="重整",
-            width=46,
+            text="📂 載入",
+            width=54,
             height=26,
             corner_radius=6,
             font=ctk.CTkFont(size=11),
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER,
-            command=self.reload_presets
+            command=self.on_load_config_dialog
         )
-        btn_reload.pack(side="right")
+        btn_load.pack(side="right")
 
         self.frame_preset_buttons = ctk.CTkScrollableFrame(card_presets, fg_color="transparent", corner_radius=8)
         self.frame_preset_buttons.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -1214,7 +1212,6 @@ class TaskFlowTab:
         DAILY_PRESETS.clear()
         self.presets = {}
         if not os.path.exists(self.presets_dir):
-            os.makedirs(self.presets_dir, exist_ok=True)
             self._render_preset_buttons()
             return
 
@@ -1246,7 +1243,7 @@ class TaskFlowTab:
                 DAILY_PRESETS[key] = preset_obj
                 self.presets[key] = preset_obj
             except Exception as e:
-                self._log(f"⚠️ 讀取範本檔案 {fname} 失敗: {e}")
+                self._log(f"⚠️ 讀取任務檔案 {fname} 失敗: {e}")
 
         self._render_preset_buttons()
 
@@ -1259,7 +1256,7 @@ class TaskFlowTab:
         if not self.presets:
             lbl_empty = ctk.CTkLabel(
                 self.frame_preset_buttons,
-                text="尚無常用範本\n編輯完成後按「存為範本」\n即可存入此處。",
+                text="尚無任務存檔\n點擊「💾 存檔」或「📂 載入」\n即可管理任務設定。",
                 font=ctk.CTkFont(size=11),
                 text_color=COLOR_TEXT_DIM,
                 justify="left"
@@ -1301,16 +1298,16 @@ class TaskFlowTab:
     def delete_preset(self, preset_key: str):
         preset = self.presets.get(preset_key)
         title = preset.get("title", preset_key) if preset else preset_key
-        if not messagebox.askyesno("確認刪除", f"確定要刪除常用任務範本「{title}」嗎？\n(檔案將從 task_presets 移除)"):
+        if not messagebox.askyesno("確認刪除", f"確定要刪除任務存檔「{title}」嗎？"):
             return
         fpath = os.path.join(self.presets_dir, f"{preset_key}.json")
         try:
             if os.path.exists(fpath):
                 os.remove(fpath)
-            self._log(f"已刪除任務範本: {title}")
+            self._log(f"已刪除任務存檔: {title}")
             self.reload_presets()
         except Exception as e:
-            messagebox.showerror("錯誤", f"刪除範本失敗: {e}")
+            messagebox.showerror("錯誤", f"刪除存檔失敗: {e}")
 
     def _build_program_panel(self, parent):
         card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
@@ -3078,11 +3075,11 @@ class TaskFlowTab:
                 except Exception:
                     pass
         if not preset:
-            messagebox.showwarning("提示", f"找不到指定範本：{preset_key}")
+            messagebox.showwarning("提示", f"找不到指定任務存檔：{preset_key}")
             return
 
         preset_title = preset.get("title", preset_key)
-        if self.blocks_list and not messagebox.askyesno("載入範本", f"載入範本「{preset_title}」將取代目前積木清單，是否繼續？"):
+        if self.blocks_list and not messagebox.askyesno("載入任務存檔", f"載入任務設定「{preset_title}」將取代目前積木清單，是否繼續？"):
             return
 
         for b in self.blocks_list:
@@ -3104,7 +3101,7 @@ class TaskFlowTab:
                 name=bd.get("name", ""),
                 enabled=bd.get("enabled", True)
             )
-        self._log(f"已成功載入範本: {preset_title} (共 {len(self.blocks_list)} 個步驟)")
+        self._log(f"已成功載入任務存檔: {preset_title} (共 {len(self.blocks_list)} 個步驟)")
         self.auto_save_config()
 
     def auto_save_config(self):
@@ -3171,254 +3168,151 @@ class TaskFlowTab:
         self.on_save_config_dialog(default_mode="new")
 
     def on_save_config_dialog(self, default_mode: str = "new"):
+        """開啟任務設定存檔視窗：詢問使用者要存到哪裡，可直接自訂路徑與檔名儲存，不生成任何多餘資料夾"""
         if not self.blocks_list:
             if not messagebox.askyesno("提示", "目前任務清單是空的，確定要儲存空的任務嗎？"):
                 return
 
         dlg = ctk.CTkToplevel(self.parent)
-        dlg.title("儲存任務清單")
-        dlg.geometry("520x460")
+        dlg.title("💾 儲存任務設定")
+        dlg.geometry("580x300")
+        dlg.minsize(520, 260)
         dlg.resizable(False, False)
         dlg.configure(fg_color=COLOR_BG)
         dlg.grab_set()
         dlg.transient(self.parent)
 
-        f_top = ctk.CTkFrame(dlg, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
-        f_top.pack(fill="x", padx=16, pady=(16, 8))
+        card = ctk.CTkFrame(dlg, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
+        card.pack(fill="both", expand=True, padx=16, pady=16)
 
-        inner_top = ctk.CTkFrame(f_top, fg_color="transparent")
-        inner_top.pack(fill="x", padx=12, pady=10)
+        header_box = ctk.CTkFrame(card, fg_color="transparent")
+        header_box.pack(fill="x", padx=16, pady=(16, 10))
 
         ctk.CTkLabel(
-            inner_top, text="💾 選擇儲存方式",
-            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY
+            header_box,
+            text="💾 儲存任務設定 (Save Tasks)",
+            font=ctk.CTkFont(family="Arial", size=16, weight="bold"),
+            text_color="#FBBF24"
         ).pack(anchor="w")
 
-        row_dir = ctk.CTkFrame(inner_top, fg_color="transparent")
-        row_dir.pack(fill="x", pady=(4, 0))
-        lbl_dir = ctk.CTkLabel(
-            row_dir, text=f"範本儲存目錄：{self.presets_dir}",
-            font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED
+        ctk.CTkLabel(
+            header_box,
+            text="請選擇或輸入任務設定檔要儲存到哪裡（.json 檔案）：",
+            font=ctk.CTkFont(size=12),
+            text_color=COLOR_TEXT_PRIMARY
+        ).pack(anchor="w", pady=(4, 0))
+
+        sec_path = ctk.CTkFrame(card, fg_color=COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
+        sec_path.pack(fill="x", padx=16, pady=(8, 12))
+
+        sec_path_inner = ctk.CTkFrame(sec_path, fg_color="transparent")
+        sec_path_inner.pack(fill="x", padx=12, pady=12)
+
+        default_save_path = getattr(self, "save_file", None)
+        if not default_save_path:
+            default_save_path = os.path.join(self.presets_dir if hasattr(self, "presets_dir") else os.getcwd(), "task_flow_save.json")
+
+        var_save_file = tk.StringVar(value=default_save_path)
+        entry_save_file = ctk.CTkEntry(
+            sec_path_inner,
+            textvariable=var_save_file,
+            font=ctk.CTkFont(family="Menlo", size=11),
+            height=32,
+            corner_radius=6,
+            fg_color="#181825",
+            border_color="#334155"
         )
-        lbl_dir.pack(side="left")
+        entry_save_file.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
-        def _open_folder():
-            try:
-                os.makedirs(self.presets_dir, exist_ok=True)
-                import subprocess, sys
-                if sys.platform == "darwin":
-                    subprocess.Popen(["open", self.presets_dir])
-                elif sys.platform == "win32":
-                    os.startfile(self.presets_dir)
-                else:
-                    subprocess.Popen(["xdg-open", self.presets_dir])
-            except Exception as ex:
-                messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=dlg)
-
-        def _change_task_dir():
-            d = filedialog.askdirectory(
+        def _do_browse_save():
+            curr = var_save_file.get().strip()
+            init_d = os.path.dirname(curr) if curr and os.path.isdir(os.path.dirname(curr)) else (self.presets_dir if hasattr(self, "presets_dir") else os.getcwd())
+            init_f = os.path.basename(curr) if curr else "task_flow_save.json"
+            if not init_f.endswith(".json"):
+                init_f += ".json"
+            f = filedialog.asksaveasfilename(
                 parent=dlg,
-                initialdir=self.presets_dir if os.path.exists(self.presets_dir) else os.path.expanduser("~/Documents"),
-                title="📁 選擇任務範本儲存資料夾"
+                title="選擇存檔位置與檔案名稱",
+                initialdir=init_d,
+                initialfile=init_f,
+                defaultextension=".json",
+                filetypes=[("JSON 設定檔", "*.json"), ("所有檔案", "*.*")]
             )
-            if d:
-                if self.gui and hasattr(self.gui, "set_storage_dir"):
-                    self.gui.set_storage_dir(d, seed=True)
-                    self.presets_dir = self.gui.task_presets_dir
-                else:
-                    self.presets_dir = d
-                    os.makedirs(self.presets_dir, exist_ok=True)
-                lbl_dir.configure(text=f"範本儲存目錄：{self.presets_dir}")
+            if f:
+                var_save_file.set(os.path.abspath(f))
+
+        ctk.CTkButton(
+            sec_path_inner,
+            text="📁 選擇位置",
+            width=88,
+            height=32,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COLOR_BTN_PRIMARY,
+            hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=_do_browse_save
+        ).pack(side="left")
+
+        def _do_save_file():
+            p = var_save_file.get().strip()
+            if not p:
+                messagebox.showwarning("提示", "請輸入或選擇儲存路徑！", parent=dlg)
+                return
+            if not p.lower().endswith(".json"):
+                p += ".json"
+                var_save_file.set(p)
+
+            target_path = os.path.abspath(p)
+            try:
+                parent_dir = os.path.dirname(target_path)
+                if parent_dir and not os.path.exists(parent_dir):
+                    os.makedirs(parent_dir, exist_ok=True)
+
+                data = {
+                    "version": "1.0",
+                    "loop_count": self.var_loop_count.get(),
+                    "global_settings": self.get_global_settings(),
+                    "blocks": self._serialize_all_blocks()
+                }
+                with open(target_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+                self.save_file = target_path
+                self.presets_dir = os.path.dirname(target_path)
                 self.reload_presets()
-                p_keys = list(self.presets.keys())
-                combo_exist.configure(
-                    values=[f"{k}: {v.get('title', k)}" for k, v in self.presets.items()] if p_keys else ["(尚無範本)"],
-                    state="readonly" if p_keys else "disabled"
-                )
-                if p_keys:
-                    existing_var.set(f"{p_keys[0]}: {self.presets[p_keys[0]].get('title', p_keys[0])}")
-                else:
-                    existing_var.set("(尚無範本)")
-                self._log(f"📁 任務範本資料夾已切換至: {self.presets_dir}")
-
-        btn_open = ctk.CTkButton(
-            row_dir, text="↗️ 開啟", width=60, height=26, corner_radius=6,
-            font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
-            command=_open_folder
-        )
-        btn_open.pack(side="right")
-
-        btn_change = ctk.CTkButton(
-            row_dir, text="📁 變更目錄", width=76, height=26, corner_radius=6,
-            font=ctk.CTkFont(size=11, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER,
-            command=_change_task_dir
-        )
-        btn_change.pack(side="right", padx=(0, 4))
-
-        mode_var = tk.StringVar(value="new" if (default_mode == "new" or not self.presets) else "existing")
-        name_var = tk.StringVar(value=f"自訂任務_{len(self.presets) + 1}")
-        desc_var = tk.StringVar(value="")
-        existing_var = tk.StringVar()
-        preset_keys = list(self.presets.keys())
-        if preset_keys:
-            existing_var.set(f"{preset_keys[0]}: {self.presets[preset_keys[0]].get('title', preset_keys[0])}")
-
-        f_body = ctk.CTkFrame(dlg, fg_color="transparent")
-        f_body.pack(fill="both", expand=True, padx=16, pady=4)
-
-        rb1 = ctk.CTkRadioButton(f_body, text="新增為常用範本", value="new", variable=mode_var, font=ctk.CTkFont(size=12, weight="bold"))
-        rb1.pack(anchor="w", pady=(4, 4))
-
-        f_new = ctk.CTkFrame(f_body, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
-        f_new.pack(fill="x", padx=12, pady=(0, 8))
-
-        row_name = ctk.CTkFrame(f_new, fg_color="transparent")
-        row_name.pack(fill="x", padx=10, pady=(8, 4))
-        ctk.CTkLabel(row_name, text="範本名稱:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
-        ent_name = ctk.CTkEntry(row_name, textvariable=name_var, height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
-        ent_name.pack(side="left", fill="x", expand=True)
-
-        row_desc = ctk.CTkFrame(f_new, fg_color="transparent")
-        row_desc.pack(fill="x", padx=10, pady=(0, 8))
-        ctk.CTkLabel(row_desc, text="說明備註:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
-        ent_desc = ctk.CTkEntry(row_desc, textvariable=desc_var, height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
-        ent_desc.pack(side="left", fill="x", expand=True)
-
-        rb2 = ctk.CTkRadioButton(f_body, text="覆蓋既有範本", value="existing", variable=mode_var, font=ctk.CTkFont(size=12, weight="bold"))
-        rb2.pack(anchor="w", pady=(4, 4))
-
-        f_exist = ctk.CTkFrame(f_body, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
-        f_exist.pack(fill="x", padx=12, pady=(0, 8))
-
-        row_sel = ctk.CTkFrame(f_exist, fg_color="transparent")
-        row_sel.pack(fill="x", padx=10, pady=8)
-        ctk.CTkLabel(row_sel, text="現有範本:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
-        combo_exist = ctk.CTkComboBox(
-            row_sel, variable=existing_var,
-            values=[f"{k}: {v.get('title', k)}" for k, v in self.presets.items()] if preset_keys else ["(尚無範本)"],
-            height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly" if preset_keys else "disabled"
-        )
-        combo_exist.pack(side="left", fill="x", expand=True)
-
-        rb3 = ctk.CTkRadioButton(f_body, text="另存為自訂 JSON 檔案（選擇電腦儲存位置）", value="custom", variable=mode_var, font=ctk.CTkFont(size=12))
-        rb3.pack(anchor="w", pady=(4, 4))
-
-        def _update_ui_state(*_):
-            m = mode_var.get()
-            ent_name.configure(state="normal" if m == "new" else "disabled")
-            ent_desc.configure(state="normal" if m == "new" else "disabled")
-            combo_exist.configure(state="readonly" if (m == "existing" and preset_keys) else "disabled")
-
-        mode_var.trace_add("write", _update_ui_state)
-        _update_ui_state()
-
-        f_bottom = ctk.CTkFrame(dlg, fg_color="transparent")
-        f_bottom.pack(fill="x", side="bottom", padx=16, pady=14)
-
-        def _do_save():
-            m = mode_var.get()
-            if m == "new":
-                name = name_var.get().strip()
-                if not name:
-                    messagebox.showwarning("提示", "請輸入範本名稱！", parent=dlg)
-                    return
-                safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_", " ", "（", "）", "(", ")")).strip()
-                if not safe_name:
-                    safe_name = "custom_preset"
-                target_path = os.path.join(self.presets_dir, f"{safe_name}.json")
-                if os.path.exists(target_path):
-                    if not messagebox.askyesno("覆蓋確認", f"範本檔案「{safe_name}.json」已存在，是否確認覆蓋？", parent=dlg):
-                        return
-                data = {
-                    "key": safe_name,
-                    "title": name,
-                    "desc": desc_var.get().strip(),
-                    "version": "1.0",
-                    "loop_count": self.var_loop_count.get(),
-                    "global_settings": self.get_global_settings(),
-                    "blocks": self._serialize_all_blocks()
-                }
-                try:
-                    os.makedirs(self.presets_dir, exist_ok=True)
-                    with open(target_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    self.reload_presets()
-                    self.auto_save_config()
-                    messagebox.showinfo("成功", f"常用任務範本已新增至:\n{os.path.basename(target_path)}", parent=dlg)
-                    dlg.destroy()
-                except Exception as ex:
-                    messagebox.showerror("錯誤", f"存檔失敗: {ex}", parent=dlg)
-
-            elif m == "existing":
-                if not preset_keys:
-                    messagebox.showwarning("提示", "目前沒有任何既有範本可覆蓋！請選擇「新增為常用任務範本」。", parent=dlg)
-                    return
-                sel_str = existing_var.get().strip()
-                sel_key = sel_str.split(":")[0].strip() if ":" in sel_str else sel_str
-                if not sel_key:
-                    messagebox.showwarning("提示", "請選擇要覆蓋的範本！", parent=dlg)
-                    return
-                target_path = os.path.join(self.presets_dir, f"{sel_key}.json")
-                title = self.presets.get(sel_key, {}).get("title", sel_key)
-                if not messagebox.askyesno("確認覆蓋", f"確定要覆蓋範本「{title}」嗎？\n原有的步驟內容將被取代。", parent=dlg):
-                    return
-                data = {
-                    "key": sel_key,
-                    "title": title,
-                    "desc": self.presets.get(sel_key, {}).get("desc", ""),
-                    "version": "1.0",
-                    "loop_count": self.var_loop_count.get(),
-                    "global_settings": self.get_global_settings(),
-                    "blocks": self._serialize_all_blocks()
-                }
-                try:
-                    os.makedirs(self.presets_dir, exist_ok=True)
-                    with open(target_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    self.reload_presets()
-                    self.auto_save_config()
-                    messagebox.showinfo("成功", f"已成功覆蓋更新範本:\n{title}", parent=dlg)
-                    dlg.destroy()
-                except Exception as ex:
-                    messagebox.showerror("錯誤", f"更新範本失敗: {ex}", parent=dlg)
-
-            elif m == "custom":
+                self._log(f"💾 任務設定已成功儲存至: {target_path}")
+                messagebox.showinfo("儲存成功", f"✅ 任務設定已成功儲存至：\n{target_path}", parent=dlg)
                 dlg.destroy()
-                path = filedialog.asksaveasfilename(
-                    initialdir=self.presets_dir if os.path.exists(self.presets_dir) else self.config_dir,
-                    title="另存任務清單 JSON",
-                    defaultextension=".json",
-                    filetypes=[("JSON 設定檔", "*.json"), ("所有檔案", "*.*")]
-                )
-                if not path:
-                    return
-                try:
-                    data = {
-                        "version": "1.0",
-                        "loop_count": self.var_loop_count.get(),
-                        "global_settings": self.get_global_settings(),
-                        "blocks": self._serialize_all_blocks()
-                    }
-                    with open(path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    messagebox.showinfo("成功", f"任務清單已儲存至:\n{os.path.basename(path)}")
-                except Exception as ex:
-                    messagebox.showerror("錯誤", f"存檔失敗: {ex}")
+            except Exception as ex:
+                self._log(f"❌ 儲存任務設定失敗: {ex}")
+                messagebox.showerror("錯誤", f"儲存失敗: {ex}", parent=dlg)
 
-        btn_save = ctk.CTkButton(
-            f_bottom, text="儲存", width=80, height=30, corner_radius=6,
-            font=ctk.CTkFont(size=12, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER,
-            command=_do_save
-        )
-        btn_save.pack(side="right", padx=(4, 0))
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(fill="x", padx=16, pady=(10, 16))
 
-        btn_cancel = ctk.CTkButton(
-            f_bottom, text="取消", width=80, height=30, corner_radius=6,
-            font=ctk.CTkFont(size=12), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
+        ctk.CTkButton(
+            btn_row,
+            text="確認儲存",
+            width=100,
+            height=32,
+            corner_radius=6,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#10B981",
+            hover_color="#059669",
+            command=_do_save_file
+        ).pack(side="right", padx=(8, 0))
+
+        ctk.CTkButton(
+            btn_row,
+            text="取消",
+            width=72,
+            height=32,
+            corner_radius=6,
+            font=ctk.CTkFont(size=12),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
             command=dlg.destroy
-        )
-        btn_cancel.pack(side="right")
+        ).pack(side="right")
 
     def on_load_config_dialog(self):
         path = filedialog.askopenfilename(
