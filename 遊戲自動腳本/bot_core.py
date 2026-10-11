@@ -822,6 +822,18 @@ class BaseballBot:
         if len(clean_kw) == 4 and len(clean_rec) > 4:
             return False, 0.0
 
+        # 【安全防護】：若目標關鍵字為 OK 或 0K，辨識文字長度不可超過 4，且不得緊接在數字後方 (如 240K、50K 幣值/能力值)
+        if clean_kw.upper() in ("OK", "0K"):
+            if len(clean_rec) > 4:
+                return False, 0.0
+            idx = rec.upper().find(kw.upper())
+            if idx > 0 and rec[idx - 1].isdigit():
+                return False, 0.0
+
+        # 【單字防護】：若目標為單一中文字元 (如 "確", "定")，避免長句/無關字串隨機命中
+        if len(clean_kw) == 1 and len(clean_rec) > 2:
+            return False, 0.0
+
         # 1. 優先原始字串精確子字串比對
         if kw in rec:
             return True, 1.0
@@ -1865,7 +1877,8 @@ class BaseballBot:
                         if cust_coord and isinstance(cust_coord, (list, tuple)) and len(cust_coord) == 2:
                             bx, by = int(cust_coord[0]), int(cust_coord[1])
                         else:
-                            bx, by = x, y
+                            bx = int(step.get("repeat_custom_x", x))
+                            by = int(step.get("repeat_custom_y", y))
                     else:
                         bx, by = x, y
 

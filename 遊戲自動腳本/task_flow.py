@@ -21,11 +21,32 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from typing import Optional, Dict, Any, List, Callable, Tuple
 
+import customtkinter as ctk
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
 from theme import DARK_BG, DARK_FG, DARK_FG_MUTED, DARK_BORDER, DARK_SURFACE, apply_dark_theme, get_theme_palette
+
+# 現代化配色常數 (Catppuccin 低飽和深色)
+COLOR_BG = "#1E1E2E"
+COLOR_CARD = "#252538"
+COLOR_CARD_BORDER = "#313244"
+COLOR_CARD_ITEM = "#20222e"
+COLOR_INPUT_BG = "#181825"
+COLOR_INPUT_BORDER = "#45475a"
+COLOR_TEXT_PRIMARY = "#CDD6F4"
+COLOR_TEXT_MUTED = "#A6ADC8"
+COLOR_TEXT_DIM = "#6C7086"
+
+COLOR_BTN_PRIMARY = "#3B82F6"
+COLOR_BTN_PRIMARY_HOVER = "#2563EB"
+COLOR_BTN_START = "#10B981"
+COLOR_BTN_START_HOVER = "#059669"
+COLOR_BTN_STOP = "#EF4444"
+COLOR_BTN_STOP_HOVER = "#DC2626"
+COLOR_BTN_DARK = "#313244"
+COLOR_BTN_DARK_HOVER = "#45475A" 
 
 
 # ==========================================
@@ -967,14 +988,14 @@ class TaskEngine:
 
 
 # ==========================================
-# 任務清單 GUI 頁籤 (TaskFlowTab)
+# 任務清單 GUI 頁籤 (TaskFlowTab - CustomTkinter 現代化控制面板)
 # ==========================================
 class TaskFlowTab:
-    """Scratch 積木式日常任務編程頁籤"""
+    """Scratch 積木式日常任務編程頁籤 (CustomTkinter 現代化控制面板)"""
 
     def __init__(
         self,
-        parent: ttk.Frame,
+        parent: Any,
         bot_instance=None,
         gui_parent=None,
         log_callback: Optional[Callable[[str], None]] = None,
@@ -986,7 +1007,7 @@ class TaskFlowTab:
         self.log_callback = log_callback
         self.instance_id = instance_id
 
-        # 連接父層 GUI 的全域通用進階變數 (與聯賽自動刷頁面雙向同步共享)
+        # 連接父層 GUI 的全域通用進階變數
         if self.gui:
             self.var_interval = self.gui.var_interval
             self.var_confidence = self.gui.var_confidence
@@ -1012,11 +1033,10 @@ class TaskFlowTab:
 
         self._adv_open = False
         self.engine = TaskEngine(bot_instance=self.bot, log_callback=self._log, global_settings=self.get_global_settings())
-        self.blocks_list: List[Dict[str, Any]] = []  # 積木資料模型
-        self.selected_block_idx: int = -1             # 當前選取的積木索引
-        self.selected_block_target: Optional[Dict[str, Any]] = None  # 當前選取的積木物件 (支援頂層或迴圈內部積木)
+        self.blocks_list: List[Dict[str, Any]] = []
+        self.selected_block_idx: int = -1
+        self.selected_block_target: Optional[Dict[str, Any]] = None
 
-        # 語言與參數監聽
         def _on_lang_changed(*_):
             if self.bot and hasattr(self.bot, "set_allowed_languages"):
                 self.bot.set_allowed_languages(
@@ -1034,14 +1054,12 @@ class TaskFlowTab:
         self.var_tg_token.trace_add("write", lambda *_: self.auto_save_config())
         self.var_tg_chat_id.trace_add("write", lambda *_: self.auto_save_config())
 
-        # 狀態與控制變數
         self.var_loop_count = tk.IntVar(value=1)
         self.var_status_text = tk.StringVar(value="🟢 閒置中")
         self.var_auto_preview = tk.BooleanVar(value=False)
         self.var_preview_coords = tk.StringVar(value="")
         self.var_picked_coord = tk.StringVar(value="尚未選取座標")
 
-        # 截圖與預覽控制 (完全比照 gui.py 聯賽預覽核心邏輯)
         self.current_screen_bgr: Optional[np.ndarray] = None
         self.preview_scale: float = 1.0
         self.preview_img_w: int = 0
@@ -1087,74 +1105,107 @@ class TaskFlowTab:
             self.log_callback(msg)
 
     def _build_ui(self):
-        # 3 欄式主畫面配置：左欄積木庫 | 中欄程式畫布 | 右欄截圖取點
-        paned = ttk.PanedWindow(self.parent, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        container = ctk.CTkFrame(self.parent, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=4, pady=4)
+        container.grid_columnconfigure(0, weight=2)
+        container.grid_columnconfigure(1, weight=5)
+        container.grid_columnconfigure(2, weight=3)
+        container.grid_rowconfigure(0, weight=1)
 
-        # 1. 左側：Scratch 積木工具庫
-        frame_palette = ttk.Frame(paned, padding=4)
-        paned.add(frame_palette, weight=1)
+        frame_palette = ctk.CTkFrame(container, fg_color="transparent")
+        frame_palette.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=0)
 
-        # 2. 中間：程式積木工作區
-        frame_program = ttk.Frame(paned, padding=4)
-        paned.add(frame_program, weight=3)
+        frame_program = ctk.CTkFrame(container, fg_color="transparent")
+        frame_program.grid(row=0, column=1, sticky="nsew", padx=(0, 6), pady=0)
 
-        # 3. 右側：截圖與座標吸管輔助區
-        frame_picker = ttk.Frame(paned, padding=4)
-        paned.add(frame_picker, weight=2)
+        frame_picker = ctk.CTkFrame(container, fg_color="transparent")
+        frame_picker.grid(row=0, column=2, sticky="nsew", padx=0, pady=0)
 
         self._build_palette_panel(frame_palette)
         self._build_program_panel(frame_program)
         self._build_picker_panel(frame_picker)
 
-    # -------------------------------------------------------------------------
-    # 左側：積木工具庫 (Block Palette)
-    # -------------------------------------------------------------------------
     def _build_palette_panel(self, parent):
-        # 1. Scratch 積木工具庫
-        box_hdr = ttk.LabelFrame(parent, text="積木庫", padding=6)
-        box_hdr.pack(fill=tk.X, pady=(0, 6))
+        card_palette = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
+        card_palette.pack(fill="x", pady=(0, 8))
 
-        lbl_tip = ttk.Label(
-            box_hdr,
-            text="點擊積木加入程式區：",
-            font=("Microsoft JhengHei", 9, "bold"),
-            foreground="#475569"
+        lbl_hdr = ctk.CTkLabel(
+            card_palette,
+            text="🧩 積木工具庫",
+            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY
         )
-        lbl_tip.pack(anchor="w", pady=(0, 6))
+        lbl_hdr.pack(anchor="w", padx=12, pady=(10, 2))
 
-        # 建立積木按鈕
+        lbl_tip = ctk.CTkLabel(
+            card_palette,
+            text="點擊積木加入程式區：",
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_MUTED
+        )
+        lbl_tip.pack(anchor="w", padx=12, pady=(0, 6))
+
+        box_blocks = ctk.CTkFrame(card_palette, fg_color="transparent")
+        box_blocks.pack(fill="x", padx=10, pady=(0, 10))
+
         for b_type, info in BLOCK_TYPES.items():
-            btn_f = tk.Frame(box_hdr, bg=info["color"], bd=0, relief=tk.RAISED, cursor="hand2")
-            btn_f.pack(fill=tk.X, pady=3, ipady=3)
+            btn = ctk.CTkButton(
+                box_blocks,
+                text=f"[{info['badge']}] {info['title']} ＋",
+                font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
+                fg_color=info["color"],
+                hover_color=info["color"],
+                height=30,
+                corner_radius=6,
+                anchor="w",
+                command=lambda bt=b_type: self.add_block(bt)
+            )
+            btn.pack(fill="x", pady=2)
 
-            lbl_badge = tk.Label(btn_f, text=f"[{info['badge']}]", bg=info["color"], fg="#ffffff", font=("Arial", 8, "bold"))
-            lbl_badge.pack(side=tk.LEFT, padx=(6, 2))
+        card_presets = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
+        card_presets.pack(fill="both", expand=True)
 
-            lbl_name = tk.Label(btn_f, text=info["title"], bg=info["color"], fg="#ffffff", font=("Arial", 9, "bold"))
-            lbl_name.pack(side=tk.LEFT, padx=2)
+        tool_pre = ctk.CTkFrame(card_presets, fg_color="transparent")
+        tool_pre.pack(fill="x", padx=12, pady=(10, 6))
 
-            lbl_add = tk.Label(btn_f, text="＋", bg=info["color"], fg="#ffffff", font=("Arial", 11, "bold"))
-            lbl_add.pack(side=tk.RIGHT, padx=6)
+        lbl_pre = ctk.CTkLabel(
+            tool_pre,
+            text="💡 常用範本",
+            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY
+        )
+        lbl_pre.pack(side="left")
 
-            for w in (btn_f, lbl_badge, lbl_name, lbl_add):
-                w.bind("<Button-1>", lambda e, bt=b_type: self.add_block(bt))
+        btn_new_pre = ctk.CTkButton(
+            tool_pre,
+            text="存為範本",
+            width=64,
+            height=26,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_PRIMARY,
+            hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=self.on_save_config_dialog
+        )
+        btn_new_pre.pack(side="right", padx=(4, 0))
 
-        # 2. 常用日常任務範本 (task_presets 資料夾)
-        box_presets = ttk.LabelFrame(parent, text="常用範本", padding=6)
-        box_presets.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
+        btn_reload = ctk.CTkButton(
+            tool_pre,
+            text="重整",
+            width=46,
+            height=26,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self.reload_presets
+        )
+        btn_reload.pack(side="right")
 
-        tool_pre = ttk.Frame(box_presets)
-        tool_pre.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(tool_pre, text="資料夾：task_presets", font=("Arial", 8), foreground="#64748b").pack(side=tk.LEFT)
-        ttk.Button(tool_pre, text="重整", width=5, command=self.reload_presets).pack(side=tk.RIGHT)
-        ttk.Button(tool_pre, text="存為範本", width=9, command=self.on_save_config_dialog).pack(side=tk.RIGHT, padx=2)
-
-        self.frame_preset_buttons = ttk.Frame(box_presets)
-        self.frame_preset_buttons.pack(fill=tk.BOTH, expand=True)
+        self.frame_preset_buttons = ctk.CTkScrollableFrame(card_presets, fg_color="transparent", corner_radius=8)
+        self.frame_preset_buttons.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
     def reload_presets(self):
-        """重新讀取 task_presets 資料夾中的所有任務範本檔案"""
         global DAILY_PRESETS
         DAILY_PRESETS.clear()
         self.presets = {}
@@ -1191,45 +1242,54 @@ class TaskFlowTab:
         self._render_preset_buttons()
 
     def _render_preset_buttons(self):
-        """渲染左側常用任務範本按鈕清單"""
         if not hasattr(self, "frame_preset_buttons") or not self.frame_preset_buttons:
             return
         for w in self.frame_preset_buttons.winfo_children():
             w.destroy()
 
         if not self.presets:
-            lbl_empty = ttk.Label(
+            lbl_empty = ctk.CTkLabel(
                 self.frame_preset_buttons,
-                text="尚無常用範本\n編輯完成後按「存檔」，\n即可存為範本。",
-                font=("Microsoft JhengHei", 8),
-                foreground="#94a3b8",
-                justify=tk.LEFT
+                text="尚無常用範本\n編輯完成後按「存為範本」\n即可存入此處。",
+                font=ctk.CTkFont(size=11),
+                text_color=COLOR_TEXT_DIM,
+                justify="left"
             )
-            lbl_empty.pack(anchor="w", padx=2, pady=6)
+            lbl_empty.pack(anchor="w", padx=6, pady=8)
             return
 
         for p_key, p_val in list(self.presets.items()):
-            row = ttk.Frame(self.frame_preset_buttons)
-            row.pack(fill=tk.X, pady=2)
+            row = ctk.CTkFrame(self.frame_preset_buttons, fg_color="transparent")
+            row.pack(fill="x", pady=2)
 
             title_str = p_val.get("title", p_key)
-            btn_load = ttk.Button(
+            btn_load = ctk.CTkButton(
                 row,
                 text=title_str,
+                font=ctk.CTkFont(size=11),
+                fg_color=COLOR_BTN_DARK,
+                hover_color=COLOR_BTN_DARK_HOVER,
+                corner_radius=6,
+                height=28,
+                anchor="w",
                 command=lambda pk=p_key: self.load_preset(pk)
             )
-            btn_load.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            btn_load.pack(side="left", fill="x", expand=True)
 
-            btn_del = ttk.Button(
+            btn_del = ctk.CTkButton(
                 row,
                 text="✕",
-                width=2,
+                width=26,
+                height=28,
+                corner_radius=6,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                fg_color="#EF4444",
+                hover_color="#DC2626",
                 command=lambda pk=p_key: self.delete_preset(pk)
             )
-            btn_del.pack(side=tk.RIGHT, padx=(2, 0))
+            btn_del.pack(side="right", padx=(4, 0))
 
     def delete_preset(self, preset_key: str):
-        """刪除指定常用任務範本檔案"""
         preset = self.presets.get(preset_key)
         title = preset.get("title", preset_key) if preset else preset_key
         if not messagebox.askyesno("確認刪除", f"確定要刪除常用任務範本「{title}」嗎？\n(檔案將從 task_presets 移除)"):
@@ -1243,163 +1303,223 @@ class TaskFlowTab:
         except Exception as e:
             messagebox.showerror("錯誤", f"刪除範本失敗: {e}")
 
-    # -------------------------------------------------------------------------
-    # 中間：程式積木工作區 (Program Script Area)
-    # -------------------------------------------------------------------------
     def _build_program_panel(self, parent):
-        box = ttk.LabelFrame(parent, text="任務程式區（由上往下執行）", padding=6)
-        box.pack(fill=tk.BOTH, expand=True)
+        card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
+        card.pack(fill="both", expand=True)
 
-        # 頂部控制列
-        tb = ttk.Frame(box)
-        tb.pack(fill=tk.X, pady=(0, 6))
+        tb = ctk.CTkFrame(card, fg_color="transparent")
+        tb.pack(fill="x", padx=10, pady=(10, 6))
         self.bar_tb = tb
 
-        self.btn_run = ttk.Button(tb, text="▶ 全部執行", width=9, command=self.on_run_tasks)
-        self.btn_run.pack(side=tk.LEFT, padx=(0, 4))
-
-        self.btn_step = ttk.Button(tb, text="單步", width=5, command=self.on_step_task)
-        self.btn_step.pack(side=tk.LEFT, padx=(0, 4))
-
-        self.btn_stop = ttk.Button(tb, text="■ 停止", width=6, command=self.on_stop_tasks, state=tk.DISABLED)
-        self.btn_stop.pack(side=tk.LEFT, padx=(0, 8))
-
-        ttk.Label(tb, text="循環:").pack(side=tk.LEFT)
-        sp_loop = ttk.Spinbox(tb, from_=0, to=999, textvariable=self.var_loop_count, width=4)
-        sp_loop.pack(side=tk.LEFT, padx=(2, 2))
-        ttk.Label(tb, text="次（0 = 無限）", font=("Arial", 8), foreground="#64748b").pack(side=tk.LEFT, padx=(0, 6))
-
-        # 進階設定按鈕 (折疊切換)
-        self.btn_adv = ttk.Button(tb, text="進階設定 ▸", command=self._toggle_advanced)
-        self.btn_adv.pack(side=tk.LEFT, padx=(6, 0))
-
-        ttk.Button(tb, text="清空", width=4, command=self.on_clear_blocks).pack(side=tk.RIGHT)
-        ttk.Button(tb, text="載入", width=4, command=self.on_load_config_dialog).pack(side=tk.RIGHT, padx=2)
-        ttk.Button(tb, text="存檔", width=4, command=self.on_save_config_dialog).pack(side=tk.RIGHT)
-
-        # 建立通用進階設定面板 (預設收合)
-        self._build_advanced_panel(box)
-
-        # 狀態標籤列
-        p_pal = get_theme_palette()
-        self.bar_status = tk.Frame(box, bg=p_pal["surface"], bd=1, relief=tk.SUNKEN)
-        self.bar_status.pack(fill=tk.X, pady=(0, 6), ipady=2)
-        self.lbl_st = tk.Label(self.bar_status, textvariable=self.var_status_text, bg=p_pal["surface"], font=("Arial", 9, "bold"), fg=p_pal["fg"])
-        self.lbl_st.pack(side=tk.LEFT, padx=6)
-
-        # 滾動積木畫布
-        area = ttk.Frame(box)
-        area.pack(fill=tk.BOTH, expand=True)
-
-        self.canvas_blocks = tk.Canvas(area, borderwidth=0, highlightthickness=0, bg=p_pal["canvas_bg"])
-        self.scroll_blocks = ttk.Scrollbar(area, orient="vertical", command=self.canvas_blocks.yview)
-        self.inner_blocks = ttk.Frame(self.canvas_blocks)
-        self.canvas_window = self.canvas_blocks.create_window((0, 0), window=self.inner_blocks, anchor="nw")
-        self.canvas_blocks.configure(yscrollcommand=self.scroll_blocks.set)
-
-        self.inner_blocks.bind(
-            "<Configure>", lambda e: self.canvas_blocks.configure(scrollregion=self.canvas_blocks.bbox("all"))
+        self.btn_run = ctk.CTkButton(
+            tb,
+            text="▶ 全部執行",
+            width=88,
+            height=32,
+            corner_radius=8,
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            fg_color=COLOR_BTN_START,
+            hover_color=COLOR_BTN_START_HOVER,
+            command=self.on_run_tasks
         )
-        self.canvas_blocks.bind(
-            "<Configure>", lambda e: self.canvas_blocks.itemconfig(self.canvas_window, width=e.width)
-        )
+        self.btn_run.pack(side="left", padx=(0, 4))
 
-        self.canvas_blocks.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.scroll_blocks.pack(side=tk.RIGHT, fill=tk.Y)
+        self.btn_step = ctk.CTkButton(
+            tb,
+            text="👣 單步",
+            width=62,
+            height=32,
+            corner_radius=8,
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            fg_color=COLOR_BTN_PRIMARY,
+            hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=self.on_step_task
+        )
+        self.btn_step.pack(side="left", padx=(0, 4))
+
+        self.btn_stop = ctk.CTkButton(
+            tb,
+            text="⏹ 停止",
+            width=62,
+            height=32,
+            corner_radius=8,
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            fg_color=COLOR_BTN_STOP,
+            hover_color=COLOR_BTN_STOP_HOVER,
+            state="disabled",
+            command=self.on_stop_tasks
+        )
+        self.btn_stop.pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(tb, text="循環:", font=ctk.CTkFont(size=12), text_color=COLOR_TEXT_PRIMARY).pack(side="left")
+        ent_loop = ctk.CTkEntry(tb, textvariable=self.var_loop_count, width=44, height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+        ent_loop.pack(side="left", padx=(4, 2))
+        ctk.CTkLabel(tb, text="次(0=無限)", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 8))
+
+        self.btn_adv = ctk.CTkButton(
+            tb,
+            text="進階設定 ▸",
+            width=82,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self._toggle_advanced
+        )
+        self.btn_adv.pack(side="left", padx=(2, 0))
+
+        btn_clear = ctk.CTkButton(
+            tb,
+            text="清空",
+            width=46,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color="#EF4444",
+            hover_color="#DC2626",
+            command=self.on_clear_blocks
+        )
+        btn_clear.pack(side="right")
+
+        btn_load = ctk.CTkButton(
+            tb,
+            text="載入",
+            width=46,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self.on_load_config_dialog
+        )
+        btn_load.pack(side="right", padx=(4, 4))
+
+        btn_save = ctk.CTkButton(
+            tb,
+            text="存檔",
+            width=46,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self.on_save_config_dialog
+        )
+        btn_save.pack(side="right")
+
+        self._build_advanced_panel(card)
+
+        self.bar_status = ctk.CTkFrame(card, fg_color=COLOR_CARD_ITEM, corner_radius=6, border_width=1, border_color=COLOR_CARD_BORDER)
+        self.bar_status.pack(fill="x", padx=10, pady=(0, 6))
+
+        self.indicator_light = ctk.CTkLabel(
+            self.bar_status,
+            text="●",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#10B981"
+        )
+        self.indicator_light.pack(side="left", padx=(8, 4), pady=4)
+
+        self.lbl_st = ctk.CTkLabel(
+            self.bar_status,
+            textvariable=self.var_status_text,
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY
+        )
+        self.lbl_st.pack(side="left", pady=4)
+
+        self.scroll_blocks = ctk.CTkScrollableFrame(card, fg_color=COLOR_INPUT_BG, corner_radius=8)
+        self.scroll_blocks.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        self.inner_blocks = self.scroll_blocks
+        self.canvas_blocks = getattr(self.scroll_blocks, "_parent_canvas", self.scroll_blocks)
 
     def _build_advanced_panel(self, parent):
-        """建立通用進階設定面板 (與聯賽自動刷通用連動)"""
-        f = ttk.LabelFrame(parent, text="進階設定（與聯賽自動刷共用）", padding=(8, 6, 8, 8))
+        f = ctk.CTkFrame(parent, fg_color=COLOR_CARD_ITEM, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
         self.adv_frame = f
 
-        # 第 0 列：掃描刷新速度 (秒)
-        ttk.Label(f, text="掃描間隔:").grid(row=0, column=0, sticky="w", pady=2)
-        row_speed = ttk.Frame(f)
-        row_speed.grid(row=0, column=1, sticky="w", padx=8)
+        inner = ctk.CTkFrame(f, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=12, pady=10)
 
-        def _on_speed_slider_changed(v):
+        lbl_title = ctk.CTkLabel(
+            inner,
+            text="⚙ 進階設定（與聯賽自動刷共享）",
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY
+        )
+        lbl_title.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        ctk.CTkLabel(inner, text="掃描間隔:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).grid(row=1, column=0, sticky="w", pady=3)
+        row_speed = ctk.CTkFrame(inner, fg_color="transparent")
+        row_speed.grid(row=1, column=1, sticky="w", padx=6, pady=3)
+
+        def _on_speed_slider(v):
+            self.var_interval.set(round(float(v), 2))
+
+        scale_speed = ctk.CTkSlider(
+            row_speed, from_=0.0, to=5.0, variable=self.var_interval, width=120, height=16,
+            command=_on_speed_slider
+        )
+        scale_speed.pack(side="left", padx=(0, 6))
+        ent_speed = ctk.CTkEntry(row_speed, textvariable=self.var_interval, width=48, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+        ent_speed.pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(row_speed, text="秒 (0=不延遲)", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
+
+        ctk.CTkLabel(inner, text="辨識門檻:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).grid(row=2, column=0, sticky="w", pady=3)
+        row_conf = ctk.CTkFrame(inner, fg_color="transparent")
+        row_conf.grid(row=2, column=1, sticky="w", padx=6, pady=3)
+
+        self.lbl_conf_val = ctk.CTkLabel(row_conf, text=f"{self.var_confidence.get():.2f}", font=ctk.CTkFont(size=11), width=36)
+        def _on_conf_slider(v):
             val = round(float(v), 2)
-            self.var_interval.set(val)
+            self.var_confidence.set(val)
+            self.lbl_conf_val.configure(text=f"{val:.2f}")
 
-        scale_speed = ttk.Scale(
-            row_speed, from_=0.0, to=5.0, variable=self.var_interval, orient=tk.HORIZONTAL,
-            length=140, command=_on_speed_slider_changed
+        scale_conf = ctk.CTkSlider(
+            row_conf, from_=0.40, to=0.95, variable=self.var_confidence, width=120, height=16,
+            command=_on_conf_slider
         )
-        scale_speed.pack(side=tk.LEFT, padx=(0, 6))
+        scale_conf.pack(side="left", padx=(0, 6))
+        self.lbl_conf_val.pack(side="left")
 
-        ent_speed = ttk.Entry(row_speed, textvariable=self.var_interval, width=5)
-        ent_speed.pack(side=tk.LEFT)
-        ttk.Label(row_speed, text="秒（0 = 不延遲）", font=("Arial", 9), foreground="#6b7280").pack(side=tk.LEFT, padx=(4, 0))
-
-        # 第 1 列：辨識門檻
-        ttk.Label(f, text="辨識門檻:").grid(row=1, column=0, sticky="w", pady=2)
-        row_conf = ttk.Frame(f)
-        row_conf.grid(row=1, column=1, sticky="w", padx=8)
-        scale_conf = ttk.Scale(
-            row_conf, from_=0.40, to=0.95, variable=self.var_confidence, orient=tk.HORIZONTAL,
-            length=140, command=lambda v: self.lbl_conf_val.config(text=f"{float(v):.2f}")
+        ctk.CTkLabel(inner, text="找不到目標時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).grid(row=3, column=0, sticky="w", pady=3)
+        cbo_idle = ctk.CTkComboBox(
+            inner, variable=self.var_idle_strategy, values=["快速跳過", "等待下輪", "隨機點擊", "固定點擊", "不動作"],
+            width=120, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly"
         )
-        scale_conf.pack(side=tk.LEFT, padx=(0, 6))
-        self.lbl_conf_val = ttk.Label(row_conf, text=f"{self.var_confidence.get():.2f}", width=5)
-        self.lbl_conf_val.pack(side=tk.LEFT)
+        cbo_idle.grid(row=3, column=1, sticky="w", padx=6, pady=3)
 
-        # 第 2 列：找不到時策略
-        ttk.Label(f, text="找不到目標時:").grid(row=2, column=0, sticky="w", pady=2)
-        ttk.Combobox(
-            f, textvariable=self.var_idle_strategy, values=["快速跳過", "等待下輪", "隨機點擊", "固定點擊", "不動作"], state="readonly", width=12
-        ).grid(row=2, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(inner, text="語言辨識:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).grid(row=4, column=0, sticky="w", pady=3)
+        row_lang = ctk.CTkFrame(inner, fg_color="transparent")
+        row_lang.grid(row=4, column=1, sticky="w", padx=6, pady=3)
+        ctk.CTkCheckBox(row_lang, text="繁中", variable=self.var_lang_tc, font=ctk.CTkFont(size=11), width=56, checkbox_width=16, checkbox_height=16).pack(side="left", padx=(0, 6))
+        ctk.CTkCheckBox(row_lang, text="簡中", variable=self.var_lang_sc, font=ctk.CTkFont(size=11), width=56, checkbox_width=16, checkbox_height=16).pack(side="left", padx=(0, 6))
+        ctk.CTkCheckBox(row_lang, text="英文/數字", variable=self.var_lang_en, font=ctk.CTkFont(size=11), width=80, checkbox_width=16, checkbox_height=16).pack(side="left")
 
-        # 第 3 列：分隔線
-        ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+        ctk.CTkLabel(inner, text="Telegram:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).grid(row=5, column=0, sticky="w", pady=3)
+        row_tg = ctk.CTkFrame(inner, fg_color="transparent")
+        row_tg.grid(row=5, column=1, sticky="w", padx=6, pady=3)
 
-        # 第 4 列：語言辨識過濾
-        row_lang_hdr = ttk.Frame(f)
-        row_lang_hdr.grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
-        tk.Label(row_lang_hdr, text="辨識語言（減少誤判）", font=("Arial", 9, "bold"), fg="#0284c7").pack(side=tk.LEFT)
+        ctk.CTkLabel(row_tg, text="Token:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
+        ctk.CTkEntry(row_tg, textvariable=self.var_tg_token, width=120, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
+        ctk.CTkLabel(row_tg, text="Chat ID:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
+        ctk.CTkEntry(row_tg, textvariable=self.var_tg_chat_id, width=80, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
 
-        row_lang_boxes = ttk.Frame(f)
-        row_lang_boxes.grid(row=5, column=0, columnspan=3, sticky="w", pady=(2, 2))
-        ttk.Checkbutton(row_lang_boxes, text="繁體中文", variable=self.var_lang_tc).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Checkbutton(row_lang_boxes, text="簡體中文", variable=self.var_lang_sc).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Checkbutton(row_lang_boxes, text="英文與數字", variable=self.var_lang_en).pack(side=tk.LEFT, padx=(0, 8))
-
-        lbl_lang_tip = ttk.Label(
-            f,
-            text="提示：遊戲為繁體版時，建議關閉「簡體中文」以減少誤判。",
-            font=("Microsoft JhengHei", 8),
-            foreground="#6b7280"
+        btn_test_tg = ctk.CTkButton(
+            row_tg, text="測試發送", width=64, height=24, corner_radius=4, font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, command=self.on_test_telegram_message
         )
-        lbl_lang_tip.grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 4))
-
-        # 第 7 列：Telegram 推播通知設定
-        ttk.Separator(f, orient=tk.HORIZONTAL).grid(row=7, column=0, columnspan=3, sticky="ew", pady=(6, 4))
-
-        row_tg_hdr = ttk.Frame(f)
-        row_tg_hdr.grid(row=8, column=0, columnspan=3, sticky="ew", pady=2)
-        tk.Label(row_tg_hdr, text="Telegram 通知", font=("Arial", 9, "bold"), fg="#0284c7").pack(side=tk.LEFT)
-        ttk.Button(row_tg_hdr, text="發送測試", width=12, command=self.on_test_telegram_message).pack(side=tk.RIGHT, padx=4)
-
-        row_tg_1 = ttk.Frame(f)
-        row_tg_1.grid(row=9, column=0, columnspan=3, sticky="ew", pady=1)
-        ttk.Label(row_tg_1, text="Bot Token:").pack(side=tk.LEFT)
-        ttk.Entry(row_tg_1, textvariable=self.var_tg_token, width=32).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
-
-        row_tg_2 = ttk.Frame(f)
-        row_tg_2.grid(row=10, column=0, columnspan=3, sticky="ew", pady=1)
-        ttk.Label(row_tg_2, text="Chat ID:   ").pack(side=tk.LEFT)
-        ttk.Entry(row_tg_2, textvariable=self.var_tg_chat_id, width=18).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Label(row_tg_2, text="（兩個頁面共用，修改後自動同步）", font=("Arial", 8), foreground="#64748b").pack(side=tk.LEFT, padx=(8, 0))
-
-        f.columnconfigure(1, weight=1)
+        btn_test_tg.pack(side="left")
 
     def _toggle_advanced(self):
         self._adv_open = not self._adv_open
         if self._adv_open:
-            self.adv_frame.pack(fill=tk.X, after=self.bar_tb, pady=(0, 6))
-            self.btn_adv.config(text="進階設定 ▾")
+            self.adv_frame.pack(fill="x", after=self.bar_tb, padx=10, pady=(0, 6))
+            self.btn_adv.configure(text="進階設定 ▾")
         else:
             self.adv_frame.pack_forget()
-            self.btn_adv.config(text="進階設定 ▸")
+            self.btn_adv.configure(text="進階設定 ▸")
 
     def on_test_telegram_message(self):
         tok = self.var_tg_token.get().strip()
@@ -1431,64 +1551,142 @@ class TaskFlowTab:
         if success:
             self._log("✅ 測試請求已送出，請檢查 Telegram 聊天室！")
 
-    # -------------------------------------------------------------------------
-    # 右側：截圖預覽與座標吸管 (Screen & Coordinate Picker)
-    # -------------------------------------------------------------------------
     def _build_picker_panel(self, parent):
-        box = ttk.LabelFrame(parent, text="截圖與座標選取", padding=6)
-        box.pack(fill=tk.BOTH, expand=True)
+        card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
+        card.pack(fill="both", expand=True)
 
-        tools = ttk.Frame(box)
-        tools.pack(fill=tk.X)
-        self.btn_capture = ttk.Button(tools, text="截圖", width=9, command=self.on_capture_screen)
-        self.btn_capture.pack(side=tk.LEFT)
-        ttk.Checkbutton(tools, text="自動刷新", variable=self.var_auto_preview, command=self.on_toggle_auto_refresh).pack(side=tk.LEFT, padx=8)
+        tools = ctk.CTkFrame(card, fg_color="transparent")
+        tools.pack(fill="x", padx=10, pady=(10, 6))
 
-        p_pal = get_theme_palette()
-        # 頂部即時座標顯示 (同 gui.py Menlo 11 bold 藍色字樣)
-        self.lbl_coord_rt = tk.Label(tools, textvariable=self.var_preview_coords, fg="#2563eb", bg=p_pal["bg"], font=("Menlo", 11, "bold"))
-        self.lbl_coord_rt.pack(side=tk.RIGHT)
+        self.btn_capture = ctk.CTkButton(
+            tools,
+            text="📸 截圖",
+            width=76,
+            height=30,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
+            fg_color=COLOR_BTN_PRIMARY,
+            hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=self.on_capture_screen
+        )
+        self.btn_capture.pack(side="left")
 
-        # 固定大小容器，避免圖片尺寸變動造成版面跳動 (同 gui.py)
-        self.preview_holder = tk.Frame(box, width=340, height=240, bg=p_pal["preview_bg"])
+        sw_auto = ctk.CTkSwitch(
+            tools,
+            text="自動刷新",
+            variable=self.var_auto_preview,
+            font=ctk.CTkFont(size=11),
+            command=self.on_toggle_auto_refresh,
+            width=80
+        )
+        sw_auto.pack(side="left", padx=8)
+
+        self.lbl_coord_rt = ctk.CTkLabel(
+            tools,
+            textvariable=self.var_preview_coords,
+            font=ctk.CTkFont(family="Menlo", size=12, weight="bold"),
+            text_color="#60A5FA"
+        )
+        self.lbl_coord_rt.pack(side="right")
+
+        self.preview_holder = tk.Frame(card, width=340, height=240, bg="#181825")
         self.preview_holder.pack_propagate(False)
-        self.preview_holder.pack(fill=tk.BOTH, expand=True, pady=(6, 4))
+        self.preview_holder.pack(fill="both", expand=True, padx=10, pady=(4, 6))
         self.preview_holder.bind("<Configure>", self._on_preview_resize)
 
         self.lbl_canvas = tk.Label(
             self.preview_holder,
-            text="連線後按「截圖」，\n再點擊畫面即可選取座標",
-            bg=p_pal["preview_bg"],
-            fg=p_pal["fg_muted"],
+            text="連線後按「📸 截圖」，\n再點擊畫面即可選取座標",
+            bg="#181825",
+            fg="#A6ADC8",
             cursor="crosshair",
-            anchor=tk.CENTER
+            anchor=tk.CENTER,
+            font=("Arial", 11)
         )
-        self.lbl_canvas.pack(fill=tk.BOTH, expand=True)
+        self.lbl_canvas.pack(fill="both", expand=True)
         self.lbl_canvas.bind("<Motion>", self._on_preview_mouse_move)
         self.lbl_canvas.bind("<Leave>", lambda e: self.var_preview_coords.set(""))
         self.lbl_canvas.bind("<Button-1>", self._on_preview_click)
 
-        # 座標資訊與填入工具列
-        coord_box = ttk.Frame(box)
-        coord_box.pack(fill=tk.X, pady=(4, 0))
+        coord_box = ctk.CTkFrame(card, fg_color="transparent")
+        coord_box.pack(fill="x", padx=10, pady=(0, 10))
 
-        lbl_c = ttk.Label(coord_box, textvariable=self.var_picked_coord, font=("Arial", 10, "bold"), foreground="#0284c7")
+        lbl_c = ctk.CTkLabel(
+            coord_box,
+            textvariable=self.var_picked_coord,
+            font=ctk.CTkFont(family="Menlo", size=12, weight="bold"),
+            text_color="#38BDF8"
+        )
         lbl_c.pack(anchor="w", pady=(0, 4))
 
-        row_fill = ttk.Frame(coord_box)
-        row_fill.pack(fill=tk.X, pady=2)
-        ttk.Button(row_fill, text="填入選取的積木", command=self.on_fill_selected_block).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
-        ttk.Button(row_fill, text="複製", width=5, command=self.on_copy_picked_coord).pack(side=tk.LEFT)
+        row_fill = ctk.CTkFrame(coord_box, fg_color="transparent")
+        row_fill.pack(fill="x", pady=2)
 
-        row_cond = ttk.Frame(coord_box)
-        row_cond.pack(fill=tk.X, pady=2)
-        ttk.Button(row_cond, text="填入 If", command=lambda: self.on_fill_branch_coord(0)).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
-        ttk.Button(row_cond, text="填入 Else If 1", command=lambda: self.on_fill_branch_coord(1)).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
-        ttk.Button(row_cond, text="填入 Else", width=8, command=lambda: self.on_fill_branch_coord("else")).pack(side=tk.LEFT)
+        btn_fill_sel = ctk.CTkButton(
+            row_fill,
+            text="填入選取的積木",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            height=28,
+            corner_radius=6,
+            fg_color=COLOR_BTN_PRIMARY,
+            hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=self.on_fill_selected_block
+        )
+        btn_fill_sel.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
-    # -------------------------------------------------------------------------
-    # 積木卡片動態建立與管理
-    # -------------------------------------------------------------------------
+        btn_copy = ctk.CTkButton(
+            row_fill,
+            text="複製",
+            width=50,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self.on_copy_picked_coord
+        )
+        btn_copy.pack(side="right")
+
+        row_cond = ctk.CTkFrame(coord_box, fg_color="transparent")
+        row_cond.pack(fill="x", pady=2)
+
+        btn_if = ctk.CTkButton(
+            row_cond,
+            text="填入 If",
+            font=ctk.CTkFont(size=11),
+            height=26,
+            corner_radius=6,
+            fg_color="#D97706",
+            hover_color="#B45309",
+            command=lambda: self.on_fill_branch_coord(0)
+        )
+        btn_if.pack(side="left", fill="x", expand=True, padx=(0, 2))
+
+        btn_elif = ctk.CTkButton(
+            row_cond,
+            text="填入 Else If 1",
+            font=ctk.CTkFont(size=11),
+            height=26,
+            corner_radius=6,
+            fg_color="#2563EB",
+            hover_color="#1D4ED8",
+            command=lambda: self.on_fill_branch_coord(1)
+        )
+        btn_elif.pack(side="left", fill="x", expand=True, padx=(0, 2))
+
+        btn_else = ctk.CTkButton(
+            row_cond,
+            text="填入 Else",
+            width=68,
+            height=26,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color="#475569",
+            hover_color="#334155",
+            command=lambda: self.on_fill_branch_coord("else")
+        )
+        btn_else.pack(side="right")
+
     def add_block(
         self,
         b_type: str,
@@ -1525,7 +1723,6 @@ class TaskFlowTab:
         else:
             self.blocks_list.append(block_item)
 
-        # 若是迴圈積木且包含預設/儲存的內部積木，遞迴建立子積木
         if b_type == "loop" and "inner_blocks" in params:
             for sub_data in params.get("inner_blocks", []):
                 self.add_block(
@@ -1540,16 +1737,14 @@ class TaskFlowTab:
         self.auto_save_config()
 
         if parent_loop is None:
-            self.parent.after(50, lambda: self.canvas_blocks.yview_moveto(1.0))
+            self.parent.after(50, lambda: getattr(self.canvas_blocks, "yview_moveto", lambda *_: None)(1.0))
 
         return block_item
 
     def add_inner_block(self, loop_item: Dict[str, Any], b_type: str):
-        """將指定類型積木直接裝入迴圈容器中"""
         self.add_block(b_type=b_type, parent_loop=loop_item)
 
     def pull_prev_block_into_loop(self, loop_item: Dict[str, Any]):
-        """將迴圈正上方的積木移入並裝進此迴圈中"""
         if loop_item not in self.blocks_list:
             return
         idx = self.blocks_list.index(loop_item)
@@ -1566,7 +1761,6 @@ class TaskFlowTab:
         self._log(f"已將上方積木 [{prev_b['name'].get()}] 裝入迴圈！")
 
     def move_out_of_loop(self, child_block: Dict[str, Any]):
-        """將子積木移出迴圈，放回主任務流程中"""
         parent = child_block.get("parent_loop")
         if not parent or parent not in self.blocks_list:
             return
@@ -1585,71 +1779,162 @@ class TaskFlowTab:
     def _render_block_widget(self, block_item: Dict[str, Any], parent_loop: Optional[Dict[str, Any]] = None):
         b_type = block_item["type"]
         info = BLOCK_TYPES.get(b_type, BLOCK_TYPES["tap_coord"])
-        p = block_item["params"]
 
-        # 卡片最外層 Frame (若是子積木，置入迴圈的 inner_container)
         target_parent = parent_loop["inner_container"] if (parent_loop and "inner_container" in parent_loop) else self.inner_blocks
-        card = tk.Frame(target_parent, bg=COLOR_BLOCK_BG, bd=2 if b_type == "loop" else 1, relief=tk.SOLID)
-        card.pack(fill=tk.X, padx=4, pady=3)
+        card = ctk.CTkFrame(
+            target_parent,
+            fg_color=COLOR_CARD_ITEM,
+            corner_radius=8,
+            border_width=1,
+            border_color=info["color"]
+        )
+        card.pack(fill="x", padx=4, pady=3)
         block_item["frame"] = card
 
-        # 頂部標題列 (Scratch 風格標籤列)
-        hdr = tk.Frame(card, bg=info["color"], cursor="hand2")
-        hdr.pack(fill=tk.X)
+        hdr = ctk.CTkFrame(card, fg_color=info["color"], corner_radius=6, height=32)
+        hdr.pack(fill="x", padx=2, pady=2)
 
-        # 拖曳手柄與勾選
-        lbl_drag = tk.Label(hdr, text=" ☰ ", bg=info["color"], fg="#ffffff", font=("Arial", 10, "bold"), cursor="fleur")
-        lbl_drag.pack(side=tk.LEFT)
+        lbl_drag = ctk.CTkLabel(
+            hdr,
+            text=" ☰ ",
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            text_color="#FFFFFF",
+            cursor="fleur"
+        )
+        lbl_drag.pack(side="left", padx=(2, 0))
         self._bind_drag(lbl_drag, block_item)
 
-        chk_en = tk.Checkbutton(hdr, variable=block_item["enabled"], bg=info["color"], activebackground=info["color"])
-        chk_en.pack(side=tk.LEFT)
+        chk_en = ctk.CTkCheckBox(
+            hdr,
+            text="",
+            variable=block_item["enabled"],
+            width=20,
+            checkbox_width=18,
+            checkbox_height=18,
+            corner_radius=4,
+            fg_color="#10B981",
+            hover_color="#059669"
+        )
+        chk_en.pack(side="left", padx=(0, 2))
 
-        lbl_num = tk.Label(hdr, text="#0", bg=info["color"], fg="#ffffff", font=("Arial", 9, "bold"))
-        lbl_num.pack(side=tk.LEFT, padx=2)
+        lbl_num = ctk.CTkLabel(
+            hdr,
+            text="#0",
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
+            text_color="#FFFFFF"
+        )
+        lbl_num.pack(side="left", padx=2)
         block_item["lbl_num"] = lbl_num
 
-        ent_name = ttk.Entry(hdr, textvariable=block_item["name"], width=16)
-        ent_name.pack(side=tk.LEFT, padx=4)
+        ent_name = ctk.CTkEntry(
+            hdr,
+            textvariable=block_item["name"],
+            width=130,
+            height=24,
+            corner_radius=4,
+            fg_color=COLOR_INPUT_BG,
+            border_color=COLOR_INPUT_BORDER,
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=11)
+        )
+        ent_name.pack(side="left", padx=4)
 
-        # 標籤類型徽章
-        lbl_type = tk.Label(hdr, text=f"[{info['badge']}]", bg=info["color"], fg="#ffffff", font=("Arial", 8))
-        lbl_type.pack(side=tk.LEFT, padx=2)
+        lbl_type = ctk.CTkLabel(
+            hdr,
+            text=f"[{info['badge']}]",
+            font=ctk.CTkFont(family="Arial", size=10),
+            text_color="#FFFFFF"
+        )
+        lbl_type.pack(side="left", padx=2)
 
-        # 右側控制按鈕：選取為目前積木、上移、下移、複製、刪除
-        btn_del = tk.Label(hdr, text=" ✕ ", bg=info["color"], fg="#fee2e2", font=("Arial", 9, "bold"), cursor="hand2")
-        btn_del.pack(side=tk.RIGHT)
-        btn_del.bind("<Button-1>", lambda e: self.delete_block(block_item))
+        btn_del = ctk.CTkButton(
+            hdr,
+            text="✕",
+            width=24,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#EF4444",
+            hover_color="#DC2626",
+            command=lambda: self.delete_block(block_item)
+        )
+        btn_del.pack(side="right", padx=(2, 2))
 
-        btn_dup = tk.Label(hdr, text=" 複製 ", bg=info["color"], fg="#ffffff", font=("Arial", 8), cursor="hand2")
-        btn_dup.pack(side=tk.RIGHT)
-        btn_dup.bind("<Button-1>", lambda e: self.duplicate_block(block_item))
+        btn_dup = ctk.CTkButton(
+            hdr,
+            text="複製",
+            width=38,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=lambda: self.duplicate_block(block_item)
+        )
+        btn_dup.pack(side="right", padx=1)
 
-        btn_down = tk.Label(hdr, text=" ▼ ", bg=info["color"], fg="#ffffff", font=("Arial", 8), cursor="hand2")
-        btn_down.pack(side=tk.RIGHT)
-        btn_down.bind("<Button-1>", lambda e: self.move_block(block_item, 1))
+        btn_down = ctk.CTkButton(
+            hdr,
+            text="▼",
+            width=24,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=lambda: self.move_block(block_item, 1)
+        )
+        btn_down.pack(side="right", padx=1)
 
-        btn_up = tk.Label(hdr, text=" ▲ ", bg=info["color"], fg="#ffffff", font=("Arial", 8), cursor="hand2")
-        btn_up.pack(side=tk.RIGHT)
-        btn_up.bind("<Button-1>", lambda e: self.move_block(block_item, -1))
+        btn_up = ctk.CTkButton(
+            hdr,
+            text="▲",
+            width=24,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=lambda: self.move_block(block_item, -1)
+        )
+        btn_up.pack(side="right", padx=1)
 
         if parent_loop:
-            btn_out = tk.Label(hdr, text=" 移出 ", bg=info["color"], fg="#fed7aa", font=("Arial", 8, "bold"), cursor="hand2")
-            btn_out.pack(side=tk.RIGHT, padx=2)
-            btn_out.bind("<Button-1>", lambda e: self.move_out_of_loop(block_item))
+            btn_out = ctk.CTkButton(
+                hdr,
+                text="移出",
+                width=38,
+                height=22,
+                corner_radius=4,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="#FB923C",
+                hover_color="#EA580C",
+                text_color="#000000",
+                command=lambda: self.move_out_of_loop(block_item)
+            )
+            btn_out.pack(side="right", padx=1)
 
-        btn_pick = tk.Label(hdr, text=" 選取 ", bg=info["color"], fg="#fef08a", font=("Arial", 8, "bold"), cursor="hand2")
-        btn_pick.pack(side=tk.RIGHT, padx=4)
-        btn_pick.bind("<Button-1>", lambda e: self.select_block(block_item))
+        btn_pick = ctk.CTkButton(
+            hdr,
+            text="選取",
+            width=38,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#F59E0B",
+            hover_color="#D97706",
+            text_color="#000000",
+            command=lambda: self.select_block(block_item)
+        )
+        btn_pick.pack(side="right", padx=(1, 4))
 
-        # 內容參數區
-        body = tk.Frame(card, bg=COLOR_BLOCK_BODY, padx=8, pady=6)
-        body.pack(fill=tk.X)
+        body = ctk.CTkFrame(card, fg_color="transparent")
+        body.pack(fill="x", padx=6, pady=(2, 6))
         block_item["body_frame"] = body
 
         self._build_block_fields(block_item, body)
 
-    def _build_block_fields(self, block: Dict[str, Any], body: tk.Frame):
+    def _build_block_fields(self, block: Dict[str, Any], body: ctk.CTkFrame):
         b_type = block["type"]
         p = block["params"]
         vp = block["var_params"]
@@ -1660,19 +1945,21 @@ class TaskFlowTab:
             vp["delay"] = tk.DoubleVar(value=p.get("delay", 1.5))
             vp["repeat"] = tk.IntVar(value=p.get("repeat", 1))
 
-            row = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row.pack(fill=tk.X, pady=2)
-            tk.Label(row, text="座標 X:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(row, textvariable=vp["x"], width=5).pack(side=tk.LEFT, padx=(1, 4))
-            tk.Label(row, text="Y:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(row, textvariable=vp["y"], width=5).pack(side=tk.LEFT, padx=(1, 4))
-            btn_fill = ttk.Button(row, text="填入", width=5, command=lambda target=block: self._fill_block_coords(target))
-            btn_fill.pack(side=tk.LEFT, padx=(0, 10))
-            tk.Label(row, text="延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row, from_=0.1, to=30.0, increment=0.5, textvariable=vp["delay"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 10))
-            tk.Label(row, text="點擊次數:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row, from_=1, to=50, increment=1, textvariable=vp["repeat"], width=3).pack(side=tk.LEFT, padx=(2, 0))
+            row = ctk.CTkFrame(body, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            ctk.CTkLabel(row, text="座標 X:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row, textvariable=vp["x"], width=50, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
+            ctk.CTkLabel(row, text="Y:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row, textvariable=vp["y"], width=50, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
+            btn_fill = ctk.CTkButton(row, text="填入", width=46, height=26, corner_radius=4, fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, font=ctk.CTkFont(size=11), command=lambda target=block: self._fill_block_coords(target))
+            btn_fill.pack(side="left", padx=(0, 10))
+
+            ctk.CTkLabel(row, text="延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row, textvariable=vp["delay"], width=46, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 10))
+
+            ctk.CTkLabel(row, text="點擊次數:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row, textvariable=vp["repeat"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 0))
 
         elif b_type == "multi_tap":
             vp["x"] = tk.IntVar(value=_safe_int(p.get("x", 960)))
@@ -1684,55 +1971,55 @@ class TaskFlowTab:
             vp["check_every"] = tk.IntVar(value=_safe_int(p.get("check_every", 1)))
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
 
-            row1 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row1.pack(fill=tk.X, pady=2)
-            tk.Label(row1, text="座標 X:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(row1, textvariable=vp["x"], width=5).pack(side=tk.LEFT, padx=(1, 4))
-            tk.Label(row1, text="Y:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(row1, textvariable=vp["y"], width=5).pack(side=tk.LEFT, padx=(1, 4))
-            btn_fill = ttk.Button(row1, text="填入", width=5, command=lambda target=block: self._fill_block_coords(target))
-            btn_fill.pack(side=tk.LEFT, padx=(0, 10))
+            row1 = ctk.CTkFrame(body, fg_color="transparent")
+            row1.pack(fill="x", pady=2)
+            ctk.CTkLabel(row1, text="座標 X:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row1, textvariable=vp["x"], width=50, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
+            ctk.CTkLabel(row1, text="Y:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row1, textvariable=vp["y"], width=50, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
+            btn_fill = ctk.CTkButton(row1, text="填入", width=46, height=26, corner_radius=4, fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, font=ctk.CTkFont(size=11), command=lambda target=block: self._fill_block_coords(target))
+            btn_fill.pack(side="left", padx=(0, 10))
 
-            tk.Label(row1, text="點擊次數:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row1, from_=0, to=9999, increment=5, textvariable=vp["count"], width=5).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row1, text="次（0 = 無限）", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 10))
+            ctk.CTkLabel(row1, text="次數:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row1, textvariable=vp["count"], width=46, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row1, text="次(0=無限)", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 8))
 
-            tk.Label(row1, text="間隔:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row1, from_=0.05, to=10.0, increment=0.1, textvariable=vp["interval"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row1, text="秒/次", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
+            ctk.CTkLabel(row1, text="間隔:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row1, textvariable=vp["interval"], width=46, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row1, text="秒/次", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
 
-            row2 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row2.pack(fill=tk.X, pady=2)
-            tk.Label(row2, text="停止條件:", bg=COLOR_BLOCK_BODY, font=("Arial", 9, "bold"), fg="#fb923c").pack(side=tk.LEFT)
-            combo_stop = ttk.Combobox(row2, textvariable=vp["stop_mode"], values=[
+            row2 = ctk.CTkFrame(body, fg_color="transparent")
+            row2.pack(fill="x", pady=2)
+            ctk.CTkLabel(row2, text="停止條件:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#FB923C").pack(side="left")
+            combo_stop = ctk.CTkComboBox(row2, variable=vp["stop_mode"], values=[
                 "無 (僅點滿次數)",
                 "偵測到文字出現",
                 "偵測到文字消失",
                 "偵測到打勾圖案",
                 "偵測到叉叉圖案"
-            ], state="readonly", width=14)
-            combo_stop.pack(side=tk.LEFT, padx=(2, 6))
+            ], width=130, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
+            combo_stop.pack(side="left", padx=(4, 6))
 
-            box_kws = tk.Frame(row2, bg=COLOR_BLOCK_BODY)
-            tk.Label(box_kws, text="關鍵字:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(box_kws, textvariable=vp["stop_keywords"], width=16).pack(side=tk.LEFT, padx=(2, 6))
+            box_kws = ctk.CTkFrame(row2, fg_color="transparent")
+            ctk.CTkLabel(box_kws, text="關鍵字:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(box_kws, textvariable=vp["stop_keywords"], width=130, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
 
             def _toggle_stop_kws(*_):
                 sm = vp["stop_mode"].get()
                 if "文字" in sm:
-                    box_kws.pack(side=tk.LEFT)
+                    box_kws.pack(side="left")
                 else:
                     box_kws.pack_forget()
             vp["stop_mode"].trace_add("write", _toggle_stop_kws)
             _toggle_stop_kws()
 
-            tk.Label(row2, text="每:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row2, from_=1, to=20, increment=1, textvariable=vp["check_every"], width=3).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="次檢查", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 8))
+            ctk.CTkLabel(row2, text="每:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["check_every"], width=36, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row2, text="次檢查", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
 
-            tk.Label(row2, text="結束延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row2, from_=0.0, to=30.0, increment=0.5, textvariable=vp["delay_after"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
+            ctk.CTkLabel(row2, text="結束延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["delay_after"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
 
         elif b_type == "detect_click":
             vp["target_type"] = tk.StringVar(value=p.get("target_type", "📝 僅文字"))
@@ -1744,39 +2031,40 @@ class TaskFlowTab:
             vp["delay"] = tk.DoubleVar(value=p.get("delay", 1.5))
             vp["on_timeout"] = tk.StringVar(value=p.get("on_timeout", "continue"))
 
-            row1 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row1.pack(fill=tk.X, pady=2)
-            tk.Label(row1, text="類型:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Combobox(row1, textvariable=vp["target_type"], values=["📝 僅文字", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"], state="readonly", width=9).pack(side=tk.LEFT, padx=(2, 8))
-            tk.Label(row1, text="關鍵字:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(row1, textvariable=vp["keywords"], width=20).pack(side=tk.LEFT, padx=(2, 8), fill=tk.X, expand=True)
+            row1 = ctk.CTkFrame(body, fg_color="transparent")
+            row1.pack(fill="x", pady=2)
+            ctk.CTkLabel(row1, text="類型:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkComboBox(row1, variable=vp["target_type"], values=["📝 僅文字", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"], width=110, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly").pack(side="left", padx=(2, 6))
+            ctk.CTkLabel(row1, text="關鍵字:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row1, textvariable=vp["keywords"], width=150, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6), fill="x", expand=True)
 
-            row2 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row2.pack(fill=tk.X, pady=2)
-            tk.Label(row2, text="超時:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row2, from_=1, to=300, increment=1, textvariable=vp["timeout"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 8))
-            tk.Label(row2, text="動作:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            combo_act = ttk.Combobox(row2, textvariable=vp["click_mode"], values=["click_text", "custom_coord"], state="readonly", width=10)
-            combo_act.pack(side=tk.LEFT, padx=(2, 8))
+            row2 = ctk.CTkFrame(body, fg_color="transparent")
+            row2.pack(fill="x", pady=2)
+            ctk.CTkLabel(row2, text="超時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["timeout"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 6))
 
-            box_xy = tk.Frame(row2, bg=COLOR_BLOCK_BODY)
-            tk.Label(box_xy, text="X:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(box_xy, textvariable=vp["custom_x"], width=5).pack(side=tk.LEFT, padx=(1, 4))
-            tk.Label(box_xy, text="Y:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(box_xy, textvariable=vp["custom_y"], width=5).pack(side=tk.LEFT, padx=(1, 6))
+            ctk.CTkLabel(row2, text="動作:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            combo_act = ctk.CTkComboBox(row2, variable=vp["click_mode"], values=["click_text", "custom_coord"], width=105, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
+            combo_act.pack(side="left", padx=(2, 6))
+
+            box_xy = ctk.CTkFrame(row2, fg_color="transparent")
+            ctk.CTkLabel(box_xy, text="X:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(box_xy, textvariable=vp["custom_x"], width=48, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 4))
+            ctk.CTkLabel(box_xy, text="Y:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(box_xy, textvariable=vp["custom_y"], width=48, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
 
             def _toggle_xy(*_):
                 if vp["click_mode"].get() == "custom_coord":
-                    box_xy.pack(side=tk.LEFT)
+                    box_xy.pack(side="left")
                 else:
                     box_xy.pack_forget()
             vp["click_mode"].trace_add("write", _toggle_xy)
             _toggle_xy()
 
-            tk.Label(row2, text="延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row2, from_=0.1, to=30.0, increment=0.5, textvariable=vp["delay"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
+            ctk.CTkLabel(row2, text="延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["delay"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
 
         elif b_type == "branch_if":
             branches_data = p.get("branches")
@@ -1818,23 +2106,25 @@ class TaskFlowTab:
                     "y": tk.IntVar(value=_safe_int(bd.get("y", 540)))
                 })
 
-            # 頂部控制列：新增分支按鈕、超時、延遲
-            row_ctrl = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row_ctrl.pack(fill=tk.X, pady=(0, 4))
-            tk.Label(row_ctrl, text="條件分支:", bg=COLOR_BLOCK_BODY, font=("Arial", 9, "bold"), fg="#f59e0b").pack(side=tk.LEFT)
+            row_ctrl = ctk.CTkFrame(body, fg_color="transparent")
+            row_ctrl.pack(fill="x", pady=(0, 4))
+            ctk.CTkLabel(row_ctrl, text="條件分支:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#F59E0B").pack(side="left")
 
-            btn_add_br = ttk.Button(row_ctrl, text="＋ 新增 Else If", command=lambda: _add_branch())
-            btn_add_br.pack(side=tk.LEFT, padx=(6, 12))
+            btn_add_br = ctk.CTkButton(
+                row_ctrl, text="＋ 新增 Else If", width=100, height=24, corner_radius=4,
+                font=ctk.CTkFont(size=10, weight="bold"), fg_color="#D97706", hover_color="#B45309",
+                command=lambda: _add_branch()
+            )
+            btn_add_br.pack(side="left", padx=(6, 12))
 
-            tk.Label(row_ctrl, text="限時:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row_ctrl, from_=1, to=120, textvariable=vp["timeout"], width=3).pack(side=tk.LEFT, padx=2)
-            tk.Label(row_ctrl, text="s  延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row_ctrl, from_=0.1, to=30.0, increment=0.5, textvariable=vp["delay"], width=4).pack(side=tk.LEFT, padx=2)
-            tk.Label(row_ctrl, text="s", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
+            ctk.CTkLabel(row_ctrl, text="限時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row_ctrl, textvariable=vp["timeout"], width=38, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=2)
+            ctk.CTkLabel(row_ctrl, text="s 延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(4, 0))
+            ctk.CTkEntry(row_ctrl, textvariable=vp["delay"], width=42, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=2)
+            ctk.CTkLabel(row_ctrl, text="s", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
 
-            # 動態分支容器
-            branches_box = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            branches_box.pack(fill=tk.X)
+            branches_box = ctk.CTkFrame(body, fg_color="transparent")
+            branches_box.pack(fill="x")
 
             def _render_branch_rows():
                 for widget in branches_box.winfo_children():
@@ -1844,28 +2134,27 @@ class TaskFlowTab:
                     is_first = (idx == 0)
                     br["name"] = "If" if is_first else f"Else If {idx}"
 
-                    row = tk.Frame(branches_box, bg="#1e232d", bd=1, relief=tk.SOLID)
-                    row.pack(fill=tk.X, pady=2, ipady=1)
+                    row = ctk.CTkFrame(branches_box, fg_color=COLOR_CARD_ITEM, corner_radius=6, border_width=1, border_color="#313244")
+                    row.pack(fill="x", pady=2, ipady=1)
 
-                    badge_bg = "#d97706" if is_first else "#0284c7"
-                    lbl_badge = tk.Label(row, text=f" {br['name']} ", bg=badge_bg, fg="#ffffff", font=("Arial", 8, "bold"), width=9)
-                    lbl_badge.pack(side=tk.LEFT, padx=(2, 6))
+                    badge_bg = "#D97706" if is_first else "#0284C7"
+                    lbl_badge = ctk.CTkLabel(row, text=f" {br['name']} ", fg_color=badge_bg, corner_radius=4, text_color="#FFFFFF", font=ctk.CTkFont(size=10, weight="bold"), width=64)
+                    lbl_badge.pack(side="left", padx=(4, 6), pady=2)
 
-                    tk.Label(row, text="若包含:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-                    ttk.Entry(row, textvariable=br["keywords"], width=15).pack(side=tk.LEFT, padx=(2, 6))
+                    ctk.CTkLabel(row, text="若包含:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+                    ctk.CTkEntry(row, textvariable=br["keywords"], width=130, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
 
-                    tk.Label(row, text="點擊 X:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-                    ttk.Entry(row, textvariable=br["x"], width=5).pack(side=tk.LEFT, padx=1)
-                    tk.Label(row, text="Y:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-                    ttk.Entry(row, textvariable=br["y"], width=5).pack(side=tk.LEFT, padx=(1, 4))
+                    ctk.CTkLabel(row, text="點擊 X:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+                    ctk.CTkEntry(row, textvariable=br["x"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
+                    ctk.CTkLabel(row, text="Y:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+                    ctk.CTkEntry(row, textvariable=br["y"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(1, 4))
 
-                    btn_fill = ttk.Button(row, text="填入", width=5, command=lambda target=br: self._fill_branch_from_picker(target))
-                    btn_fill.pack(side=tk.LEFT, padx=2)
+                    btn_fill = ctk.CTkButton(row, text="填入", width=42, height=24, corner_radius=4, font=ctk.CTkFont(size=10), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, command=lambda target=br: self._fill_branch_from_picker(target))
+                    btn_fill.pack(side="left", padx=2)
 
                     if not is_first:
-                        lbl_del = tk.Label(row, text=" ✕ ", bg="#1e232d", fg="#ef4444", font=("Arial", 9, "bold"), cursor="hand2")
-                        lbl_del.pack(side=tk.RIGHT, padx=4)
-                        lbl_del.bind("<Button-1>", lambda e, target_idx=idx: _remove_branch(target_idx))
+                        btn_del = ctk.CTkButton(row, text="✕", width=24, height=22, corner_radius=4, font=ctk.CTkFont(size=10, weight="bold"), fg_color="#EF4444", hover_color="#DC2626", command=lambda target_idx=idx: _remove_branch(target_idx))
+                        btn_del.pack(side="right", padx=4)
 
             def _add_branch():
                 new_idx = len(vp["branches"])
@@ -1886,28 +2175,27 @@ class TaskFlowTab:
 
             _render_branch_rows()
 
-            # 底部 Else 行
-            row_else = tk.Frame(body, bg="#1e232d", bd=1, relief=tk.SOLID)
-            row_else.pack(fill=tk.X, pady=(3, 0), ipady=1)
+            row_else = ctk.CTkFrame(body, fg_color=COLOR_CARD_ITEM, corner_radius=6, border_width=1, border_color="#313244")
+            row_else.pack(fill="x", pady=(3, 0), ipady=1)
 
-            lbl_else_badge = tk.Label(row_else, text=" Else ", bg="#64748b", fg="#ffffff", font=("Arial", 8, "bold"), width=9)
-            lbl_else_badge.pack(side=tk.LEFT, padx=(2, 6))
+            lbl_else_badge = ctk.CTkLabel(row_else, text=" Else ", fg_color="#475569", corner_radius=4, text_color="#FFFFFF", font=ctk.CTkFont(size=10, weight="bold"), width=64)
+            lbl_else_badge.pack(side="left", padx=(4, 6), pady=2)
 
-            tk.Label(row_else, text="若皆不符合:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            combo_else = ttk.Combobox(row_else, textvariable=vp["else_action"], values=["skip", "click_coord"], state="readonly", width=9)
-            combo_else.pack(side=tk.LEFT, padx=(2, 6))
+            ctk.CTkLabel(row_else, text="若皆不符合:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            combo_else = ctk.CTkComboBox(row_else, variable=vp["else_action"], values=["skip", "click_coord"], width=105, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
+            combo_else.pack(side="left", padx=(2, 6))
 
-            box_else_xy = tk.Frame(row_else, bg="#1e232d")
-            tk.Label(box_else_xy, text="X:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(box_else_xy, textvariable=vp["else_x"], width=5).pack(side=tk.LEFT, padx=1)
-            tk.Label(box_else_xy, text="Y:", bg="#1e232d", fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(box_else_xy, textvariable=vp["else_y"], width=5).pack(side=tk.LEFT, padx=(1, 4))
-            btn_fill_else = ttk.Button(box_else_xy, text="填入", width=5, command=lambda: self.on_fill_branch_coord("else"))
-            btn_fill_else.pack(side=tk.LEFT, padx=2)
+            box_else_xy = ctk.CTkFrame(row_else, fg_color="transparent")
+            ctk.CTkLabel(box_else_xy, text="X:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(box_else_xy, textvariable=vp["else_x"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
+            ctk.CTkLabel(box_else_xy, text="Y:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(box_else_xy, textvariable=vp["else_y"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(1, 4))
+            btn_fill_else = ctk.CTkButton(box_else_xy, text="填入", width=42, height=24, corner_radius=4, font=ctk.CTkFont(size=10), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, command=lambda: self.on_fill_branch_coord("else"))
+            btn_fill_else.pack(side="left", padx=2)
 
             def _toggle_else(*_):
                 if vp["else_action"].get() == "click_coord":
-                    box_else_xy.pack(side=tk.LEFT)
+                    box_else_xy.pack(side="left")
                 else:
                     box_else_xy.pack_forget()
             vp["else_action"].trace_add("write", _toggle_else)
@@ -1920,15 +2208,13 @@ class TaskFlowTab:
             vp["check_timing"] = tk.StringVar(value=p.get("check_timing", "每輪開始與結束"))
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
 
-            # 迴圈控制頂部容器
-            box_loop_header = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            box_loop_header.pack(fill=tk.X, pady=(0, 4))
+            box_loop_header = ctk.CTkFrame(body, fg_color="transparent")
+            box_loop_header.pack(fill="x", pady=(0, 4))
 
-            # 第 1 列：停止條件與次數/延遲
-            row_loop_ctrl = tk.Frame(box_loop_header, bg=COLOR_BLOCK_BODY)
-            row_loop_ctrl.pack(fill=tk.X, pady=(0, 2))
+            row_loop_ctrl = ctk.CTkFrame(box_loop_header, fg_color="transparent")
+            row_loop_ctrl.pack(fill="x", pady=(0, 2))
 
-            tk.Label(row_loop_ctrl, text="停止條件:", bg=COLOR_BLOCK_BODY, font=("Arial", 9, "bold"), fg="#818cf8").pack(side=tk.LEFT)
+            ctk.CTkLabel(row_loop_ctrl, text="停止條件:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#818CF8").pack(side="left")
             LOOP_MODES = [
                 "依指定次數",
                 "偵測到文字出現",
@@ -1936,61 +2222,59 @@ class TaskFlowTab:
                 "偵測到打勾圖案",
                 "偵測到叉叉圖案"
             ]
-            cbo_mode = ttk.Combobox(row_loop_ctrl, textvariable=vp["stop_mode"], values=LOOP_MODES, state="readonly", width=14)
-            cbo_mode.pack(side=tk.LEFT, padx=3)
+            cbo_mode = ctk.CTkComboBox(row_loop_ctrl, variable=vp["stop_mode"], values=LOOP_MODES, width=130, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
+            cbo_mode.pack(side="left", padx=4)
 
-            lbl_cnt_title = tk.Label(row_loop_ctrl, text="次數:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG, font=("Arial", 9))
-            lbl_cnt_title.pack(side=tk.LEFT, padx=(4, 2))
-            spn_cnt = ttk.Spinbox(row_loop_ctrl, from_=0, to=999, textvariable=vp["count"], width=4)
-            spn_cnt.pack(side=tk.LEFT)
-            lbl_cnt_hint = tk.Label(row_loop_ctrl, text="次（0 = 無限）", bg=COLOR_BLOCK_BODY, font=("Arial", 8), fg=COLOR_BLOCK_MUTED)
-            lbl_cnt_hint.pack(side=tk.LEFT, padx=(2, 6))
+            lbl_cnt_title = ctk.CTkLabel(row_loop_ctrl, text="次數:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED)
+            lbl_cnt_title.pack(side="left", padx=(4, 2))
+            spn_cnt = ctk.CTkEntry(row_loop_ctrl, textvariable=vp["count"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+            spn_cnt.pack(side="left")
+            lbl_cnt_hint = ctk.CTkLabel(row_loop_ctrl, text="次(0=無限)", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM)
+            lbl_cnt_hint.pack(side="left", padx=(2, 6))
 
-            tk.Label(row_loop_ctrl, text="延遲:", bg=COLOR_BLOCK_BODY, font=("Arial", 8), fg=COLOR_BLOCK_MUTED).pack(side=tk.LEFT, padx=(2, 1))
-            ttk.Spinbox(row_loop_ctrl, from_=0.0, to=60.0, increment=0.5, textvariable=vp["delay_after"], width=4).pack(side=tk.LEFT)
-            tk.Label(row_loop_ctrl, text="s", bg=COLOR_BLOCK_BODY, font=("Arial", 8), fg=COLOR_BLOCK_MUTED).pack(side=tk.LEFT)
+            ctk.CTkLabel(row_loop_ctrl, text="延遲:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(2, 1))
+            ctk.CTkEntry(row_loop_ctrl, textvariable=vp["delay_after"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left")
+            ctk.CTkLabel(row_loop_ctrl, text="s", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
 
-            # 第 2 列：條件細節 (關鍵字與檢查時機，在條件模式下展開)
-            row_cond_detail = tk.Frame(box_loop_header, bg=COLOR_BLOCK_BODY)
+            row_cond_detail = ctk.CTkFrame(box_loop_header, fg_color="transparent")
 
-            lbl_kw_title = tk.Label(row_cond_detail, text="停止關鍵字:", bg=COLOR_BLOCK_BODY, font=("Arial", 8, "bold"), fg="#c4b5fd")
-            lbl_kw_title.pack(side=tk.LEFT)
-            ent_kw = ttk.Entry(row_cond_detail, textvariable=vp["keywords"], width=18)
-            ent_kw.pack(side=tk.LEFT, padx=(2, 6))
+            lbl_kw_title = ctk.CTkLabel(row_cond_detail, text="停止關鍵字:", font=ctk.CTkFont(size=10, weight="bold"), text_color="#C4B5FD")
+            lbl_kw_title.pack(side="left")
+            ent_kw = ctk.CTkEntry(row_cond_detail, textvariable=vp["keywords"], width=140, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+            ent_kw.pack(side="left", padx=(2, 6))
 
-            tk.Label(row_cond_detail, text="檢查時機:", bg=COLOR_BLOCK_BODY, font=("Arial", 8), fg="#c4b5fd").pack(side=tk.LEFT)
+            ctk.CTkLabel(row_cond_detail, text="檢查時機:", font=ctk.CTkFont(size=10), text_color="#C4B5FD").pack(side="left")
             TIMINGS = [
                 "每輪開始與結束",
                 "每輪開始前 (While)",
                 "每輪結束後 (Do-While)",
                 "每個子步驟後"
             ]
-            cbo_timing = ttk.Combobox(row_cond_detail, textvariable=vp["check_timing"], values=TIMINGS, state="readonly", width=14)
-            cbo_timing.pack(side=tk.LEFT, padx=2)
+            cbo_timing = ctk.CTkComboBox(row_cond_detail, variable=vp["check_timing"], values=TIMINGS, width=130, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
+            cbo_timing.pack(side="left", padx=2)
 
             def _on_loop_mode_change(*_):
                 mode = vp["stop_mode"].get()
                 if mode == "依指定次數":
                     row_cond_detail.pack_forget()
-                    lbl_cnt_title.config(text="重複次數:")
-                    lbl_cnt_hint.config(text="次（0 = 無限）")
+                    lbl_cnt_title.configure(text="重複次數:")
+                    lbl_cnt_hint.configure(text="次(0=無限)")
                 else:
-                    row_cond_detail.pack(fill=tk.X, pady=(2, 2))
-                    lbl_cnt_title.config(text="上限次數:")
-                    lbl_cnt_hint.config(text="次（0 = 不限）")
+                    row_cond_detail.pack(fill="x", pady=(2, 2))
+                    lbl_cnt_title.configure(text="上限次數:")
+                    lbl_cnt_hint.configure(text="次(0=不限)")
                     if "符號" in mode or "圖案" in mode or "打勾" in mode or "叉叉" in mode:
-                        ent_kw.config(state="disabled")
+                        ent_kw.configure(state="disabled")
                     else:
-                        ent_kw.config(state="normal")
+                        ent_kw.configure(state="normal")
 
             vp["stop_mode"].trace_add("write", _on_loop_mode_change)
             _on_loop_mode_change()
 
-            # 裝入積木工具列
-            tb_inner = tk.Frame(body, bg="#1e232d", bd=1, relief=tk.SOLID)
-            tb_inner.pack(fill=tk.X, pady=(2, 4), ipady=2)
+            tb_inner = ctk.CTkFrame(body, fg_color=COLOR_CARD_ITEM, corner_radius=6, border_width=1, border_color="#313244")
+            tb_inner.pack(fill="x", pady=(2, 4))
 
-            tk.Label(tb_inner, text="加入積木:", bg="#1e232d", font=("Arial", 8, "bold"), fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(4, 4))
+            ctk.CTkLabel(tb_inner, text="加入積木:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(6, 4), pady=2)
 
             TYPE_LABELS = {
                 "tap_coord": "👆 點擊座標",
@@ -2007,22 +2291,20 @@ class TaskFlowTab:
             LABEL_TO_TYPE = {v: k for k, v in TYPE_LABELS.items()}
 
             var_sel_type = tk.StringVar(value=TYPE_LABELS["tap_coord"])
-            combo_type = ttk.Combobox(tb_inner, textvariable=var_sel_type, values=list(TYPE_LABELS.values()), state="readonly", width=12)
-            combo_type.pack(side=tk.LEFT, padx=2)
+            combo_type = ctk.CTkComboBox(tb_inner, variable=var_sel_type, values=list(TYPE_LABELS.values()), width=120, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
+            combo_type.pack(side="left", padx=2, pady=2)
 
-            btn_add_in = ttk.Button(tb_inner, text="裝入", width=5, command=lambda target_loop=block, v_type=var_sel_type: self.add_inner_block(target_loop, LABEL_TO_TYPE.get(v_type.get(), "tap_coord")))
-            btn_add_in.pack(side=tk.LEFT, padx=2)
+            btn_add_in = ctk.CTkButton(tb_inner, text="裝入", width=46, height=24, corner_radius=4, font=ctk.CTkFont(size=10, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, command=lambda target_loop=block, v_type=var_sel_type: self.add_inner_block(target_loop, LABEL_TO_TYPE.get(v_type.get(), "tap_coord")))
+            btn_add_in.pack(side="left", padx=2, pady=2)
 
-            btn_pull = ttk.Button(tb_inner, text="移入上一個積木", command=lambda target_loop=block: self.pull_prev_block_into_loop(target_loop))
-            btn_pull.pack(side=tk.RIGHT, padx=4)
+            btn_pull = ctk.CTkButton(tb_inner, text="移入上方積木", width=90, height=24, corner_radius=4, font=ctk.CTkFont(size=10), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, command=lambda target_loop=block: self.pull_prev_block_into_loop(target_loop))
+            btn_pull.pack(side="right", padx=6, pady=2)
 
-            # 內部積木容器 (C-Block 槽位，具備左側縮排與底色)
-            inner_box = tk.Frame(body, bg="#1a1c2d", bd=1, relief=tk.GROOVE)
-            inner_box.pack(fill=tk.X, padx=(10, 0), pady=(2, 4))
+            inner_box = ctk.CTkFrame(body, fg_color=COLOR_INPUT_BG, corner_radius=6, border_width=1, border_color="#313244")
+            inner_box.pack(fill="x", padx=(10, 0), pady=(2, 4))
             block["inner_container"] = inner_box
 
-            # 迴圈底座結尾
-            lbl_end = tk.Label(body, text="迴圈結束（條件達成或次數用完後繼續）", bg=COLOR_BLOCK_BODY, fg="#818cf8", font=("Arial", 8, "bold"))
+            lbl_end = ctk.CTkLabel(body, text="迴圈結束（條件達成或次數用完後繼續）", font=ctk.CTkFont(size=10, weight="bold"), text_color="#818CF8")
             lbl_end.pack(anchor="w", padx=2, pady=(2, 0))
 
         elif b_type == "wait_condition":
@@ -2034,39 +2316,39 @@ class TaskFlowTab:
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
             vp["on_timeout"] = tk.StringVar(value=p.get("on_timeout", "continue"))
 
-            row1 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row1.pack(fill=tk.X, pady=2)
-            tk.Label(row1, text="條件:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Combobox(row1, textvariable=vp["cond_mode"], values=["出現 (Wait Appear)", "消失 (Wait Disappear)"], state="readonly", width=16).pack(side=tk.LEFT, padx=(2, 8))
-            tk.Label(row1, text="類型:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Combobox(row1, textvariable=vp["target_type"], values=["📝 僅文字", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"], state="readonly", width=9).pack(side=tk.LEFT, padx=(2, 8))
-            tk.Label(row1, text="關鍵字:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(row1, textvariable=vp["keywords"], width=20).pack(side=tk.LEFT, padx=(2, 4), fill=tk.X, expand=True)
+            row1 = ctk.CTkFrame(body, fg_color="transparent")
+            row1.pack(fill="x", pady=2)
+            ctk.CTkLabel(row1, text="條件:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkComboBox(row1, variable=vp["cond_mode"], values=["出現 (Wait Appear)", "消失 (Wait Disappear)"], width=135, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly").pack(side="left", padx=(2, 6))
+            ctk.CTkLabel(row1, text="類型:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkComboBox(row1, variable=vp["target_type"], values=["📝 僅文字", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"], width=110, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly").pack(side="left", padx=(2, 6))
+            ctk.CTkLabel(row1, text="關鍵字:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row1, textvariable=vp["keywords"], width=130, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 4), fill="x", expand=True)
 
-            row2 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row2.pack(fill=tk.X, pady=2)
-            tk.Label(row2, text="更新頻率:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row2, from_=0.1, to=30.0, increment=0.5, textvariable=vp["interval"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒/次", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 10))
+            row2 = ctk.CTkFrame(body, fg_color="transparent")
+            row2.pack(fill="x", pady=2)
+            ctk.CTkLabel(row2, text="頻率:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["interval"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row2, text="s/次", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
 
-            tk.Label(row2, text="最長限時:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row2, from_=1, to=600, increment=5, textvariable=vp["timeout"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 10))
+            ctk.CTkLabel(row2, text="限時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["timeout"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row2, text="s", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
 
-            tk.Label(row2, text="達成後延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row2, from_=0.0, to=30.0, increment=0.5, textvariable=vp["delay_after"], width=4).pack(side=tk.LEFT, padx=(2, 2))
-            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT, padx=(0, 10))
+            ctk.CTkLabel(row2, text="延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["delay_after"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row2, text="s", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
 
-            tk.Label(row2, text="超時:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Combobox(row2, textvariable=vp["on_timeout"], values=["continue", "stop"], state="readonly", width=8).pack(side=tk.LEFT, padx=(2, 0))
+            ctk.CTkLabel(row2, text="超時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkComboBox(row2, variable=vp["on_timeout"], values=["continue", "stop"], width=90, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly").pack(side="left", padx=(2, 0))
 
         elif b_type == "wait_sec":
             vp["seconds"] = tk.DoubleVar(value=p.get("seconds", 3.0))
-            row = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row.pack(fill=tk.X, pady=2)
-            tk.Label(row, text="等待秒數:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row, from_=0.1, to=300.0, increment=0.5, textvariable=vp["seconds"], width=5).pack(side=tk.LEFT, padx=(4, 2))
-            tk.Label(row, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
+            row = ctk.CTkFrame(body, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            ctk.CTkLabel(row, text="等待秒數:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row, textvariable=vp["seconds"], width=50, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(4, 2))
+            ctk.CTkLabel(row, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
 
         elif b_type == "swipe":
             vp["x1"] = tk.IntVar(value=p.get("x1", 1500))
@@ -2076,33 +2358,35 @@ class TaskFlowTab:
             vp["duration_ms"] = tk.IntVar(value=p.get("duration_ms", 400))
             vp["delay"] = tk.DoubleVar(value=p.get("delay", 1.0))
 
-            row = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row.pack(fill=tk.X, pady=2)
-            tk.Label(row, text="起點 (X,Y):", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(row, textvariable=vp["x1"], width=5).pack(side=tk.LEFT, padx=1)
-            ttk.Entry(row, textvariable=vp["y1"], width=5).pack(side=tk.LEFT, padx=(1, 6))
-            tk.Label(row, text="終點 (X,Y):", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Entry(row, textvariable=vp["x2"], width=5).pack(side=tk.LEFT, padx=1)
-            ttk.Entry(row, textvariable=vp["y2"], width=5).pack(side=tk.LEFT, padx=(1, 6))
-            tk.Label(row, text="耗時:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row, from_=100, to=3000, increment=100, textvariable=vp["duration_ms"], width=4).pack(side=tk.LEFT, padx=1)
-            tk.Label(row, text="ms", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
+            row = ctk.CTkFrame(body, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            ctk.CTkLabel(row, text="起點(X,Y):", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row, textvariable=vp["x1"], width=46, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
+            ctk.CTkEntry(row, textvariable=vp["y1"], width=46, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(1, 6))
+
+            ctk.CTkLabel(row, text="終點(X,Y):", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row, textvariable=vp["x2"], width=46, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
+            ctk.CTkEntry(row, textvariable=vp["y2"], width=46, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(1, 6))
+
+            ctk.CTkLabel(row, text="耗時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row, textvariable=vp["duration_ms"], width=48, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
+            ctk.CTkLabel(row, text="ms", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
 
         elif b_type == "back_key":
             vp["delay"] = tk.DoubleVar(value=p.get("delay", 1.2))
-            row = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row.pack(fill=tk.X, pady=2)
-            tk.Label(row, text="模擬 Android 返回鍵 (input keyevent 4)，點擊後延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
-            ttk.Spinbox(row, from_=0.1, to=30.0, increment=0.2, textvariable=vp["delay"], width=4).pack(side=tk.LEFT, padx=(4, 2))
-            tk.Label(row, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.LEFT)
+            row = ctk.CTkFrame(body, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            ctk.CTkLabel(row, text="模擬 Android 返回鍵 (input keyevent 4)，延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row, textvariable=vp["delay"], width=44, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(4, 2))
+            ctk.CTkLabel(row, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
 
         elif b_type == "comment":
             vp["note"] = tk.StringVar(value=p.get("note", "此處為備註說明文字，執行時不執行任何操作"))
-            row = tk.Frame(body, bg="#2d2417", bd=1, relief=tk.SOLID)
-            row.pack(fill=tk.X, pady=2, ipady=3)
-            tk.Label(row, text="備註:", bg="#2d2417", font=("Arial", 9, "bold"), fg="#fde68a").pack(side=tk.LEFT, padx=(6, 4))
-            ent_note = ttk.Entry(row, textvariable=vp["note"], font=("Microsoft JhengHei", 9))
-            ent_note.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+            row = ctk.CTkFrame(body, fg_color=COLOR_CARD_ITEM, corner_radius=6, border_width=1, border_color="#D97706")
+            row.pack(fill="x", pady=2, ipady=3)
+            ctk.CTkLabel(row, text="備註:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#FDE68A").pack(side="left", padx=(6, 4))
+            ent_note = ctk.CTkEntry(row, textvariable=vp["note"], font=ctk.CTkFont(size=11), height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+            ent_note.pack(side="left", fill="x", expand=True, padx=(0, 6))
             vp["note"].trace_add("write", lambda *_: self.auto_save_config())
 
         elif b_type == "send_telegram":
@@ -2116,43 +2400,40 @@ class TaskFlowTab:
             for k in ("message", "attach_screenshot", "use_custom", "custom_token", "custom_chat_id", "delay_after"):
                 vp[k].trace_add("write", lambda *_: self.auto_save_config())
 
-            # 第 1 列：通知訊息內容與截圖核取方塊
-            row1 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row1.pack(fill=tk.X, pady=2)
-            tk.Label(row1, text="訊息:", bg=COLOR_BLOCK_BODY, font=("Arial", 9, "bold"), fg="#38bdf8").pack(side=tk.LEFT)
-            ttk.Entry(row1, textvariable=vp["message"], width=24).pack(side=tk.LEFT, padx=(4, 8), fill=tk.X, expand=True)
-            ttk.Checkbutton(row1, text="附帶截圖", variable=vp["attach_screenshot"]).pack(side=tk.LEFT, padx=(0, 6))
+            row1 = ctk.CTkFrame(body, fg_color="transparent")
+            row1.pack(fill="x", pady=2)
+            ctk.CTkLabel(row1, text="訊息:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#38BDF8").pack(side="left")
+            ctk.CTkEntry(row1, textvariable=vp["message"], height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(4, 8), fill="x", expand=True)
+            ctk.CTkCheckBox(row1, text="附帶截圖", variable=vp["attach_screenshot"], font=ctk.CTkFont(size=11), width=80, checkbox_width=16, checkbox_height=16).pack(side="left", padx=(0, 6))
 
-            # 第 2 列：設定自訂切換、延遲與測試發送按鈕
-            row2 = tk.Frame(body, bg=COLOR_BLOCK_BODY)
-            row2.pack(fill=tk.X, pady=2)
+            row2 = ctk.CTkFrame(body, fg_color="transparent")
+            row2.pack(fill="x", pady=2)
 
-            ttk.Checkbutton(row2, text="使用獨立 Token / Chat ID", variable=vp["use_custom"]).pack(side=tk.LEFT)
+            ctk.CTkCheckBox(row2, text="使用獨立 Token / Chat ID", variable=vp["use_custom"], font=ctk.CTkFont(size=11), checkbox_width=16, checkbox_height=16).pack(side="left")
 
-            btn_test = ttk.Button(row2, text="測試發送", width=9, command=lambda target_b=block: self._test_block_telegram(target_b))
-            btn_test.pack(side=tk.RIGHT, padx=2)
+            btn_test = ctk.CTkButton(row2, text="測試發送", width=68, height=24, corner_radius=4, font=ctk.CTkFont(size=10), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, command=lambda target_b=block: self._test_block_telegram(target_b))
+            btn_test.pack(side="right", padx=2)
 
-            tk.Label(row2, text="延遲:", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.RIGHT)
-            ttk.Spinbox(row2, from_=0.0, to=30.0, increment=0.5, textvariable=vp["delay_after"], width=4).pack(side=tk.RIGHT, padx=(2, 4))
-            tk.Label(row2, text="秒", bg=COLOR_BLOCK_BODY, fg=COLOR_BLOCK_FG).pack(side=tk.RIGHT)
+            ctk.CTkLabel(row2, text="延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="right")
+            ctk.CTkEntry(row2, textvariable=vp["delay_after"], width=42, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="right", padx=(2, 4))
+            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="right")
 
-            # 自訂 Token / Chat ID 摺疊區
-            box_custom = tk.Frame(body, bg="#0c4a6e", bd=1, relief=tk.SOLID)
+            box_custom = ctk.CTkFrame(body, fg_color=COLOR_CARD_ITEM, corner_radius=6, border_width=1, border_color="#0284C7")
 
-            row_c1 = tk.Frame(box_custom, bg="#0c4a6e")
-            row_c1.pack(fill=tk.X, padx=4, pady=2)
-            tk.Label(row_c1, text="Bot Token:", bg="#0c4a6e", fg="#38bdf8", font=("Arial", 8)).pack(side=tk.LEFT)
-            ttk.Entry(row_c1, textvariable=vp["custom_token"], width=28).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+            row_c1 = ctk.CTkFrame(box_custom, fg_color="transparent")
+            row_c1.pack(fill="x", padx=6, pady=2)
+            ctk.CTkLabel(row_c1, text="Bot Token:", font=ctk.CTkFont(size=10), text_color="#38BDF8").pack(side="left")
+            ctk.CTkEntry(row_c1, textvariable=vp["custom_token"], height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
-            row_c2 = tk.Frame(box_custom, bg="#0c4a6e")
-            row_c2.pack(fill=tk.X, padx=4, pady=2)
-            tk.Label(row_c2, text="Chat ID:   ", bg="#0c4a6e", fg="#38bdf8", font=("Arial", 8)).pack(side=tk.LEFT)
-            ttk.Entry(row_c2, textvariable=vp["custom_chat_id"], width=18).pack(side=tk.LEFT, padx=(4, 0))
-            tk.Label(row_c2, text="（未勾選或留空時，使用進階設定中的通用值）", bg="#0c4a6e", font=("Arial", 8), fg="#bae6fd").pack(side=tk.LEFT, padx=6)
+            row_c2 = ctk.CTkFrame(box_custom, fg_color="transparent")
+            row_c2.pack(fill="x", padx=6, pady=2)
+            ctk.CTkLabel(row_c2, text="Chat ID:   ", font=ctk.CTkFont(size=10), text_color="#38BDF8").pack(side="left")
+            ctk.CTkEntry(row_c2, textvariable=vp["custom_chat_id"], width=130, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(4, 0))
+            ctk.CTkLabel(row_c2, text="（未勾選或留空時使用進階設定中的通用值）", font=ctk.CTkFont(size=9), text_color="#94A3B8").pack(side="left", padx=6)
 
             def _toggle_custom(*_):
                 if vp["use_custom"].get():
-                    box_custom.pack(fill=tk.X, pady=(2, 2))
+                    box_custom.pack(fill="x", pady=(2, 2))
                 else:
                     box_custom.pack_forget()
 
@@ -2160,7 +2441,6 @@ class TaskFlowTab:
             _toggle_custom()
 
     def _bind_drag(self, handle, block_item):
-        """跨平台滑鼠拖曳換位"""
         def on_start(e):
             self._drag_data = {"block": block_item, "y": e.y_root}
 
@@ -2192,15 +2472,15 @@ class TaskFlowTab:
         for b in self.blocks_list:
             b["frame"].pack_forget()
         for i, b in enumerate(self.blocks_list, start=1):
-            b["frame"].pack(fill=tk.X, padx=4, pady=3)
-            b["lbl_num"].config(text=f"#{i}")
+            b["frame"].pack(fill="x", padx=4, pady=3)
+            b["lbl_num"].configure(text=f"#{i}")
             if b["type"] == "loop":
                 in_list = b.get("inner_blocks_list", [])
                 for j, cb in enumerate(in_list, start=1):
                     cb["frame"].pack_forget()
-                    cb["frame"].pack(fill=tk.X, padx=2, pady=2)
-                    cb["lbl_num"].config(text=f"#{i}.{j}")
-        self.canvas_blocks.update_idletasks()
+                    cb["frame"].pack(fill="x", padx=2, pady=2)
+                    cb["lbl_num"].configure(text=f"#{i}.{j}")
+        self.scroll_blocks.update_idletasks()
 
     def _renumber_blocks(self):
         self._repack_all_blocks()
@@ -2251,7 +2531,6 @@ class TaskFlowTab:
                 self.auto_save_config()
 
     def _test_block_telegram(self, block: Dict[str, Any]):
-        """測試指定積木的 Telegram 發送"""
         vp = block.get("var_params", {})
         custom_tok = vp.get("custom_token").get().strip() if "custom_token" in vp else ""
         custom_cid = vp.get("custom_chat_id").get().strip() if "custom_chat_id" in vp else ""
@@ -2261,7 +2540,7 @@ class TaskFlowTab:
         cid = (custom_cid if use_custom else "") or self.var_tg_chat_id.get().strip()
 
         if not tok or not cid:
-            messagebox.showwarning("提示", "尚未設定 Telegram Bot Token 與 Chat ID！\n請在「⚙ 通用進階」填寫，或在此積木勾選自訂。")
+            messagebox.showwarning("提示", "尚未設定 Telegram Bot Token 與 Chat ID！\n請在「進階設定」填寫，或在此積木勾選自訂。")
             return
 
         msg = vp.get("message").get().strip() if "message" in vp else "任務清單測試通知"
@@ -2295,7 +2574,6 @@ class TaskFlowTab:
             self._log("✅ 積木 Telegram 測試通知已送出！")
 
     def _fill_block_coords(self, target_block: Dict[str, Any]):
-        """直接將截圖吸取的座標填入指定積木的 (x, y) 變數中"""
         c_text = self.var_picked_coord.get()
         if "座標:" not in c_text:
             messagebox.showinfo("提示", "請先在截圖上點擊位置以獲取座標！")
@@ -2314,7 +2592,6 @@ class TaskFlowTab:
             self.auto_save_config()
 
     def select_block(self, block_item: Dict[str, Any]):
-        """將該積木標記為選取目標，以便將截圖吸取的座標填入"""
         self.selected_block_target = block_item
         self._update_all_selection_highlights()
         b_name = block_item["name"].get() if hasattr(block_item.get("name"), "get") else "積木"
@@ -2324,35 +2601,35 @@ class TaskFlowTab:
         target = getattr(self, "selected_block_target", None)
         for b in self.blocks_list:
             if b.get("frame"):
-                b["frame"].config(bd=2, relief=tk.RIDGE if b is target else tk.SOLID)
+                info = BLOCK_TYPES.get(b["type"], BLOCK_TYPES["tap_coord"])
+                if b is target:
+                    b["frame"].configure(border_width=2, border_color="#F59E0B")
+                else:
+                    b["frame"].configure(border_width=1, border_color=info["color"])
             for cb in b.get("inner_blocks_list", []):
                 if cb.get("frame"):
-                    cb["frame"].config(bd=2, relief=tk.RIDGE if cb is target else tk.SOLID)
+                    info = BLOCK_TYPES.get(cb["type"], BLOCK_TYPES["tap_coord"])
+                    if cb is target:
+                        cb["frame"].configure(border_width=2, border_color="#F59E0B")
+                    else:
+                        cb["frame"].configure(border_width=1, border_color=info["color"])
 
     def highlight_active_step(self, active_idx: int):
-        """執行時光環高亮目前積木"""
         def _ui_update():
             for i, b in enumerate(self.blocks_list):
+                info = BLOCK_TYPES.get(b["type"], BLOCK_TYPES["tap_coord"])
                 if i == active_idx:
-                    b["frame"].config(bg="#fef08a", bd=3)
-                    b["lbl_num"].config(bg=COLOR_BLOCK_ACTIVE)
+                    b["frame"].configure(border_width=2, border_color="#10B981")
                 else:
-                    b["frame"].config(bg=COLOR_BLOCK_BG, bd=1)
-                    info = BLOCK_TYPES.get(b["type"], BLOCK_TYPES["tap_coord"])
-                    b["lbl_num"].config(bg=info["color"])
+                    is_target = (b is getattr(self, "selected_block_target", None))
+                    b["frame"].configure(border_width=2 if is_target else 1, border_color="#F59E0B" if is_target else info["color"])
         self.parent.after(0, _ui_update)
 
-    # -------------------------------------------------------------------------
-    # 座標吸管與截圖預覽 (Coordinate Picker)
-    # -------------------------------------------------------------------------
     def on_capture_screen(self):
-        """背景擷取畫面，完全照抄聯賽自動刷關的 _capture_async 邏輯"""
         if not self.bot or not self.bot.device:
-            # 嘗試向父層 GUI 取得連線
             if self.gui and hasattr(self.gui, "bot") and self.gui.bot and self.gui.bot.device:
                 self.bot = self.gui.bot
             elif not self.bot or not self.bot.connect():
-                # 檢查父層是否有已擷取的畫面
                 if self.gui and getattr(self.gui, "current_screen_bgr", None) is not None:
                     self.current_screen_bgr = self.gui.current_screen_bgr
                     self._render_preview(self.current_screen_bgr)
@@ -2364,7 +2641,7 @@ class TaskFlowTab:
         if self._capturing:
             return
         self._capturing = True
-        self.btn_capture.config(state=tk.DISABLED)
+        self.btn_capture.configure(state="disabled")
 
         def work():
             screen = None
@@ -2376,13 +2653,12 @@ class TaskFlowTab:
 
             def done():
                 self._capturing = False
-                self.btn_capture.config(state=tk.NORMAL)
+                self.btn_capture.configure(state="normal")
                 if screen is not None:
                     self.current_screen_bgr = screen
                     self._render_preview(screen)
                     self._log("📸 畫面擷取成功！點擊畫面任意位置即可選取座標。")
                 else:
-                    # 備援：若本次擷取失敗但主頁面有快取畫面，嘗試使用
                     if self.gui and getattr(self.gui, "current_screen_bgr", None) is not None:
                         self.current_screen_bgr = self.gui.current_screen_bgr
                         self._render_preview(self.current_screen_bgr)
@@ -2396,14 +2672,12 @@ class TaskFlowTab:
         threading.Thread(target=work, daemon=True).start()
 
     def update_emulator_preview(self, screen_bgr: np.ndarray):
-        """由外部 (如聯賽背景執行緒或自動刷新) 直接推播最新畫面，零延遲同步"""
         if screen_bgr is None:
             return
         self.current_screen_bgr = screen_bgr
         self._render_preview(screen_bgr)
 
     def _render_preview(self, screen_bgr: np.ndarray):
-        """手動截圖與改範圍專用預覽渲染 (完全照抄 gui.py _render_preview 邏輯)"""
         if screen_bgr is None:
             return
         try:
@@ -2420,7 +2694,6 @@ class TaskFlowTab:
             small = cv2.resize(screen_bgr, (pw, ph), interpolation=cv2.INTER_LINEAR)
             t = max(1, pw // 320)
 
-            # 若有選取的座標，在畫面上繪製醒目的十字準心與圓圈
             if self.selected_coord:
                 sx, sy = self.selected_coord
                 ssx, ssy = int(sx * scale), int(sy * scale)
@@ -2461,7 +2734,6 @@ class TaskFlowTab:
         self._resize_job = self.parent.after(120, self._show_image)
 
     def _preview_to_real(self, ex: int, ey: int) -> Optional[Tuple[int, int]]:
-        """計算視窗滑鼠座標對應回遊戲實際原始解析度座標 (完全照抄 gui.py _preview_to_real 邏輯)"""
         if self.preview_scale <= 0 or self.raw_screen_w <= 0 or self.raw_screen_h <= 0:
             return None
         lbl_w = self.lbl_canvas.winfo_width()
@@ -2541,7 +2813,6 @@ class TaskFlowTab:
         self.auto_save_config()
 
     def _fill_branch_from_picker(self, target_branch: Dict[str, Any]):
-        """直接將截圖吸取的座標填入指定的分支資料字典"""
         c_text = self.var_picked_coord.get()
         if "座標:" not in c_text:
             messagebox.showinfo("提示", "請先在截圖上點擊位置以獲取座標！")
@@ -2664,24 +2935,23 @@ class TaskFlowTab:
 
         threading.Thread(target=work, daemon=True).start()
 
-    # -------------------------------------------------------------------------
-    # 執行控制 (Run, Step, Stop)
-    # -------------------------------------------------------------------------
     def on_run_tasks(self):
         if not self.blocks_list:
             messagebox.showinfo("提示", "程式區目前沒有任何積木，請先從左側加入積木！")
             return
 
-        if self.bot and self.bot.is_running:
+        if self.bot and getattr(self.bot, "is_running", False):
             messagebox.showwarning("提示", "【聯賽自動刷關】正在執行中，請先停止聯賽腳本再啟動任務清單。")
             return
 
         active_blocks = self._serialize_all_blocks()
         loop_cnt = max(0, self.var_loop_count.get())
 
-        self.btn_run.config(state=tk.DISABLED)
-        self.btn_step.config(state=tk.DISABLED)
-        self.btn_stop.config(state=tk.NORMAL)
+        self.btn_run.configure(state="disabled")
+        self.btn_step.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
+        if hasattr(self, "indicator_light"):
+            self.indicator_light.configure(text_color="#F59E0B")
         self.var_status_text.set("🟡 正在執行任務清單...")
 
         def _on_step(idx, cycle, total_cycles):
@@ -2694,11 +2964,13 @@ class TaskFlowTab:
 
         def _on_finish(success, msg):
             def _finish_ui():
-                self.btn_run.config(state=tk.NORMAL)
-                self.btn_step.config(state=tk.NORMAL)
-                self.btn_stop.config(state=tk.DISABLED)
+                self.btn_run.configure(state="normal")
+                self.btn_step.configure(state="normal")
+                self.btn_stop.configure(state="disabled")
                 self.highlight_active_step(-1)
                 st_icon = "🟢" if success else "⚠️"
+                if hasattr(self, "indicator_light"):
+                    self.indicator_light.configure(text_color="#10B981" if success else "#EF4444")
                 self.var_status_text.set(f"{st_icon} {msg}")
             self.parent.after(0, _finish_ui)
 
@@ -2712,7 +2984,6 @@ class TaskFlowTab:
         )
 
     def on_step_task(self):
-        """單步執行目前選中的積木"""
         if not self.blocks_list:
             return
         idx = self.selected_block_idx if (0 <= self.selected_block_idx < len(self.blocks_list)) else 0
@@ -2738,11 +3009,10 @@ class TaskFlowTab:
 
     def on_stop_tasks(self):
         self.engine.stop()
+        if hasattr(self, "indicator_light"):
+            self.indicator_light.configure(text_color="#EF4444")
         self.var_status_text.set("🔴 正在停止...")
 
-    # -------------------------------------------------------------------------
-    # 序列化與範本/設定檔存取 (JSON)
-    # -------------------------------------------------------------------------
     def _serialize_single_block(self, b: Dict[str, Any]) -> Dict[str, Any]:
         p = {}
         for k, v in b["var_params"].items():
@@ -2889,44 +3159,59 @@ class TaskFlowTab:
             self._log(f"讀取上次任務清單失敗: {e}")
 
     def save_as_new_preset(self):
-        """點擊左側常用任務範本的「＋存為範本」按鈕"""
         self.on_save_config_dialog(default_mode="new")
 
     def on_save_config_dialog(self, default_mode: str = "new"):
-        """跳出儲存對話框：選擇新增常用任務範本、覆蓋既有範本、或另存自訂 JSON 檔案"""
         if not self.blocks_list:
             if not messagebox.askyesno("提示", "目前任務清單是空的，確定要儲存空的任務嗎？"):
                 return
 
-        dlg = tk.Toplevel(self.parent)
+        dlg = ctk.CTkToplevel(self.parent)
         dlg.title("儲存任務清單")
         dlg.geometry("520x460")
         dlg.resizable(False, False)
-        dlg.configure(bg=DARK_BG)
+        dlg.configure(fg_color=COLOR_BG)
         dlg.grab_set()
         dlg.transient(self.parent)
 
-        # 頂部提示與資料夾路徑
-        f_top = tk.Frame(dlg, bg=DARK_SURFACE, padx=12, pady=10)
-        f_top.pack(fill=tk.X)
-        tk.Label(f_top, text="選擇儲存方式", font=("Microsoft JhengHei", 11, "bold"), bg=DARK_SURFACE, fg=DARK_FG).pack(anchor="w")
+        f_top = ctk.CTkFrame(dlg, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
+        f_top.pack(fill="x", padx=16, pady=(16, 8))
 
-        row_dir = tk.Frame(f_top, bg=DARK_SURFACE)
-        row_dir.pack(fill=tk.X, pady=(4, 0))
+        inner_top = ctk.CTkFrame(f_top, fg_color="transparent")
+        inner_top.pack(fill="x", padx=12, pady=10)
+
+        ctk.CTkLabel(
+            inner_top, text="💾 選擇儲存方式",
+            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY
+        ).pack(anchor="w")
+
+        row_dir = ctk.CTkFrame(inner_top, fg_color="transparent")
+        row_dir.pack(fill="x", pady=(4, 0))
         folder_name = os.path.basename(self.presets_dir)
-        tk.Label(row_dir, text=f"範本資料夾：{folder_name}/", font=("Microsoft JhengHei", 9), bg=DARK_SURFACE, fg=DARK_FG_MUTED).pack(side=tk.LEFT)
+        ctk.CTkLabel(
+            row_dir, text=f"範本資料夾：{folder_name}/",
+            font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED
+        ).pack(side="left")
 
         def _open_folder():
             try:
                 os.makedirs(self.presets_dir, exist_ok=True)
-                os.startfile(self.presets_dir)
+                import subprocess, sys
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", self.presets_dir])
+                else:
+                    os.startfile(self.presets_dir)
             except Exception as ex:
                 messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=dlg)
 
-        btn_open = ttk.Button(row_dir, text="開啟資料夾", width=12, command=_open_folder)
-        btn_open.pack(side=tk.RIGHT)
+        btn_open = ctk.CTkButton(
+            row_dir, text="開啟資料夾", width=80, height=26, corner_radius=6,
+            font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
+            command=_open_folder
+        )
+        btn_open.pack(side="right")
 
-        # 儲存模式變數
         mode_var = tk.StringVar(value="new" if (default_mode == "new" or not self.presets) else "existing")
         name_var = tk.StringVar(value=f"自訂任務_{len(self.presets) + 1}")
         desc_var = tk.StringVar(value="")
@@ -2935,58 +3220,57 @@ class TaskFlowTab:
         if preset_keys:
             existing_var.set(f"{preset_keys[0]}: {self.presets[preset_keys[0]].get('title', preset_keys[0])}")
 
-        f_body = tk.Frame(dlg, bg=DARK_BG, padx=16, pady=10)
-        f_body.pack(fill=tk.BOTH, expand=True)
+        f_body = ctk.CTkFrame(dlg, fg_color="transparent")
+        f_body.pack(fill="both", expand=True, padx=16, pady=4)
 
-        # 模式 1: 新增常用日常範本
-        rb1 = ttk.Radiobutton(f_body, text="新增為常用範本", value="new", variable=mode_var)
-        rb1.pack(anchor="w", pady=(2, 2))
+        rb1 = ctk.CTkRadioButton(f_body, text="新增為常用範本", value="new", variable=mode_var, font=ctk.CTkFont(size=12, weight="bold"))
+        rb1.pack(anchor="w", pady=(4, 4))
 
-        f_new = tk.LabelFrame(f_body, text=" 範本資訊 ", bg=DARK_BG, fg=DARK_FG, padx=10, pady=6)
-        f_new.pack(fill=tk.X, padx=16, pady=(0, 8))
+        f_new = ctk.CTkFrame(f_body, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
+        f_new.pack(fill="x", padx=12, pady=(0, 8))
 
-        row_name = tk.Frame(f_new, bg=DARK_BG)
-        row_name.pack(fill=tk.X, pady=2)
-        tk.Label(row_name, text="範本名稱:", bg=DARK_BG, fg=DARK_FG, width=9, anchor="w").pack(side=tk.LEFT)
-        ent_name = ttk.Entry(row_name, textvariable=name_var)
-        ent_name.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        row_name = ctk.CTkFrame(f_new, fg_color="transparent")
+        row_name.pack(fill="x", padx=10, pady=(8, 4))
+        ctk.CTkLabel(row_name, text="範本名稱:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
+        ent_name = ctk.CTkEntry(row_name, textvariable=name_var, height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+        ent_name.pack(side="left", fill="x", expand=True)
 
-        row_desc = tk.Frame(f_new, bg=DARK_BG)
-        row_desc.pack(fill=tk.X, pady=2)
-        tk.Label(row_desc, text="說明備註:", bg=DARK_BG, fg=DARK_FG, width=9, anchor="w").pack(side=tk.LEFT)
-        ent_desc = ttk.Entry(row_desc, textvariable=desc_var)
-        ent_desc.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        row_desc = ctk.CTkFrame(f_new, fg_color="transparent")
+        row_desc.pack(fill="x", padx=10, pady=(0, 8))
+        ctk.CTkLabel(row_desc, text="說明備註:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
+        ent_desc = ctk.CTkEntry(row_desc, textvariable=desc_var, height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+        ent_desc.pack(side="left", fill="x", expand=True)
 
-        # 模式 2: 覆蓋現有範本
-        rb2 = ttk.Radiobutton(f_body, text="覆蓋既有範本", value="existing", variable=mode_var)
-        rb2.pack(anchor="w", pady=(2, 2))
+        rb2 = ctk.CTkRadioButton(f_body, text="覆蓋既有範本", value="existing", variable=mode_var, font=ctk.CTkFont(size=12, weight="bold"))
+        rb2.pack(anchor="w", pady=(4, 4))
 
-        f_exist = tk.LabelFrame(f_body, text=" 選擇範本 ", bg=DARK_BG, fg=DARK_FG, padx=10, pady=6)
-        f_exist.pack(fill=tk.X, padx=16, pady=(0, 8))
+        f_exist = ctk.CTkFrame(f_body, fg_color=COLOR_CARD, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
+        f_exist.pack(fill="x", padx=12, pady=(0, 8))
 
-        row_sel = tk.Frame(f_exist, bg=DARK_BG)
-        row_sel.pack(fill=tk.X, pady=2)
-        tk.Label(row_sel, text="現有範本:", bg=DARK_BG, fg=DARK_FG, width=9, anchor="w").pack(side=tk.LEFT)
-        combo_exist = ttk.Combobox(row_sel, textvariable=existing_var, state="readonly" if preset_keys else "disabled")
-        combo_exist["values"] = [f"{k}: {v.get('title', k)}" for k, v in self.presets.items()]
-        combo_exist.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        row_sel = ctk.CTkFrame(f_exist, fg_color="transparent")
+        row_sel.pack(fill="x", padx=10, pady=8)
+        ctk.CTkLabel(row_sel, text="現有範本:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED, width=64, anchor="w").pack(side="left")
+        combo_exist = ctk.CTkComboBox(
+            row_sel, variable=existing_var,
+            values=[f"{k}: {v.get('title', k)}" for k, v in self.presets.items()] if preset_keys else ["(尚無範本)"],
+            height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly" if preset_keys else "disabled"
+        )
+        combo_exist.pack(side="left", fill="x", expand=True)
 
-        # 模式 3: 另存新檔為任意路徑 JSON
-        rb3 = ttk.Radiobutton(f_body, text="另存為 JSON 檔案（自選位置）", value="custom", variable=mode_var)
-        rb3.pack(anchor="w", pady=(2, 2))
+        rb3 = ctk.CTkRadioButton(f_body, text="另存為自訂 JSON 檔案（選擇電腦儲存位置）", value="custom", variable=mode_var, font=ctk.CTkFont(size=12))
+        rb3.pack(anchor="w", pady=(4, 4))
 
         def _update_ui_state(*_):
             m = mode_var.get()
-            ent_name.config(state=tk.NORMAL if m == "new" else tk.DISABLED)
-            ent_desc.config(state=tk.NORMAL if m == "new" else tk.DISABLED)
-            combo_exist.config(state="readonly" if (m == "existing" and preset_keys) else "disabled")
+            ent_name.configure(state="normal" if m == "new" else "disabled")
+            ent_desc.configure(state="normal" if m == "new" else "disabled")
+            combo_exist.configure(state="readonly" if (m == "existing" and preset_keys) else "disabled")
 
         mode_var.trace_add("write", _update_ui_state)
         _update_ui_state()
 
-        # 底部按鈕
-        f_bottom = tk.Frame(dlg, bg=DARK_BG, padx=16, pady=10)
-        f_bottom.pack(fill=tk.X, side=tk.BOTTOM)
+        f_bottom = ctk.CTkFrame(dlg, fg_color="transparent")
+        f_bottom.pack(fill="x", side="bottom", padx=16, pady=14)
 
         def _do_save():
             m = mode_var.get()
@@ -3078,10 +3362,19 @@ class TaskFlowTab:
                 except Exception as ex:
                     messagebox.showerror("錯誤", f"存檔失敗: {ex}")
 
-        btn_save = ttk.Button(f_bottom, text="儲存", command=_do_save)
-        btn_save.pack(side=tk.RIGHT, padx=4)
-        btn_cancel = ttk.Button(f_bottom, text="取消", command=dlg.destroy)
-        btn_cancel.pack(side=tk.RIGHT, padx=4)
+        btn_save = ctk.CTkButton(
+            f_bottom, text="儲存", width=80, height=30, corner_radius=6,
+            font=ctk.CTkFont(size=12, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=_do_save
+        )
+        btn_save.pack(side="right", padx=(4, 0))
+
+        btn_cancel = ctk.CTkButton(
+            f_bottom, text="取消", width=80, height=30, corner_radius=6,
+            font=ctk.CTkFont(size=12), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
+            command=dlg.destroy
+        )
+        btn_cancel.pack(side="right")
 
     def on_load_config_dialog(self):
         path = filedialog.askopenfilename(
@@ -3134,11 +3427,7 @@ class TaskFlowTab:
         except Exception as e:
             messagebox.showerror("錯誤", f"載入失敗: {e}")
 
-    # -------------------------------------------------------------------------
-    # 聯賽自動刷跳轉任務清單輔助方法
-    # -------------------------------------------------------------------------
     def get_block_choices(self) -> List[str]:
-        """回傳目前程式區中積木選項 (供聯賽事件跳轉下拉選單使用)"""
         choices = []
         for i, b in enumerate(self.blocks_list, start=1):
             name = b["name"].get() if hasattr(b["name"], "get") else b.get("name", "")
@@ -3147,14 +3436,12 @@ class TaskFlowTab:
         return choices
 
     def get_preset_choices(self) -> List[str]:
-        """回傳常用日常範本選項 (供聯賽事件跳轉下拉選單使用)"""
         choices = []
         for k, v in self.presets.items():
             choices.append(f"{k}: {v.get('title', k)}")
         return choices
 
     def get_preset_data(self, preset_key: str) -> Optional[Dict[str, Any]]:
-        """取得指定範本完整設定資料"""
         if preset_key in self.presets:
             return self.presets[preset_key]
         if preset_key in DAILY_PRESETS:
@@ -3169,7 +3456,6 @@ class TaskFlowTab:
         return None
 
     def get_block_data_by_choice(self, choice_str: str) -> Optional[Dict[str, Any]]:
-        """依據下拉選單選擇之字串，取出該積木的完整序列化設定"""
         if not choice_str:
             return None
         import re
@@ -3185,22 +3471,4 @@ class TaskFlowTab:
         return None
 
     def on_theme_changed(self, mode: str):
-        """當全域主題切換時動態更新畫布與元件底色"""
-        p = get_theme_palette(mode)
-        try:
-            if hasattr(self, "canvas_blocks"):
-                self.canvas_blocks.configure(bg=p["canvas_bg"])
-            if hasattr(self, "bar_status"):
-                self.bar_status.configure(bg=p["surface"])
-            if hasattr(self, "lbl_st"):
-                self.lbl_st.configure(bg=p["surface"], fg=p["fg"])
-            if hasattr(self, "lbl_coord_rt"):
-                self.lbl_coord_rt.configure(bg=p["bg"])
-            if hasattr(self, "preview_holder"):
-                self.preview_holder.configure(bg=p["preview_bg"])
-            if hasattr(self, "lbl_canvas") and getattr(self, "current_screen_bgr", None) is None:
-                self.lbl_canvas.configure(bg=p["preview_bg"], fg=p["fg_muted"])
-            elif hasattr(self, "lbl_canvas"):
-                self.lbl_canvas.configure(bg=p["preview_bg"])
-        except Exception:
-            pass
+        pass
