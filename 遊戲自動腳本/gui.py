@@ -70,13 +70,55 @@ COLOR_TEXT_DIM = "#6C7086"     # 邊緣提示資訊
 ROI_OPTIONS = ["右下角區域", "右半側螢幕", "下半部區域", "中央區域", "全畫面比對", "自訂特定區塊"]
 REPEAT_MODES = ["持續連點", "指定次數"]
 REPEAT_AREAS = ["右下角區域", "中央區域", "右上角 (Skip)", "右半側中央", "跟隨命中目標", "自訂座標"]
-ACTION_OPTIONS = ["點擊目標中心 / 詞條", "自訂座標", "自訂特定區塊", "持續連點", "無動作(僅等待)", "📋 執行任務清單"]
+
+# 動作模式常數 (圖片特徵模式 vs 文字辨識模式)
+ACTION_TARGET_IMAGE = "🎯 點擊目標圖片 (按鈕中心)"
+ACTION_TARGET_TEXT = "🎯 點擊目標文字 (詞條中心)"
+ACTION_CUSTOM_COORD = "📍 點擊指定座標 (自訂)"
+ACTION_CUSTOM_BLOCK = "自訂特定區塊"
+ACTION_REPEAT = "持續連點"
+ACTION_WAIT = "無動作(僅等待)"
+ACTION_TASK_FLOW = "📋 執行任務清單"
+
+ACTION_OPTIONS_IMAGE = [
+    ACTION_TARGET_IMAGE,
+    ACTION_CUSTOM_COORD,
+    ACTION_CUSTOM_BLOCK,
+    ACTION_REPEAT,
+    ACTION_WAIT,
+    ACTION_TASK_FLOW,
+]
+
+ACTION_OPTIONS_TEXT = [
+    ACTION_TARGET_TEXT,
+    ACTION_CUSTOM_COORD,
+    ACTION_CUSTOM_BLOCK,
+    ACTION_REPEAT,
+    ACTION_WAIT,
+    ACTION_TASK_FLOW,
+]
+
+ACTION_OPTIONS = [
+    ACTION_TARGET_IMAGE,
+    ACTION_TARGET_TEXT,
+    ACTION_CUSTOM_COORD,
+    "點擊目標中心 / 詞條",
+    "自訂座標",
+    ACTION_CUSTOM_BLOCK,
+    ACTION_REPEAT,
+    ACTION_WAIT,
+    ACTION_TASK_FLOW,
+]
 IDLE_STRATEGIES = ["常規等待", "快速跳過", "自動停止"]
 TARGET_TYPES = ["📝 文字辨識 (OCR)", "🖼️ 圖片特徵 (模板比對)", "✅ 勾選方塊 (打勾)", "❌ 關閉按鈕 (叉叉)"]
 RECOGNITION_MODES = ["🖼️ 圖片特徵比對模式", "📝 文字辨識模式"]
 
 # 步驟卡片專屬邊框色 (拖曳時色彩跟隨)
 STEP_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4"]
+
+# 預覽畫布固定尺寸 (16:9 高畫質大尺寸鎖死，杜絕排版位移與框選跳動)
+PREVIEW_CANVAS_W = 800
+PREVIEW_CANVAS_H = 450
 
 # 預設 Telegram 設定
 DEFAULT_TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -88,7 +130,6 @@ USER_STORAGE_CONFIG_FILE = os.path.expanduser("~/.auto9innings_storage_path.json
 
 def get_persisted_storage_dir() -> str:
     """從使用者個人目錄讀取持久化存檔路徑 (完全不受 git pull/push 影響)"""
-    default_dir = os.path.expanduser("~/Documents/Auto9Innings_Data")
     try:
         if os.path.exists(USER_STORAGE_CONFIG_FILE):
             with open(USER_STORAGE_CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -98,7 +139,27 @@ def get_persisted_storage_dir() -> str:
                 return os.path.abspath(path)
     except Exception:
         pass
-    return default_dir
+
+    # 預設路徑：優先使用 ~/Documents/Auto9Innings_Data，若受環境限制則安全降級
+    docs_dir = os.path.expanduser("~/Documents/Auto9Innings_Data")
+    try:
+        os.makedirs(docs_dir, exist_ok=True)
+        test_file = os.path.join(docs_dir, ".test_write")
+        with open(test_file, "w") as f:
+            f.write("ok")
+        os.remove(test_file)
+        return docs_dir
+    except Exception:
+        pass
+
+    fallback_dir = os.path.expanduser("~/.auto9innings_data")
+    try:
+        os.makedirs(fallback_dir, exist_ok=True)
+        return fallback_dir
+    except Exception:
+        pass
+
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "storage_data"))
 
 
 def persist_storage_dir(path: str):
@@ -135,14 +196,51 @@ def _normalize_target_type(t: str) -> str:
     return "📝 文字辨識 (OCR)"
 
 
-def _normalize_action(a: str) -> str:
-    """正規化動作選項"""
+def is_custom_coord_action(a: str) -> bool:
+    """判斷動作是否為點擊指定座標/自訂座標"""
     if not a:
-        return "點擊目標中心 / 詞條"
-    a = str(a)
-    if a in ("點擊詞條", "點擊目標", "點擊目標中心", "點擊字元", "click_text", "click_target"):
-        return "點擊目標中心 / 詞條"
-    return a
+        return False
+    s = str(a).strip()
+    return (
+        s in (
+            "自訂座標", "點擊指定座標", "自訂特定區塊", "custom_coord",
+            ACTION_CUSTOM_COORD, ACTION_CUSTOM_BLOCK
+        )
+        or "指定座標" in s
+        or "自訂" in s
+        or "custom" in s.lower()
+    )
+
+
+def is_target_center_action(a: str) -> bool:
+    """判斷動作是否為點擊辨識目標中心 (圖片或文字)"""
+    if not a:
+        return True
+    if is_custom_coord_action(a):
+        return False
+    s = str(a).strip()
+    if s in (ACTION_REPEAT, ACTION_WAIT, ACTION_TASK_FLOW) or "任務清單" in s or "連點" in s or "等待" in s:
+        return False
+    return True
+
+
+def _normalize_action(a: str, is_image: bool = True) -> str:
+    """正規化動作選項，依當前辨識模式區分圖片或文字標籤，並維持高度向下相容性"""
+    if not a:
+        return ACTION_TARGET_IMAGE if is_image else ACTION_TARGET_TEXT
+    a = str(a).strip()
+    if is_custom_coord_action(a):
+        if a == ACTION_CUSTOM_BLOCK or "區塊" in a:
+            return ACTION_CUSTOM_BLOCK
+        return ACTION_CUSTOM_COORD
+    if a in (ACTION_REPEAT, "持續連點"):
+        return ACTION_REPEAT
+    if a in (ACTION_WAIT, "無動作(僅等待)", "僅等待", "無動作"):
+        return ACTION_WAIT
+    if a == ACTION_TASK_FLOW or "任務清單" in a or "jump_task" in a:
+        return ACTION_TASK_FLOW
+    # 預設為點擊辨識到的目標中心 (圖片按鈕或文字詞條)
+    return ACTION_TARGET_IMAGE if is_image else ACTION_TARGET_TEXT
 
 
 def imread_unicode(path: str, flags: int = cv2.IMREAD_COLOR) -> Optional[np.ndarray]:
@@ -388,8 +486,8 @@ class BaseballBotGUI:
 
         title_suffix = f" (視窗 #{instance_id})" if instance_id > 1 else ""
         self.root.title(f"⚾ Auto9Innings 自動刷關控制中心{title_suffix}")
-        self.root.geometry("1260x860")
-        self.root.minsize(1060, 720)
+        self.root.geometry("1440x920")
+        self.root.minsize(1260, 780)
         self.root.configure(fg_color=COLOR_BG)
 
         self.config_dir = os.path.dirname(os.path.abspath(__file__))
@@ -401,7 +499,19 @@ class BaseballBotGUI:
 
         # 獨立存檔與圖片資料夾初始化 (持久化讀取，預設 ~/Documents/Auto9Innings_Data，完全獨立於 git 倉庫)
         self.league_presets: Dict[str, Dict[str, Any]] = {}
+        self.var_storage_display = tk.StringVar(value="")
         self.set_storage_dir(get_persisted_storage_dir(), seed=True)
+
+        # 最新框選裁切模板檔名快取
+        self.last_snipped_template = ""
+        try:
+            if hasattr(self, "templates_dir") and os.path.exists(self.templates_dir):
+                _f_list = [f for f in os.listdir(self.templates_dir) if f.lower().endswith((".png", ".jpg"))]
+                if _f_list:
+                    _f_list.sort(key=lambda x: os.path.getmtime(os.path.join(self.templates_dir, x)), reverse=True)
+                    self.last_snipped_template = _f_list[0]
+        except Exception:
+            pass
 
         # 統計指標
         self.start_time: Optional[float] = None
@@ -421,8 +531,8 @@ class BaseballBotGUI:
         self.preview_scale = 1.0
         self.preview_img_w = 0
         self.preview_img_h = 0
-        self.canvas_w = 480
-        self.canvas_h = 270
+        self.canvas_w = PREVIEW_CANVAS_W
+        self.canvas_h = PREVIEW_CANVAS_H
         self.raw_screen_w = 0
         self.raw_screen_h = 0
         self._capturing = False
@@ -432,6 +542,11 @@ class BaseballBotGUI:
         self._preview_frame_count = 0
         self.auto_refresh_job = None
 
+        # 預覽畫面框選與裁切狀態
+        self.preview_crop_coords: Optional[Tuple[int, int, int, int]] = None
+        self.is_dragging = False
+        self.preview_canvas_img_id = None
+
         # 3. 綁定變數
         self.var_device = tk.StringVar()
         self.var_status_text = tk.StringVar(value="未連線 (DISCONNECTED)")
@@ -439,6 +554,7 @@ class BaseballBotGUI:
         self.var_confidence = tk.DoubleVar(value=0.65)
         self.var_idle_strategy = tk.StringVar(value=IDLE_STRATEGIES[0])
         self.var_auto_refresh = tk.BooleanVar(value=True)
+        self.var_preview_interval = tk.StringVar(value="1.5秒")
         self.var_preview_coords = tk.StringVar(value="")
         self.var_recognition_mode = tk.StringVar(value="🖼️ 圖片特徵比對模式")
 
@@ -521,13 +637,10 @@ class BaseballBotGUI:
     # 📐 介面排版建構 (Layout Structure)
     # ==========================================================================
     def _build_ui(self):
-        """建構主容器：最上方獨立存檔目錄卡片 + 頂部狀態導覽卡片 + 主內容 Tabview 分頁"""
+        """建構主容器：頂部狀態導覽卡片 + 主內容 Tabview 分頁"""
         # 主外層容器 (Padding 14)
         main_box = ctk.CTkFrame(self.root, fg_color="transparent")
         main_box.pack(fill="both", expand=True, padx=14, pady=12)
-
-        # 0. 最上方獨立存檔目錄卡片 (定義自訂存檔位置並永久記憶)
-        self._build_storage_bar(main_box)
 
         # 1. 頂部狀態與控制卡片
         self._build_topbar(main_box)
@@ -649,70 +762,206 @@ class BaseballBotGUI:
         badge.bind("<Button-1>", _warn_disabled)
 
     # --------------------------------------------------------------------------
-    # 💾 最上方存檔與圖片資料夾卡片 (獨立於 Git，支援自訂與永久記憶)
+    # 💾 專案存檔設定對話框 (按下存檔後跳出的視窗，自訂存檔目錄與確認儲存)
     # --------------------------------------------------------------------------
-    def _build_storage_bar(self, parent: ctk.CTkFrame):
-        bar = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        bar.pack(fill="x", pady=(0, 6))
+    def on_open_save_dialog(self):
+        """開啟專案存檔設定視窗 (支援自訂存檔目錄、開啟資料夾、立即儲存所有設定)"""
+        dlg = ctk.CTkToplevel(self.root)
+        dlg.title("💾 專案存檔與自訂存檔位置")
+        dlg.geometry("620x460")
+        dlg.minsize(580, 420)
+        dlg.resizable(False, False)
+        dlg.configure(fg_color=COLOR_BG)
+        dlg.grab_set()
+        dlg.transient(self.root)
 
-        inner = ctk.CTkFrame(bar, fg_color="transparent")
-        inner.pack(fill="x", padx=12, pady=6)
+        card = ctk.CTkFrame(dlg, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
+        card.pack(fill="both", expand=True, padx=16, pady=16)
 
-        lbl = ctk.CTkLabel(
-            inner,
-            text="📁 存檔與圖片資料夾：",
-            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+        # 頂部標題列
+        header_box = ctk.CTkFrame(card, fg_color="transparent")
+        header_box.pack(fill="x", padx=16, pady=(16, 10))
+
+        ctk.CTkLabel(
+            header_box,
+            text="💾 專案存檔設定 (Storage Settings)",
+            font=ctk.CTkFont(family="Arial", size=16, weight="bold"),
             text_color="#FBBF24"
-        )
-        lbl.pack(side="left", padx=(0, 4))
+        ).pack(anchor="w")
 
-        self.var_storage_display = tk.StringVar(value=self.storage_dir)
-        self.entry_storage = ctk.CTkEntry(
-            inner,
-            textvariable=self.var_storage_display,
+        ctk.CTkLabel(
+            header_box,
+            text="自訂存檔資料夾完全獨立於 Git 倉庫，不受 git push / pull 影響，所有設定將永久妥善保存。",
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_MUTED
+        ).pack(anchor="w", pady=(2, 0))
+
+        # 1. 存檔目錄設定區塊 (自訂存檔位置)
+        sec_dir = ctk.CTkFrame(card, fg_color=COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
+        sec_dir.pack(fill="x", padx=16, pady=(0, 10))
+
+        sec_dir_inner = ctk.CTkFrame(sec_dir, fg_color="transparent")
+        sec_dir_inner.pack(fill="x", padx=12, pady=10)
+
+        ctk.CTkLabel(
+            sec_dir_inner,
+            text="📁 目前存檔資料夾位置：",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY
+        ).pack(anchor="w", pady=(0, 6))
+
+        row_input = ctk.CTkFrame(sec_dir_inner, fg_color="transparent")
+        row_input.pack(fill="x")
+
+        var_dlg_dir = tk.StringVar(value=self.storage_dir)
+        entry_dlg_dir = ctk.CTkEntry(
+            row_input,
+            textvariable=var_dlg_dir,
             font=ctk.CTkFont(family="Menlo", size=11),
-            fg_color=COLOR_INPUT_BG,
-            border_color=COLOR_INPUT_BORDER,
+            height=30,
             corner_radius=6,
-            height=28
+            fg_color="#181825",
+            border_color="#334155"
         )
-        self.entry_storage.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        entry_dlg_dir.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
-        def _on_entry_confirm(e=None):
-            p = self.var_storage_display.get().strip()
-            if p:
-                try:
-                    os.makedirs(p, exist_ok=True)
-                    self.set_storage_dir(p, seed=True)
-                    self.log_message(f"📁 已套用存檔資料夾：{p}")
-                except Exception as ex:
-                    messagebox.showerror("錯誤", f"無法建立目錄: {ex}", parent=self.root)
+        def _do_change_dir():
+            d = filedialog.askdirectory(
+                parent=dlg,
+                initialdir=self.storage_dir,
+                title="📁 選擇存檔資料夾"
+            )
+            if d:
+                self.set_storage_dir(d, seed=True)
+                var_dlg_dir.set(self.storage_dir)
+                lbl_tpl_count.configure(text=f"• 圖片特徵模板：templates/ (共 {_get_tpl_count()} 個檔案)")
+                lbl_status_msg.configure(text=f"📁 已切換存檔目錄至：{d}")
+                self.log_message(f"📁 存檔資料夾已於設定視窗中變更為: {d}")
 
-        self.entry_storage.bind("<Return>", _on_entry_confirm)
+        def _do_open_dir():
+            self.on_open_storage_dir()
 
         ctk.CTkButton(
-            inner,
+            row_input,
             text="📁 變更位置",
-            width=88,
-            height=28,
+            width=84,
+            height=30,
             corner_radius=6,
             font=ctk.CTkFont(size=11, weight="bold"),
             fg_color=COLOR_BTN_PRIMARY,
             hover_color=COLOR_BTN_PRIMARY_HOVER,
-            command=self.on_change_storage_dir
+            command=_do_change_dir
         ).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
-            inner,
-            text="↗️ 開啟資料夾",
-            width=88,
-            height=28,
+            row_input,
+            text="↗️ 開啟",
+            width=64,
+            height=30,
             corner_radius=6,
             font=ctk.CTkFont(size=11),
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER,
-            command=self.on_open_storage_dir
+            command=_do_open_dir
         ).pack(side="left")
+
+        # 2. 儲存內容清單預覽區塊
+        sec_info = ctk.CTkFrame(card, fg_color="transparent")
+        sec_info.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(
+            sec_info,
+            text="📋 點擊儲存時將自動同步寫入以下設定項目：",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#60A5FA"
+        ).pack(anchor="w", pady=(0, 4))
+
+        info_box = ctk.CTkFrame(sec_info, fg_color=COLOR_INPUT_BG, corner_radius=6, border_width=1, border_color=COLOR_CARD_BORDER)
+        info_box.pack(fill="both", expand=True)
+
+        def _get_tpl_count():
+            try:
+                if os.path.exists(self.templates_dir):
+                    return len([f for f in os.listdir(self.templates_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))])
+            except Exception:
+                pass
+            return 0
+
+        p_cnt = len(self.priority_steps_list)
+        s_cnt = len(self.steps_list)
+
+        ctk.CTkLabel(
+            info_box,
+            text=f"• 聯賽自動刷設定：{os.path.basename(self.auto_save_file)} (優先動作: {p_cnt} 項，一般步驟: {s_cnt} 項)",
+            font=ctk.CTkFont(family="Menlo", size=11),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w"
+        ).pack(fill="x", padx=12, pady=(8, 2))
+
+        ctk.CTkLabel(
+            info_box,
+            text=f"• 任務清單設定：{os.path.basename(self.task_save_file)}",
+            font=ctk.CTkFont(family="Menlo", size=11),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w"
+        ).pack(fill="x", padx=12, pady=2)
+
+        lbl_tpl_count = ctk.CTkLabel(
+            info_box,
+            text=f"• 圖片特徵模板：templates/ (共 {_get_tpl_count()} 個檔案)",
+            font=ctk.CTkFont(family="Menlo", size=11),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w"
+        )
+        lbl_tpl_count.pack(fill="x", padx=12, pady=(2, 8))
+
+        # 狀態訊息
+        lbl_status_msg = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=12, weight="bold"), text_color="#10B981")
+        lbl_status_msg.pack(pady=(0, 4))
+
+        def _do_save_all():
+            p = var_dlg_dir.get().strip()
+            if p and p != self.storage_dir:
+                try:
+                    os.makedirs(p, exist_ok=True)
+                    self.set_storage_dir(p, seed=True)
+                except Exception as ex:
+                    messagebox.showerror("錯誤", f"無法切換至新存檔目錄: {ex}", parent=dlg)
+                    return
+            try:
+                self.save_all_settings(show_msg=False)
+                lbl_status_msg.configure(text=f"✅ 已成功將所有設定儲存至：\n{self.storage_dir}")
+                self.log_message(f"💾 所有設定已手動儲存至: {self.storage_dir}")
+            except Exception as ex:
+                messagebox.showerror("儲存失敗", f"無法儲存設定: {ex}", parent=dlg)
+
+        # 底部按鈕列
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(fill="x", padx=16, pady=(0, 14))
+
+        ctk.CTkButton(
+            btn_row,
+            text="💾 立即儲存所有設定",
+            width=160,
+            height=34,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            fg_color="#10B981",
+            hover_color="#059669",
+            command=_do_save_all
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            btn_row,
+            text="關閉",
+            width=80,
+            height=34,
+            corner_radius=6,
+            font=ctk.CTkFont(size=12),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=dlg.destroy
+        ).pack(side="right")
 
     # --------------------------------------------------------------------------
     # 頂部狀態列 (大字體指示燈、統計數據、裝置連線與主控制大按鈕)
@@ -805,7 +1054,21 @@ class BaseballBotGUI:
             hover_color=COLOR_BTN_DARK_HOVER,
             command=self.on_open_new_window
         )
-        self.btn_new_win.pack(side="left", padx=(0, 12))
+        self.btn_new_win.pack(side="left", padx=(0, 6))
+
+        # 儲存設定與自訂存檔位置
+        self.btn_top_save = ctk.CTkButton(
+            right_box,
+            text="💾 存檔設定",
+            width=85,
+            height=34,
+            corner_radius=8,
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            fg_color="#10B981",
+            hover_color="#059669",
+            command=self.on_open_save_dialog
+        )
+        self.btn_top_save.pack(side="left", padx=(0, 10))
 
         # 主控制大按鈕：啟動 (Start)
         self.btn_start = ctk.CTkButton(
@@ -843,21 +1106,21 @@ class BaseballBotGUI:
     def _build_league_tab(self, parent: ctk.CTkFrame):
         container = ctk.CTkFrame(parent, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=4, pady=4)
-        container.grid_columnconfigure(0, weight=6)
-        container.grid_columnconfigure(1, weight=5)
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_columnconfigure(1, weight=0)
         container.grid_rowconfigure(0, weight=1)
 
-        # 左欄：步驟與優先動作卡片列表 + 進階參數格
+        # 左欄：步驟與優先動作卡片列表 + 進階參數格 (寬度隨視窗彈性展開)
         left_pane = ctk.CTkFrame(container, fg_color="transparent")
         left_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
         self._build_steps_panel(left_pane)
         self._build_advanced_panel(left_pane)
 
-        # 右欄：即時截圖預覽卡片 + 等寬日誌終端
-        right_pane = ctk.CTkFrame(container, fg_color="transparent")
+        # 右欄：即時截圖預覽卡片 + 等寬日誌終端 (鎖死固定寬度 824px，高度日誌彈性)
+        right_pane = ctk.CTkFrame(container, fg_color="transparent", width=824)
         right_pane.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=0)
-        right_pane.grid_rowconfigure(0, weight=5)
-        right_pane.grid_rowconfigure(1, weight=5)
+        right_pane.grid_rowconfigure(0, weight=0)
+        right_pane.grid_rowconfigure(1, weight=1)
         right_pane.grid_columnconfigure(0, weight=1)
 
         self._build_preview_panel(right_pane)
@@ -870,21 +1133,24 @@ class BaseballBotGUI:
         card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
         card.pack(fill="both", expand=True, pady=(0, 8))
 
-        # 頂部工具列
+        # 頂部工具列 (彈性雙行佈局，徹底解決按鈕擠壓遮蔽)
         tools = ctk.CTkFrame(card, fg_color="transparent")
         tools.pack(fill="x", padx=12, pady=(10, 8))
 
+        # 第一行：標題 + 全域辨識模式切換開關 (圖片特徵 vs 文字OCR)
+        tools_row1 = ctk.CTkFrame(tools, fg_color="transparent")
+        tools_row1.pack(fill="x", pady=(0, 6))
+
         lbl_title = ctk.CTkLabel(
-            tools,
+            tools_row1,
             text="📋 步驟與優先動作",
             font=ctk.CTkFont(family="Arial", size=14, weight="bold"),
             text_color=COLOR_TEXT_PRIMARY
         )
         lbl_title.pack(side="left")
 
-        # 全域辨識模式切換開關 (圖片特徵 vs 文字OCR)
         self.seg_mode = ctk.CTkSegmentedButton(
-            tools,
+            tools_row1,
             values=RECOGNITION_MODES,
             variable=self.var_recognition_mode,
             command=self._on_recognition_mode_changed,
@@ -893,17 +1159,19 @@ class BaseballBotGUI:
             selected_color=COLOR_BTN_PRIMARY,
             selected_hover_color=COLOR_BTN_PRIMARY_HOVER
         )
-        self.seg_mode.pack(side="left", padx=(12, 0))
+        self.seg_mode.pack(side="right")
 
-        btn_box = ctk.CTkFrame(tools, fg_color="transparent")
-        btn_box.pack(side="right")
+        # 第二行：步驟增刪與範本儲存按鈕群 (整齊平鋪排開)
+        tools_row2 = ctk.CTkFrame(tools, fg_color="transparent")
+        tools_row2.pack(fill="x")
 
-        ctk.CTkButton(btn_box, text="＋ 優先動作", width=76, height=28, corner_radius=6, command=self.on_add_priority_step, fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=2)
-        ctk.CTkButton(btn_box, text="⚡ 事件跳轉", width=76, height=28, corner_radius=6, command=self.on_add_task_trigger_step, fg_color="#8B5CF6", hover_color="#7C3AED", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=2)
-        ctk.CTkButton(btn_box, text="＋ 一般步驟", width=76, height=28, corner_radius=6, command=self.on_add_empty_step, fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=2)
-        ctk.CTkButton(btn_box, text="💡 常用範本", width=76, height=28, corner_radius=6, command=self.on_open_league_presets_dialog, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=2)
-        ctk.CTkButton(btn_box, text="💾 存為範本", width=76, height=28, corner_radius=6, command=self.on_save_league_preset_dialog, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=2)
-        ctk.CTkButton(btn_box, text="📂 載入檔案", width=76, height=28, corner_radius=6, command=self.on_load_config_manual, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=2)
+        ctk.CTkButton(tools_row2, text="＋ 優先動作", width=74, height=28, corner_radius=6, command=self.on_add_priority_step, fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=(0, 3))
+        ctk.CTkButton(tools_row2, text="⚡ 事件跳轉", width=74, height=28, corner_radius=6, command=self.on_add_task_trigger_step, fg_color="#8B5CF6", hover_color="#7C3AED", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
+        ctk.CTkButton(tools_row2, text="＋ 一般步驟", width=74, height=28, corner_radius=6, command=self.on_add_empty_step, fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
+        ctk.CTkButton(tools_row2, text="💡 常用範本", width=74, height=28, corner_radius=6, command=self.on_open_league_presets_dialog, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=3)
+        ctk.CTkButton(tools_row2, text="💾 儲存設定", width=74, height=28, corner_radius=6, command=self.on_open_save_dialog, fg_color="#10B981", hover_color="#059669", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
+        ctk.CTkButton(tools_row2, text="💾 存為範本", width=74, height=28, corner_radius=6, command=self.on_save_league_preset_dialog, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=3)
+        ctk.CTkButton(tools_row2, text="📂 載入檔案", width=74, height=28, corner_radius=6, command=self.on_load_config_manual, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="left", padx=3)
 
         # 滾動步驟區域 (CTkScrollableFrame)
         self.step_scroll = ctk.CTkScrollableFrame(card, fg_color="transparent", corner_radius=8)
@@ -1067,7 +1335,7 @@ class BaseballBotGUI:
     # 即時截圖預覽卡片 (右側上半部)
     # --------------------------------------------------------------------------
     def _build_preview_panel(self, parent: ctk.CTkFrame):
-        card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
+        card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER, width=824)
         card.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
 
         # 頂部控制列
@@ -1076,8 +1344,8 @@ class BaseballBotGUI:
 
         self.btn_capture = ctk.CTkButton(
             tools,
-            text="📸 擷取畫面",
-            width=90,
+            text="📸 立即截取",
+            width=84,
             height=28,
             corner_radius=6,
             command=self.on_preview_and_detect,
@@ -1087,42 +1355,93 @@ class BaseballBotGUI:
         )
         self.btn_capture.pack(side="left")
 
-        self.sw_auto_refresh = ctk.CTkSwitch(
+        # 自動刷新頻率選單 (連線後自動開始循環刷新，開關預設常駐開啟並移除多餘切換鈕)
+        ctk.CTkLabel(
             tools,
-            text="自動刷新",
-            variable=self.var_auto_refresh,
-            font=ctk.CTkFont(size=11),
-            command=self.on_toggle_auto_refresh
+            text="⏱ 刷新:",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLOR_TEXT_MUTED
+        ).pack(side="left", padx=(8, 3))
+
+        self.combo_preview_interval = ctk.CTkOptionMenu(
+            tools,
+            values=["0.5秒", "1.0秒", "1.5秒", "2.0秒", "3.0秒", "5.0秒"],
+            variable=self.var_preview_interval,
+            width=76,
+            height=28,
+            dynamic_resizing=False,
+            command=self._on_preview_interval_change
         )
-        self.sw_auto_refresh.pack(side="left", padx=(12, 0))
+        self.combo_preview_interval.pack(side="left", padx=(0, 8))
+
+        # 框選直接裁切截圖按鈕 (在畫面上滑鼠拖曳框選後亮起)
+        self.btn_crop_selection = ctk.CTkButton(
+            tools,
+            text="✂️ 裁切截圖",
+            width=92,
+            height=28,
+            corner_radius=6,
+            state="disabled",
+            fg_color=COLOR_BTN_DARK,
+            hover_color="#D97706",
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.on_crop_preview_selection
+        )
+        self.btn_crop_selection.pack(side="left")
 
         # 即時座標顯示 (Menlo 11 等寬藍字)
         self.lbl_preview_coords = ctk.CTkLabel(
             tools,
             textvariable=self.var_preview_coords,
             font=ctk.CTkFont(family="Menlo", size=12, weight="bold"),
-            text_color="#60A5FA"
+            text_color="#60A5FA",
+            anchor="e"
         )
-        self.lbl_preview_coords.pack(side="right")
+        self.lbl_preview_coords.pack(side="right", padx=(4, 0))
 
-        # 嵌入式畫布容器
-        holder = ctk.CTkFrame(card, fg_color=COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
-        holder.pack(fill="both", expand=True, padx=12, pady=(0, 10))
-        holder.bind("<Configure>", self._on_preview_resize)
+        # 嵌入式畫布容器 (固定 PREVIEW_CANVAS_W × PREVIEW_CANVAS_H，絕對鎖死尺寸)
+        holder = ctk.CTkFrame(
+            card,
+            fg_color=COLOR_INPUT_BG,
+            corner_radius=8,
+            border_width=1,
+            border_color=COLOR_CARD_BORDER,
+            width=PREVIEW_CANVAS_W,
+            height=PREVIEW_CANVAS_H
+        )
+        holder.pack(padx=12, pady=(0, 10))
+        holder.pack_propagate(False)
         self.preview_holder = holder
 
-        self.lbl_canvas = tk.Label(
+        # 互動式預覽畫布 (鎖定 PREVIEW_CANVAS_W × PREVIEW_CANVAS_H)
+        self.preview_canvas = tk.Canvas(
             holder,
-            text="連線後按「擷取畫面」\n點擊畫面任意處即可快速選取自訂座標",
-            fg=COLOR_TEXT_MUTED,
+            width=PREVIEW_CANVAS_W,
+            height=PREVIEW_CANVAS_H,
             bg=COLOR_INPUT_BG,
-            cursor="crosshair",
-            anchor=tk.CENTER
+            highlightthickness=0,
+            cursor="crosshair"
         )
-        self.lbl_canvas.pack(fill=tk.BOTH, expand=True)
-        self.lbl_canvas.bind("<Motion>", self._on_preview_mouse_move)
-        self.lbl_canvas.bind("<Leave>", lambda e: self.var_preview_coords.set(""))
-        self.lbl_canvas.bind("<Button-1>", self._on_preview_click)
+        self.preview_canvas.pack(fill="none", expand=False)
+        self.lbl_canvas = self.preview_canvas  # 向下相容
+
+        # 初始未連線引導文字
+        self.preview_canvas.create_text(
+            PREVIEW_CANVAS_W // 2, PREVIEW_CANVAS_H // 2,
+            text="模擬器連線後將自動即時刷新畫面\n可直接在畫面上「按住滑鼠左鍵拖曳框選」按鈕並點擊【✂️ 裁切截圖】",
+            fill=COLOR_TEXT_MUTED,
+            font=("Arial", 13),
+            justify="center",
+            tags="placeholder"
+        )
+
+        # 畫布滑鼠互動事件
+        self.preview_canvas.bind("<Motion>", self._on_preview_mouse_move)
+        self.preview_canvas.bind("<Leave>", self._on_preview_mouse_leave)
+        self.preview_canvas.bind("<ButtonPress-1>", self._on_preview_press)
+        self.preview_canvas.bind("<B1-Motion>", self._on_preview_drag)
+        self.preview_canvas.bind("<ButtonRelease-1>", self._on_preview_release)
 
     # --------------------------------------------------------------------------
     # 等寬即時日誌終端卡片 (右側下半部)
@@ -1203,6 +1522,7 @@ class BaseballBotGUI:
         self._create_priority_step_widget(
             name=f"優先 {n}",
             target_type="🖼️ 圖片特徵 (模板比對)" if is_img else "📝 文字辨識 (OCR)",
+            action=ACTION_TARGET_IMAGE if is_img else ACTION_TARGET_TEXT,
             expanded=True
         )
 
@@ -1250,7 +1570,7 @@ class BaseballBotGUI:
         image_threshold: float = 0.80,
         image_multiscale: bool = False,
         exclude_keywords: str = "",
-        action: str = "點擊目標中心 / 詞條",
+        action: str = ACTION_TARGET_IMAGE,
         custom_x: int = 960,
         custom_y: int = 540,
         delay: float = 2.0,
@@ -1275,12 +1595,11 @@ class BaseballBotGUI:
         card = ctk.CTkFrame(self.frame_priority_cards, fg_color=COLOR_CARD_ITEM, corner_radius=8, border_width=1, border_color=color)
         card.pack(fill="x", pady=4, padx=2)
 
-        action = _normalize_action(action)
-        if action not in ACTION_OPTIONS:
-            action = ACTION_OPTIONS[0]
         target_type = _normalize_target_type(target_type)
         if target_type not in TARGET_TYPES:
             target_type = TARGET_TYPES[0]
+        is_init_img = ("圖片" in self.var_recognition_mode.get()) or ("圖片" in target_type)
+        action = _normalize_action(action, is_image=is_init_img)
 
         p = {
             "type": "priority",
@@ -1315,6 +1634,23 @@ class BaseballBotGUI:
         }
         self.priority_steps_list.append(p)
 
+        def _on_p_var_changed(*_):
+            if getattr(self, "_is_loading_config", False):
+                return
+            self.auto_save_current_config()
+
+        for _v in [
+            p["enabled"], p["name"], p["target_type"], p["template_image"],
+            p["image_threshold"], p["image_multiscale"], p["keywords"],
+            p["exclude_keywords"], p["action"], p["custom_x"], p["custom_y"],
+            p["delay"], p["roi"], p["while_condition"], p["repeat_enabled"],
+            p["repeat_mode"], p["repeat_count"], p["repeat_speed"],
+            p["repeat_area"], p["repeat_custom_x"], p["repeat_custom_y"],
+            p["tg_enabled"], p["tg_message"], p["task_target_mode"],
+            p["task_target_item"], p["task_cooldown"]
+        ]:
+            _v.trace_add("write", _on_p_var_changed)
+
         # 標題列
         head = ctk.CTkFrame(card, fg_color="transparent")
         head.pack(fill="x", padx=8, pady=6)
@@ -1344,34 +1680,92 @@ class BaseballBotGUI:
         ctk.CTkButton(box_text_target, text="✓", width=26, height=26, corner_radius=4, command=lambda: _add_p_sym("[打勾]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
         ctk.CTkEntry(box_text_target, textvariable=p["keywords"], placeholder_text="關鍵字 (以逗號分隔)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True)
 
-        # 圖片模板模式容器 (檔名 + 選擇 + 截圖)
+        # 圖片模板模式容器 (檔名 + 帶入截圖 + 截圖 + 選擇)
         box_image_target = ctk.CTkFrame(head, fg_color="transparent")
-        ctk.CTkButton(box_image_target, text="✂️ 截圖", width=56, height=26, corner_radius=5, command=lambda: self.on_snip_template_dialog(p), fg_color="#0284C7", hover_color="#0369A1", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
-        ctk.CTkButton(box_image_target, text="📂 選擇", width=56, height=26, corner_radius=5, command=lambda: self.on_browse_template_dialog(p), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="📥 帶入", width=54, height=26, corner_radius=5, command=lambda: self.on_apply_last_snippet(p), fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="✂️ 截圖", width=48, height=26, corner_radius=5, command=lambda: self.on_snip_template_dialog(p), fg_color="#0284C7", hover_color="#0369A1", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="📂 瀏覽", width=48, height=26, corner_radius=5, command=lambda: self.on_browse_template_dialog(p), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="right", padx=1)
         ctk.CTkEntry(box_image_target, textvariable=p["template_image"], placeholder_text="模板圖檔 (如: 開始比賽.png)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True, padx=(0, 2))
 
         # 展開設定內容
-        lbl_sum = ctk.CTkLabel(card, text="", font=ctk.CTkFont(family="Arial", size=11), text_color=COLOR_TEXT_MUTED, anchor="w")
+        lbl_sum = ctk.CTkLabel(card, text="", font=ctk.CTkFont(family="Arial", size=11), text_color=COLOR_TEXT_MUTED, anchor="w", wraplength=480, justify="left")
         detail = ctk.CTkFrame(card, fg_color="transparent")
 
-        # 動作列
-        ra = ctk.CTkFrame(detail, fg_color="transparent")
-        ra.pack(fill="x", pady=(4, 0))
-        ctk.CTkLabel(ra, text="動作:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
-        ctk.CTkOptionMenu(ra, variable=p["action"], values=ACTION_OPTIONS, width=120, height=24, corner_radius=6, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
+        def summary() -> str:
+            is_img = ("圖片" in self.var_recognition_mode.get())
+            act = p["action"].get()
+            if is_custom_coord_action(act):
+                act_str = f"📍 自訂座標 ({p['custom_x'].get()}, {p['custom_y'].get()})"
+            elif act == ACTION_TASK_FLOW or "任務清單" in act:
+                t_m = p["task_target_mode"].get()
+                t_i = p["task_target_item"].get()
+                act_str = f"📋 跳轉: {t_i if t_m != '📋 完整任務清單' and t_i else t_m}"
+            elif is_img:
+                act_str = "↳ 🎯 點擊目標圖片"
+            else:
+                act_str = "↳ 🎯 點擊目標文字"
 
-        box_act_xy = ctk.CTkFrame(ra, fg_color="transparent")
+            if is_img:
+                tpl_val = p["template_image"].get().strip()
+                tpl_name = os.path.basename(tpl_val) if tpl_val else "(未選圖)"
+                th = _num(p["image_threshold"], 0.80)
+                parts = [f"🖼️ 模板: {tpl_name} ({th:.2f})", act_str, p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
+                if p["image_multiscale"].get():
+                    parts.append("多尺度")
+            else:
+                parts = [act_str, p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
+
+            if p["while_condition"].get():
+                parts.append("while重複")
+            if p["repeat_enabled"].get():
+                rep = "連點"
+                if p["repeat_mode"].get() == "指定次數":
+                    rep += f"×{_num(p['repeat_count'], 15, int)}"
+                area = p["repeat_area"].get()
+                if "自訂" in area:
+                    area = f"({_num(p['repeat_custom_x'], 0, int)}, {_num(p['repeat_custom_y'], 0, int)})"
+                parts.append(f"{rep}@{area}")
+            if not is_img:
+                ex = p["exclude_keywords"].get().strip()
+                if ex:
+                    parts.append(f"排除: {ex}")
+            if p["tg_enabled"].get():
+                parts.append("📱TG")
+            return "  ·  ".join(parts)
+
+        # 動作與比對列 (彈性雙行分組佈局，徹底消除遮蔽)
+        # 行 1: 執行動作選單 + 自訂座標輸入
+        ra1 = ctk.CTkFrame(detail, fg_color="transparent")
+        ra1.pack(fill="x", pady=(4, 2))
+        ctk.CTkLabel(ra1, text="動作:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
+        menu_p_act = ctk.CTkOptionMenu(
+            ra1,
+            variable=p["action"],
+            values=ACTION_OPTIONS_IMAGE if is_init_img else ACTION_OPTIONS_TEXT,
+            width=165,
+            height=24,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11)
+        )
+        menu_p_act.pack(side="left", padx=(0, 6))
+        p["menu_action"] = menu_p_act
+
+        box_act_xy = ctk.CTkFrame(ra1, fg_color="transparent")
         ctk.CTkLabel(box_act_xy, text="X:", font=ctk.CTkFont(size=10)).pack(side="left")
         ctk.CTkEntry(box_act_xy, textvariable=p["custom_x"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 4))
         ctk.CTkLabel(box_act_xy, text="Y:", font=ctk.CTkFont(size=10)).pack(side="left")
-        ctk.CTkEntry(box_act_xy, textvariable=p["custom_y"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 6))
+        ctk.CTkEntry(box_act_xy, textvariable=p["custom_y"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 4))
+        ctk.CTkLabel(box_act_xy, text="(點右側預覽取點)", font=ctk.CTkFont(size=9), text_color="#F59E0B").pack(side="left", padx=(0, 4))
 
-        ctk.CTkLabel(ra, text="範圍:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
-        ctk.CTkOptionMenu(ra, variable=p["roi"], values=ROI_OPTIONS, width=110, height=24, corner_radius=6, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
+        # 行 2: 比對範圍 + 操作延遲
+        ra2 = ctk.CTkFrame(detail, fg_color="transparent")
+        ra2.pack(fill="x", pady=(2, 2))
+        ctk.CTkLabel(ra2, text="比對範圍:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(ra2, variable=p["roi"], values=ROI_OPTIONS, width=120, height=24, corner_radius=6, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 10))
 
-        ctk.CTkLabel(ra, text="延遲:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
-        ctk.CTkEntry(ra, textvariable=p["delay"], width=42, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left")
-        ctk.CTkLabel(ra, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(2, 0))
+        ctk.CTkLabel(ra2, text="延遲:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(ra2, textvariable=p["delay"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left")
+        ctk.CTkLabel(ra2, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(2, 0))
 
         # 任務清單跳轉面板 (動作為 📋 執行任務清單 時顯示)
         box_task_flow = ctk.CTkFrame(detail, fg_color="#1E1B4B", corner_radius=6, border_width=1, border_color="#8B5CF6")
@@ -1417,11 +1811,11 @@ class BaseballBotGUI:
         ctk.CTkButton(row_tf2, text="🔄 刷新", width=50, height=20, corner_radius=4, command=_update_p_task_items, font=ctk.CTkFont(size=10), fg_color="#4C1D95", hover_color="#5B21B6").pack(side="right")
 
         def _refresh_act_ui(*_):
-            if p["action"].get() in ("自訂座標", "自訂特定區塊"):
+            if is_custom_coord_action(p["action"].get()):
                 box_act_xy.pack(side="left", padx=(0, 6))
             else:
                 box_act_xy.pack_forget()
-            if p["action"].get() == "📋 執行任務清單":
+            if p["action"].get() == ACTION_TASK_FLOW or "任務清單" in p["action"].get():
                 box_task_flow.pack(fill="x", pady=(4, 0))
                 _update_p_task_items()
             else:
@@ -1435,17 +1829,19 @@ class BaseballBotGUI:
         ctk.CTkLabel(re, text="排除字詞:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#F87171").pack(side="left", padx=(0, 4))
         ctk.CTkEntry(re, textvariable=p["exclude_keywords"], height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=10)).pack(side="left", fill="x", expand=True)
 
-        # 圖片模板細項面板 (僅圖片模式顯示)
+        # 圖片模板細項面板 (僅圖片模式顯示，彈性雙行結構)
         box_image_detail = ctk.CTkFrame(detail, fg_color="#181825", corner_radius=6, border_width=1, border_color="#334155")
+
+        # 圖片行 1: 縮圖 + 比對門檻滑桿 + 多尺度容錯
         row_id1 = ctk.CTkFrame(box_image_detail, fg_color="transparent")
         row_id1.pack(fill="x", padx=8, pady=(4, 2))
 
         lbl_thumb = tk.Label(row_id1, bg="#11111B", fg=COLOR_TEXT_DIM, font=("Arial", 10), text="（未選圖）", width=8, height=2)
         lbl_thumb.pack(side="left", padx=(0, 8))
 
-        ctk.CTkLabel(row_id1, text="比對門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 2))
+        ctk.CTkLabel(row_id1, text="門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 2))
         lbl_thresh_val = ctk.CTkLabel(row_id1, text=f"{p['image_threshold'].get():.2f}", width=34, font=ctk.CTkFont(family="Menlo", size=11))
-        slider_thresh = ctk.CTkSlider(row_id1, from_=0.50, to=0.98, number_of_steps=48, variable=p["image_threshold"], width=130, height=16)
+        slider_thresh = ctk.CTkSlider(row_id1, from_=0.50, to=0.98, number_of_steps=48, variable=p["image_threshold"], width=110, height=16)
         slider_thresh.pack(side="left", padx=(2, 2))
         lbl_thresh_val.pack(side="left", padx=(0, 6))
         slider_thresh.configure(command=lambda v: [lbl_thresh_val.configure(text=f"{float(v):.2f}"), self.auto_save_current_config()])
@@ -1461,19 +1857,37 @@ class BaseballBotGUI:
             checkbox_width=16,
             checkbox_height=16,
             corner_radius=4
-        ).pack(side="left", padx=(4, 6))
+        ).pack(side="left", padx=(4, 0))
+
+        # 圖片行 2: 模板快捷動作按鈕列 (平鋪排開，絕不互相覆蓋)
+        row_id2 = ctk.CTkFrame(box_image_detail, fg_color="transparent")
+        row_id2.pack(fill="x", padx=8, pady=(2, 5))
+
+        ctk.CTkLabel(row_id2, text="📷 模板操作:", font=ctk.CTkFont(size=10, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 6))
 
         ctk.CTkButton(
-            row_id1,
+            row_id2,
+            text="📥 帶入最新截圖",
+            width=96,
+            height=24,
+            corner_radius=4,
+            command=lambda: self.on_apply_last_snippet(p),
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#F59E0B",
+            hover_color="#D97706"
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            row_id2,
             text="📁 模板資料夾",
-            width=76,
-            height=22,
+            width=84,
+            height=24,
             corner_radius=4,
             command=self.on_open_templates_folder,
             font=ctk.CTkFont(size=10),
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER
-        ).pack(side="right")
+        ).pack(side="left", padx=2)
 
         def _update_p_thumb(*_):
             img_name = p["template_image"].get().strip()
@@ -1509,6 +1923,14 @@ class BaseballBotGUI:
         def _refresh_p_target_ui(*_):
             is_img = ("圖片" in self.var_recognition_mode.get())
             p["target_type"].set("🖼️ 圖片特徵 (模板比對)" if is_img else "📝 文字辨識 (OCR)")
+            if "menu_action" in p and hasattr(p["menu_action"], "configure"):
+                p["menu_action"].configure(values=ACTION_OPTIONS_IMAGE if is_img else ACTION_OPTIONS_TEXT)
+            curr_act = p["action"].get()
+            if is_target_center_action(curr_act):
+                p["action"].set(ACTION_TARGET_IMAGE if is_img else ACTION_TARGET_TEXT)
+            elif is_custom_coord_action(curr_act):
+                p["action"].set(ACTION_CUSTOM_COORD)
+
             if is_img:
                 box_text_target.pack_forget()
                 box_image_target.pack(side="left", fill="x", expand=True, padx=(0, 4))
@@ -1651,44 +2073,6 @@ class BaseballBotGUI:
         p["tg_enabled"].trace_add("write", _refresh_p_tg_ui)
         _refresh_p_tg_ui()
 
-        def summary() -> str:
-            is_img = ("圖片" in self.var_recognition_mode.get())
-            act = p["action"].get()
-            if act in ("自訂座標", "自訂特定區塊"):
-                act += f" ({p['custom_x'].get()}, {p['custom_y'].get()})"
-            elif act == "📋 執行任務清單":
-                t_m = p["task_target_mode"].get()
-                t_i = p["task_target_item"].get()
-                act = f"📋 跳轉: {t_i if t_m != '📋 完整任務清單' and t_i else t_m}"
-
-            if is_img:
-                tpl_val = p["template_image"].get().strip()
-                tpl_name = os.path.basename(tpl_val) if tpl_val else "(未選圖)"
-                th = _num(p["image_threshold"], 0.80)
-                parts = [f"🖼️ 模板: {tpl_name} ({th:.2f})", f"↳ {act}", p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
-                if p["image_multiscale"].get():
-                    parts.append("多尺度")
-            else:
-                parts = [f"↳ {act}", p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
-
-            if p["while_condition"].get():
-                parts.append("while重複")
-            if p["repeat_enabled"].get():
-                rep = "連點"
-                if p["repeat_mode"].get() == "指定次數":
-                    rep += f"×{_num(p['repeat_count'], 15, int)}"
-                area = p["repeat_area"].get()
-                if "自訂" in area:
-                    area = f"({_num(p['repeat_custom_x'], 0, int)}, {_num(p['repeat_custom_y'], 0, int)})"
-                parts.append(f"{rep}@{area}")
-            if not is_img:
-                ex = p["exclude_keywords"].get().strip()
-                if ex:
-                    parts.append(f"排除: {ex}")
-            if p["tg_enabled"].get():
-                parts.append("📱TG")
-            return "  ·  ".join(parts)
-
         # 展開/收合切換邏輯
         def refresh(*_):
             if p["expanded"].get():
@@ -1714,6 +2098,7 @@ class BaseballBotGUI:
         self._create_step_widget(
             name=f"步驟 {n}",
             target_type="🖼️ 圖片特徵 (模板比對)" if is_img else "📝 文字辨識 (OCR)",
+            action=ACTION_TARGET_IMAGE if is_img else ACTION_TARGET_TEXT,
             expanded=True
         )
 
@@ -1806,7 +2191,7 @@ class BaseballBotGUI:
         image_threshold: float = 0.80,
         image_multiscale: bool = False,
         exclude_keywords: str = "",
-        action: str = "點擊目標中心 / 詞條",
+        action: str = ACTION_TARGET_IMAGE,
         custom_x: int = 960,
         custom_y: int = 540,
         delay: float = 2.5,
@@ -1832,12 +2217,11 @@ class BaseballBotGUI:
         card = ctk.CTkFrame(self.frame_normal_cards, fg_color=COLOR_CARD_ITEM, corner_radius=8, border_width=1, border_color=color)
         card.pack(fill="x", pady=4, padx=2)
 
-        action = _normalize_action(action)
-        if action not in ACTION_OPTIONS:
-            action = ACTION_OPTIONS[0]
         target_type = _normalize_target_type(target_type)
         if target_type not in TARGET_TYPES:
             target_type = TARGET_TYPES[0]
+        is_init_img = ("圖片" in self.var_recognition_mode.get()) or ("圖片" in target_type)
+        action = _normalize_action(action, is_image=is_init_img)
 
         s = {
             "type": "normal",
@@ -1874,6 +2258,23 @@ class BaseballBotGUI:
         }
         self.steps_list.append(s)
 
+        def _on_s_var_changed(*_):
+            if getattr(self, "_is_loading_config", False):
+                return
+            self.auto_save_current_config()
+
+        for _v in [
+            s["enabled"], s["name"], s["target_type"], s["template_image"],
+            s["image_threshold"], s["image_multiscale"], s["keywords"],
+            s["exclude_keywords"], s["action"], s["custom_x"], s["custom_y"],
+            s["delay"], s["roi"], s["repeat_enabled"], s["repeat_mode"],
+            s["repeat_count"], s["repeat_speed"], s["repeat_area"],
+            s["repeat_custom_x"], s["repeat_custom_y"], s["timeout_enabled"],
+            s["timeout_seconds"], s["tg_enabled"], s["tg_message"],
+            s["task_target_mode"], s["task_target_item"], s["task_cooldown"]
+        ]:
+            _v.trace_add("write", _on_s_var_changed)
+
         # 標題列
         head = ctk.CTkFrame(card, fg_color="transparent")
         head.pack(fill="x", padx=8, pady=6)
@@ -1903,34 +2304,92 @@ class BaseballBotGUI:
         ctk.CTkButton(box_text_target, text="✓", width=26, height=26, corner_radius=4, command=lambda: _add_s_sym("[打勾]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
         ctk.CTkEntry(box_text_target, textvariable=s["keywords"], placeholder_text="關鍵字 (以逗號分隔)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True)
 
-        # 圖片模板模式容器 (檔名 + 選擇 + 截圖)
+        # 圖片模板模式容器 (檔名 + 帶入截圖 + 截圖 + 選擇)
         box_image_target = ctk.CTkFrame(head, fg_color="transparent")
-        ctk.CTkButton(box_image_target, text="✂️ 截圖", width=56, height=26, corner_radius=5, command=lambda: self.on_snip_template_dialog(s), fg_color="#0284C7", hover_color="#0369A1", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
-        ctk.CTkButton(box_image_target, text="📂 選擇", width=56, height=26, corner_radius=5, command=lambda: self.on_browse_template_dialog(s), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="📥 帶入", width=54, height=26, corner_radius=5, command=lambda: self.on_apply_last_snippet(s), fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="✂️ 截圖", width=48, height=26, corner_radius=5, command=lambda: self.on_snip_template_dialog(s), fg_color="#0284C7", hover_color="#0369A1", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="📂 瀏覽", width=48, height=26, corner_radius=5, command=lambda: self.on_browse_template_dialog(s), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="right", padx=1)
         ctk.CTkEntry(box_image_target, textvariable=s["template_image"], placeholder_text="模板圖檔 (如: 開始比賽.png)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True, padx=(0, 2))
 
         # 展開設定內容
-        lbl_sum = ctk.CTkLabel(card, text="", font=ctk.CTkFont(family="Arial", size=11), text_color=COLOR_TEXT_MUTED, anchor="w")
+        lbl_sum = ctk.CTkLabel(card, text="", font=ctk.CTkFont(family="Arial", size=11), text_color=COLOR_TEXT_MUTED, anchor="w", wraplength=480, justify="left")
         detail = ctk.CTkFrame(card, fg_color="transparent")
 
-        # 動作列
-        ra = ctk.CTkFrame(detail, fg_color="transparent")
-        ra.pack(fill="x", pady=(4, 0))
-        ctk.CTkLabel(ra, text="動作:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
-        ctk.CTkOptionMenu(ra, variable=s["action"], values=ACTION_OPTIONS, width=120, height=24, corner_radius=6, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
+        def summary() -> str:
+            is_img = ("圖片" in self.var_recognition_mode.get())
+            act = s["action"].get()
+            if is_custom_coord_action(act):
+                act_str = f"📍 自訂座標 ({s['custom_x'].get()}, {s['custom_y'].get()})"
+            elif act == ACTION_TASK_FLOW or "任務清單" in act:
+                t_m = s["task_target_mode"].get()
+                t_i = s["task_target_item"].get()
+                act_str = f"📋 跳轉: {t_i if t_m != '📋 完整任務清單' and t_i else t_m}"
+            elif is_img:
+                act_str = "↳ 🎯 點擊目標圖片"
+            else:
+                act_str = "↳ 🎯 點擊目標文字"
 
-        box_act_xy = ctk.CTkFrame(ra, fg_color="transparent")
+            if is_img:
+                tpl_val = s["template_image"].get().strip()
+                tpl_name = os.path.basename(tpl_val) if tpl_val else "(未選圖)"
+                th = _num(s["image_threshold"], 0.80)
+                parts = [f"🖼️ 模板: {tpl_name} ({th:.2f})", act_str, s["roi"].get(), f"延遲 {_num(s['delay'], 2.5):g}s"]
+                if s["image_multiscale"].get():
+                    parts.append("多尺度")
+            else:
+                parts = [act_str, s["roi"].get(), f"延遲 {_num(s['delay'], 2.5):g}s"]
+
+            if s["repeat_enabled"].get():
+                rep = "連點"
+                if s["repeat_mode"].get() == "指定次數":
+                    rep += f"×{_num(s['repeat_count'], 15, int)}"
+                area = s["repeat_area"].get()
+                if "自訂" in area:
+                    area = f"({_num(s['repeat_custom_x'], 0, int)}, {_num(s['repeat_custom_y'], 0, int)})"
+                parts.append(f"{rep}@{area}")
+            if s["timeout_enabled"].get():
+                parts.append(f"{_num(s['timeout_seconds'], 20, int)}s超時跳過")
+            if not is_img:
+                ex = s["exclude_keywords"].get().strip()
+                if ex:
+                    parts.append(f"排除: {ex}")
+            if s["tg_enabled"].get():
+                parts.append("📱TG")
+            return "  ·  ".join(parts)
+
+        # 動作與比對列 (彈性雙行分組佈局，徹底消除遮蔽)
+        # 行 1: 執行動作選單 + 自訂座標輸入
+        ra1 = ctk.CTkFrame(detail, fg_color="transparent")
+        ra1.pack(fill="x", pady=(4, 2))
+        ctk.CTkLabel(ra1, text="動作:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
+        menu_s_act = ctk.CTkOptionMenu(
+            ra1,
+            variable=s["action"],
+            values=ACTION_OPTIONS_IMAGE if is_init_img else ACTION_OPTIONS_TEXT,
+            width=165,
+            height=24,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11)
+        )
+        menu_s_act.pack(side="left", padx=(0, 6))
+        s["menu_action"] = menu_s_act
+
+        box_act_xy = ctk.CTkFrame(ra1, fg_color="transparent")
         ctk.CTkLabel(box_act_xy, text="X:", font=ctk.CTkFont(size=10)).pack(side="left")
         ctk.CTkEntry(box_act_xy, textvariable=s["custom_x"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 4))
         ctk.CTkLabel(box_act_xy, text="Y:", font=ctk.CTkFont(size=10)).pack(side="left")
-        ctk.CTkEntry(box_act_xy, textvariable=s["custom_y"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 6))
+        ctk.CTkEntry(box_act_xy, textvariable=s["custom_y"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 4))
+        ctk.CTkLabel(box_act_xy, text="(點右側預覽取點)", font=ctk.CTkFont(size=9), text_color="#F59E0B").pack(side="left", padx=(0, 4))
 
-        ctk.CTkLabel(ra, text="範圍:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
-        ctk.CTkOptionMenu(ra, variable=s["roi"], values=ROI_OPTIONS, width=110, height=24, corner_radius=6, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
+        # 行 2: 比對範圍 + 操作延遲
+        ra2 = ctk.CTkFrame(detail, fg_color="transparent")
+        ra2.pack(fill="x", pady=(2, 2))
+        ctk.CTkLabel(ra2, text="比對範圍:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(ra2, variable=s["roi"], values=ROI_OPTIONS, width=120, height=24, corner_radius=6, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 10))
 
-        ctk.CTkLabel(ra, text="延遲:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
-        ctk.CTkEntry(ra, textvariable=s["delay"], width=42, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left")
-        ctk.CTkLabel(ra, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(2, 0))
+        ctk.CTkLabel(ra2, text="延遲:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(ra2, textvariable=s["delay"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left")
+        ctk.CTkLabel(ra2, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(2, 0))
 
         # 任務清單跳轉面板 (動作為 📋 執行任務清單 時顯示)
         box_task_flow = ctk.CTkFrame(detail, fg_color="#1E1B4B", corner_radius=6, border_width=1, border_color="#8B5CF6")
@@ -1976,11 +2435,11 @@ class BaseballBotGUI:
         ctk.CTkButton(row_tf2, text="🔄 刷新", width=50, height=20, corner_radius=4, command=_update_s_task_items, font=ctk.CTkFont(size=10), fg_color="#4C1D95", hover_color="#5B21B6").pack(side="right")
 
         def _refresh_s_act_ui(*_):
-            if s["action"].get() in ("自訂座標", "自訂特定區塊"):
+            if is_custom_coord_action(s["action"].get()):
                 box_act_xy.pack(side="left", padx=(0, 6))
             else:
                 box_act_xy.pack_forget()
-            if s["action"].get() == "📋 執行任務清單":
+            if s["action"].get() == ACTION_TASK_FLOW or "任務清單" in s["action"].get():
                 box_task_flow.pack(fill="x", pady=(4, 0))
                 _update_s_task_items()
             else:
@@ -1994,17 +2453,19 @@ class BaseballBotGUI:
         ctk.CTkLabel(re, text="排除字詞:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#F87171").pack(side="left", padx=(0, 4))
         ctk.CTkEntry(re, textvariable=s["exclude_keywords"], height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=10)).pack(side="left", fill="x", expand=True)
 
-        # 圖片模板細項面板 (僅圖片模式顯示)
+        # 圖片模板細項面板 (僅圖片模式顯示，彈性雙行結構)
         box_image_detail = ctk.CTkFrame(detail, fg_color="#181825", corner_radius=6, border_width=1, border_color="#334155")
+
+        # 圖片行 1: 縮圖 + 比對門檻滑桿 + 多尺度容錯
         row_id1 = ctk.CTkFrame(box_image_detail, fg_color="transparent")
         row_id1.pack(fill="x", padx=8, pady=(4, 2))
 
         lbl_thumb = tk.Label(row_id1, bg="#11111B", fg=COLOR_TEXT_DIM, font=("Arial", 10), text="（未選圖）", width=8, height=2)
         lbl_thumb.pack(side="left", padx=(0, 8))
 
-        ctk.CTkLabel(row_id1, text="比對門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 2))
+        ctk.CTkLabel(row_id1, text="門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 2))
         lbl_thresh_val = ctk.CTkLabel(row_id1, text=f"{s['image_threshold'].get():.2f}", width=34, font=ctk.CTkFont(family="Menlo", size=11))
-        slider_thresh = ctk.CTkSlider(row_id1, from_=0.50, to=0.98, number_of_steps=48, variable=s["image_threshold"], width=130, height=16)
+        slider_thresh = ctk.CTkSlider(row_id1, from_=0.50, to=0.98, number_of_steps=48, variable=s["image_threshold"], width=110, height=16)
         slider_thresh.pack(side="left", padx=(2, 2))
         lbl_thresh_val.pack(side="left", padx=(0, 6))
         slider_thresh.configure(command=lambda v: [lbl_thresh_val.configure(text=f"{float(v):.2f}"), self.auto_save_current_config()])
@@ -2020,19 +2481,37 @@ class BaseballBotGUI:
             checkbox_width=16,
             checkbox_height=16,
             corner_radius=4
-        ).pack(side="left", padx=(4, 6))
+        ).pack(side="left", padx=(4, 0))
+
+        # 圖片行 2: 模板快捷動作按鈕列 (平鋪排開，絕不互相覆蓋)
+        row_id2 = ctk.CTkFrame(box_image_detail, fg_color="transparent")
+        row_id2.pack(fill="x", padx=8, pady=(2, 5))
+
+        ctk.CTkLabel(row_id2, text="📷 模板操作:", font=ctk.CTkFont(size=10, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 6))
 
         ctk.CTkButton(
-            row_id1,
+            row_id2,
+            text="📥 帶入最新截圖",
+            width=96,
+            height=24,
+            corner_radius=4,
+            command=lambda: self.on_apply_last_snippet(s),
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#F59E0B",
+            hover_color="#D97706"
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            row_id2,
             text="📁 模板資料夾",
-            width=76,
-            height=22,
+            width=84,
+            height=24,
             corner_radius=4,
             command=self.on_open_templates_folder,
             font=ctk.CTkFont(size=10),
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER
-        ).pack(side="right")
+        ).pack(side="left", padx=2)
 
         def _update_s_thumb(*_):
             img_name = s["template_image"].get().strip()
@@ -2068,6 +2547,14 @@ class BaseballBotGUI:
         def _refresh_s_target_ui(*_):
             is_img = ("圖片" in self.var_recognition_mode.get())
             s["target_type"].set("🖼️ 圖片特徵 (模板比對)" if is_img else "📝 文字辨識 (OCR)")
+            if "menu_action" in s and hasattr(s["menu_action"], "configure"):
+                s["menu_action"].configure(values=ACTION_OPTIONS_IMAGE if is_img else ACTION_OPTIONS_TEXT)
+            curr_act = s["action"].get()
+            if is_target_center_action(curr_act):
+                s["action"].set(ACTION_TARGET_IMAGE if is_img else ACTION_TARGET_TEXT)
+            elif is_custom_coord_action(curr_act):
+                s["action"].set(ACTION_CUSTOM_COORD)
+
             if is_img:
                 box_text_target.pack_forget()
                 box_image_target.pack(side="left", fill="x", expand=True, padx=(0, 4))
@@ -2223,44 +2710,6 @@ class BaseballBotGUI:
         s["tg_enabled"].trace_add("write", _refresh_s_tg_ui)
         _refresh_s_tg_ui()
 
-        def summary() -> str:
-            is_img = ("圖片" in self.var_recognition_mode.get())
-            act = s["action"].get()
-            if act in ("自訂座標", "自訂特定區塊"):
-                act += f" ({s['custom_x'].get()}, {s['custom_y'].get()})"
-            elif act == "📋 執行任務清單":
-                t_m = s["task_target_mode"].get()
-                t_i = s["task_target_item"].get()
-                act = f"📋 跳轉: {t_i if t_m != '📋 完整任務清單' and t_i else t_m}"
-
-            if is_img:
-                tpl_val = s["template_image"].get().strip()
-                tpl_name = os.path.basename(tpl_val) if tpl_val else "(未選圖)"
-                th = _num(s["image_threshold"], 0.80)
-                parts = [f"🖼️ 模板: {tpl_name} ({th:.2f})", f"↳ {act}", s["roi"].get(), f"延遲 {_num(s['delay'], 2.5):g}s"]
-                if s["image_multiscale"].get():
-                    parts.append("多尺度")
-            else:
-                parts = [f"↳ {act}", s["roi"].get(), f"延遲 {_num(s['delay'], 2.5):g}s"]
-
-            if s["repeat_enabled"].get():
-                rep = "連點"
-                if s["repeat_mode"].get() == "指定次數":
-                    rep += f"×{_num(s['repeat_count'], 15, int)}"
-                area = s["repeat_area"].get()
-                if "自訂" in area:
-                    area = f"({_num(s['repeat_custom_x'], 0, int)}, {_num(s['repeat_custom_y'], 0, int)})"
-                parts.append(f"{rep}@{area}")
-            if s["timeout_enabled"].get():
-                parts.append(f"{_num(s['timeout_seconds'], 20, int)}s超時跳過")
-            if not is_img:
-                ex = s["exclude_keywords"].get().strip()
-                if ex:
-                    parts.append(f"排除: {ex}")
-            if s["tg_enabled"].get():
-                parts.append("📱TG")
-            return "  ·  ".join(parts)
-
         # 展開/收合切換邏輯
         def refresh(*_):
             if s["expanded"].get():
@@ -2340,7 +2789,7 @@ class BaseballBotGUI:
     # ⚙️ 設定檔序列化、自動儲存與載入 (100% 相容 JSON)
     # ==========================================================================
     def serialize_current_config(self) -> dict:
-        return {
+        cfg_data = {
             "version": "1.0",
             "recognition_mode": self.var_recognition_mode.get(),
             "device": self.var_device.get(),
@@ -2348,6 +2797,7 @@ class BaseballBotGUI:
             "confidence": self.var_confidence.get(),
             "idle_strategy": self.var_idle_strategy.get(),
             "auto_refresh": self.var_auto_refresh.get(),
+            "preview_interval": self.var_preview_interval.get(),
             "lang_tc": self.var_lang_tc.get(),
             "lang_sc": self.var_lang_sc.get(),
             "lang_en": self.var_lang_en.get(),
@@ -2438,6 +2888,13 @@ class BaseballBotGUI:
                 } for s in self.steps_list
             ]
         }
+        if hasattr(self, "task_tab") and self.task_tab:
+            try:
+                cfg_data["task_flow"] = self.task_tab._serialize_all_blocks()
+                cfg_data["task_loop_count"] = self.task_tab.var_loop_count.get()
+            except Exception:
+                pass
+        return cfg_data
 
     def apply_config_dict(self, cfg: dict):
         if not isinstance(cfg, dict):
@@ -2467,6 +2924,8 @@ class BaseballBotGUI:
             self.var_idle_strategy.set(str(cfg["idle_strategy"]))
         if "auto_refresh" in cfg:
             self.var_auto_refresh.set(bool(cfg["auto_refresh"]))
+        if "preview_interval" in cfg:
+            self.var_preview_interval.set(str(cfg["preview_interval"]))
 
         # 語言設定
         if "ocr_languages" in cfg and isinstance(cfg["ocr_languages"], dict):
@@ -2624,17 +3083,81 @@ class BaseballBotGUI:
                     expanded=False
                 )
 
+        # 任務清單積木載入
+        if hasattr(self, "task_tab") and self.task_tab:
+            tf_blocks = cfg.get("task_flow") or (cfg.get("blocks") if "priority_steps" not in cfg else None)
+            if isinstance(tf_blocks, list):
+                try:
+                    if "task_loop_count" in cfg:
+                        self.task_tab.var_loop_count.set(int(cfg["task_loop_count"]))
+                    elif "loop_count" in cfg:
+                        self.task_tab.var_loop_count.set(int(cfg["loop_count"]))
+                    for b in self.task_tab.blocks_list:
+                        for cb in b.get("inner_blocks_list", []):
+                            if cb.get("frame"):
+                                cb["frame"].destroy()
+                        if b.get("frame"):
+                            b["frame"].destroy()
+                    self.task_tab.blocks_list.clear()
+                    self.task_tab.selected_block_target = None
+                    for bd in tf_blocks:
+                        self.task_tab.add_block(
+                            b_type=bd["type"],
+                            params=bd.get("params", {}),
+                            name=bd.get("name", ""),
+                            enabled=bd.get("enabled", True)
+                        )
+                    self.task_tab.auto_save_config()
+                except Exception:
+                    pass
+
         self._is_loading_config = False
         # 刷新所有卡片外觀與辨識模式
         self._on_recognition_mode_changed()
 
     def auto_save_current_config(self):
+        """防抖 (Debounced) 自動存檔，避免連續編輯時重複頻繁寫入硬碟"""
+        if getattr(self, "_is_loading_config", False):
+            return
+        if hasattr(self, "_auto_save_timer") and self._auto_save_timer:
+            try:
+                self.root.after_cancel(self._auto_save_timer)
+            except Exception:
+                pass
+        self._auto_save_timer = self.root.after(300, self._do_auto_save_write)
+
+    def _do_auto_save_write(self):
+        self._auto_save_timer = None
+        if getattr(self, "_is_loading_config", False):
+            return
         try:
             cfg = self.serialize_current_config()
             with open(self.auto_save_file, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+    def save_all_settings(self, show_msg: bool = True):
+        """立即將所有聯賽設定與任務清單儲存至自訂存檔目錄中"""
+        try:
+            self._do_auto_save_write()
+            if hasattr(self, "task_tab") and self.task_tab:
+                self.task_tab.auto_save_config()
+            self.log_message(f"💾 所有設定已成功儲存至存檔目錄: {self.storage_dir}")
+            if show_msg:
+                messagebox.showinfo(
+                    "儲存成功",
+                    f"✅ 所有設定已成功儲存至自訂資料夾：\n{self.storage_dir}\n\n"
+                    f"• 聯賽設定：{os.path.basename(self.auto_save_file)}\n"
+                    f"• 任務清單：{os.path.basename(self.task_save_file)}\n"
+                    f"• 圖片模板：templates/\n\n"
+                    "此目錄完全獨立於 Git 倉庫，不受 git push / pull 影響！",
+                    parent=self.root
+                )
+        except Exception as ex:
+            self.log_message(f"❌ 儲存所有設定失敗: {ex}")
+            if show_msg:
+                messagebox.showerror("儲存失敗", f"無法儲存設定: {ex}", parent=self.root)
 
     def auto_load_last_config(self) -> bool:
         if os.path.exists(self.auto_save_file):
@@ -2650,7 +3173,9 @@ class BaseballBotGUI:
 
     def on_save_config_manual(self):
         path = filedialog.asksaveasfilename(
-            title="儲存設定檔",
+            parent=self.root,
+            initialdir=self.storage_dir if os.path.exists(self.storage_dir) else self.config_dir,
+            title="另存設定檔 (JSON)",
             defaultextension=".json",
             filetypes=[("JSON 設定檔", "*.json"), ("所有檔案", "*.*")]
         )
@@ -2660,9 +3185,9 @@ class BaseballBotGUI:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, ensure_ascii=False, indent=2)
                 self.log_message(f"設定已儲存至: {os.path.basename(path)}")
-                messagebox.showinfo("成功", f"設定已成功儲存至:\n{path}")
+                messagebox.showinfo("成功", f"設定已成功另存至:\n{path}", parent=self.root)
             except Exception as e:
-                messagebox.showerror("錯誤", f"儲存失敗: {e}")
+                messagebox.showerror("錯誤", f"儲存失敗: {e}", parent=self.root)
 
     def on_load_config_manual(self):
         path = filedialog.askopenfilename(
@@ -2690,8 +3215,8 @@ class BaseballBotGUI:
         self.templates_dir = os.path.join(self.storage_dir, "templates")
         self.league_presets_dir = os.path.join(self.storage_dir, "聯賽範本")
         self.task_presets_dir = os.path.join(self.storage_dir, "任務範本")
-        self.auto_save_file = os.path.join(self.storage_dir, "baseball_last_config.json")
-        self.task_save_file = os.path.join(self.storage_dir, "task_flow_save.json")
+        self.auto_save_file = os.path.join(self.storage_dir, f"baseball_last_config{'' if self.instance_id == 1 else f'_{self.instance_id}'}.json")
+        self.task_save_file = os.path.join(self.storage_dir, f"task_flow_save{'' if self.instance_id == 1 else f'_{self.instance_id}'}.json")
 
         try:
             os.makedirs(self.storage_dir, exist_ok=True)
@@ -2730,9 +3255,15 @@ class BaseballBotGUI:
             os.path.join(self.config_dir, "configs"),
             os.path.join(self.config_dir, "聯賽範本"),
         ]
+        def _safe_listdir(p):
+            try:
+                return os.listdir(p) if os.path.isdir(p) else []
+            except Exception:
+                return []
+
         for src_dir in cand_league_dirs:
             if os.path.isdir(src_dir):
-                for fname in os.listdir(src_dir):
+                for fname in _safe_listdir(src_dir):
                     if fname.endswith(".json") and not fname.startswith("."):
                         src = os.path.join(src_dir, fname)
                         dst = os.path.join(self.league_presets_dir, fname)
@@ -2749,7 +3280,7 @@ class BaseballBotGUI:
         ]
         for src_dir in cand_tpl_dirs:
             if os.path.isdir(src_dir):
-                for fname in os.listdir(src_dir):
+                for fname in _safe_listdir(src_dir):
                     if fname.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")) and not fname.startswith("."):
                         src = os.path.join(src_dir, fname)
                         dst = os.path.join(self.templates_dir, fname)
@@ -2766,7 +3297,7 @@ class BaseballBotGUI:
         ]
         for src_dir in cand_task_dirs:
             if os.path.isdir(src_dir):
-                for fname in os.listdir(src_dir):
+                for fname in _safe_listdir(src_dir):
                     if fname.endswith(".json") and not fname.startswith("."):
                         src = os.path.join(src_dir, fname)
                         dst = os.path.join(self.task_presets_dir, fname)
@@ -2778,9 +3309,16 @@ class BaseballBotGUI:
 
         # 4. 拷貝預設/歷史設定
         cand_configs = [
+            (os.path.join(self.config_dir, "autosave_last_config.json"), self.auto_save_file),
             (os.path.join(self.config_dir, "baseball_last_config.json"), self.auto_save_file),
             (os.path.join(self.config_dir, "tasks_flow.json"), self.task_save_file),
+            (os.path.join(self.config_dir, "task_flow_save.json"), self.task_save_file),
         ]
+        if self.instance_id > 1:
+            cand_configs.extend([
+                (os.path.join(self.config_dir, f"autosave_last_config_{self.instance_id}.json"), self.auto_save_file),
+                (os.path.join(self.config_dir, f"tasks_flow_{self.instance_id}.json"), self.task_save_file),
+            ])
         for src, dst in cand_configs:
             if os.path.exists(src) and not os.path.exists(dst):
                 try:
@@ -2933,6 +3471,7 @@ class BaseballBotGUI:
         initial_name = step_or_p.get("name", tk.StringVar()).get().strip() or "btn_template"
 
         def on_saved(filename: str):
+            self.last_snipped_template = filename
             step_or_p["template_image"].set(filename)
             self.auto_save_current_config()
             self.log_message(f"✂️ 已框選並儲存模板圖片: {filename}")
@@ -2956,7 +3495,12 @@ class BaseballBotGUI:
         if not hasattr(self, "league_presets_dir") or not os.path.exists(self.league_presets_dir):
             return
 
-        for fname in sorted(os.listdir(self.league_presets_dir)):
+        try:
+            entries = sorted(os.listdir(self.league_presets_dir))
+        except Exception as ex:
+            entries = []
+
+        for fname in entries:
             if not fname.endswith(".json") or fname.startswith("."):
                 continue
             fpath = os.path.join(self.league_presets_dir, fname)
@@ -3248,10 +3792,11 @@ class BaseballBotGUI:
 
         row_dir = ctk.CTkFrame(inner_top, fg_color="transparent")
         row_dir.pack(fill="x", pady=(4, 0))
-        ctk.CTkLabel(
+        lbl_dir = ctk.CTkLabel(
             row_dir, text=f"範本儲存目錄：{self.league_presets_dir}",
             font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED
-        ).pack(side="left")
+        )
+        lbl_dir.pack(side="left")
 
         def _open_folder():
             try:
@@ -3259,17 +3804,47 @@ class BaseballBotGUI:
                 import subprocess, sys
                 if sys.platform == "darwin":
                     subprocess.Popen(["open", self.league_presets_dir])
-                else:
+                elif sys.platform == "win32":
                     os.startfile(self.league_presets_dir)
+                else:
+                    subprocess.Popen(["xdg-open", self.league_presets_dir])
             except Exception as ex:
                 messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=dlg)
 
+        def _change_dir():
+            d = filedialog.askdirectory(
+                parent=dlg,
+                initialdir=self.storage_dir,
+                title="📁 選擇存檔資料夾"
+            )
+            if d:
+                self.set_storage_dir(d, seed=True)
+                lbl_dir.configure(text=f"範本儲存目錄：{self.league_presets_dir}")
+                self.reload_league_presets()
+                p_keys = list(self.league_presets.keys())
+                combo_exist.configure(
+                    values=[f"{k}: {v.get('title', k)}" for k, v in self.league_presets.items()] if p_keys else ["(尚無範本)"],
+                    state="readonly" if p_keys else "disabled"
+                )
+                if p_keys:
+                    existing_var.set(f"{p_keys[0]}: {self.league_presets[p_keys[0]].get('title', p_keys[0])}")
+                else:
+                    existing_var.set("(尚無範本)")
+                self.log_message(f"📁 存檔資料夾已於儲存視窗中變更為: {d}")
+
         btn_open = ctk.CTkButton(
-            row_dir, text="開啟資料夾", width=80, height=26, corner_radius=6,
+            row_dir, text="↗️ 開啟", width=60, height=26, corner_radius=6,
             font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
             command=_open_folder
         )
         btn_open.pack(side="right")
+
+        btn_change = ctk.CTkButton(
+            row_dir, text="📁 變更目錄", width=76, height=26, corner_radius=6,
+            font=ctk.CTkFont(size=11, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=_change_dir
+        )
+        btn_change.pack(side="right", padx=(0, 4))
 
         self.reload_league_presets()
         preset_keys = list(self.league_presets.keys())
@@ -3477,8 +4052,10 @@ class BaseballBotGUI:
             self._set_status("已連線 (CONNECTED)", COLOR_RUNNING)
             self.btn_start.configure(state="normal")
             self.btn_stop.configure(state="disabled")
-            self.log_message("ADB 裝置連線成功！可以啟動自動刷關。")
+            self.log_message("ADB 裝置連線成功！已自動啟動即時畫面連續刷新。")
             self.on_preview_and_detect()
+            if self.var_auto_refresh.get():
+                self._schedule_next_refresh(self._get_preview_interval_ms())
         else:
             self._set_status("連線失敗 (FAILED)", COLOR_STOPPED)
             messagebox.showerror("錯誤", "無法連線至指定的 ADB 裝置。請檢查連接埠或重啟模擬器。")
@@ -3656,7 +4233,7 @@ class BaseballBotGUI:
                 "image_multiscale": img_ms,
                 "keywords": kws,
                 "exclude_keywords": ex_kws,
-                "action": "custom_coord" if s["action"].get() in ("自訂座標", "自訂特定區塊") else s["action"].get(),
+                "action": "custom_coord" if is_custom_coord_action(s["action"].get()) else s["action"].get(),
                 "custom_x": _num(s["custom_x"], 0, int),
                 "custom_y": _num(s["custom_y"], 0, int),
                 "delay": delay,
@@ -3714,7 +4291,7 @@ class BaseballBotGUI:
                 "image_multiscale": img_ms,
                 "keywords": kws,
                 "exclude_keywords": ex_kws,
-                "action": "custom_coord" if p["action"].get() in ("自訂座標", "自訂特定區塊") else p["action"].get(),
+                "action": "custom_coord" if is_custom_coord_action(p["action"].get()) else p["action"].get(),
                 "custom_x": _num(p["custom_x"], 0, int),
                 "custom_y": _num(p["custom_y"], 0, int),
                 "delay": delay,
@@ -3825,6 +4402,9 @@ class BaseballBotGUI:
                 if screen is not None:
                     self.current_screen_bgr = screen
                     self._render_preview(screen)
+                if self.var_auto_refresh.get() and self.bot.device and not (self.bot.is_running or self.is_running):
+                    if not self.auto_refresh_job:
+                        self._schedule_next_refresh(self._get_preview_interval_ms())
             self.root.after(0, done)
         threading.Thread(target=work, daemon=True).start()
 
@@ -3840,6 +4420,9 @@ class BaseballBotGUI:
     def _render_preview(self, screen_bgr: np.ndarray, matched=None):
         if screen_bgr is None:
             return
+        if getattr(self, "is_dragging", False):
+            # 使用者正在畫面上拖曳框選中，不打斷目前畫布與座標
+            return
         try:
             display_bgr = screen_bgr
             if matched is not None and isinstance(matched, (list, tuple)) and len(matched) >= 4:
@@ -3853,8 +4436,14 @@ class BaseballBotGUI:
 
             h, w = display_bgr.shape[:2]
             self.raw_screen_w, self.raw_screen_h = w, h
-            avail_w = max(100, getattr(self, "canvas_w", 480) - 8)
-            avail_h = max(100, getattr(self, "canvas_h", 270) - 8)
+
+            c_w = PREVIEW_CANVAS_W
+            c_h = PREVIEW_CANVAS_H
+            self.canvas_w = c_w
+            self.canvas_h = c_h
+
+            avail_w = PREVIEW_CANVAS_W
+            avail_h = PREVIEW_CANVAS_H
 
             scale = min(avail_w / w, avail_h / h)
             self.preview_scale = scale
@@ -3865,21 +4454,158 @@ class BaseballBotGUI:
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
             pil_img = Image.fromarray(rgb)
             self.preview_image_tk = ImageTk.PhotoImage(pil_img)
-            self.lbl_canvas.configure(image=self.preview_image_tk, text="")
+
+            cx = c_w // 2
+            cy = c_h // 2
+            if hasattr(self, "preview_canvas"):
+                self.preview_canvas.delete("placeholder")
+                if getattr(self, "preview_canvas_img_id", None) is None or not self.preview_canvas.find_withtag("bg_image"):
+                    self.preview_canvas_img_id = self.preview_canvas.create_image(
+                        cx, cy, image=self.preview_image_tk, anchor="center", tags="bg_image"
+                    )
+                else:
+                    self.preview_canvas.coords("bg_image", cx, cy)
+                    self.preview_canvas.itemconfig("bg_image", image=self.preview_image_tk)
+
+                # 若使用者已框選，更新框線與標籤位置確保對齊
+                if self.preview_crop_coords and not getattr(self, "is_dragging", False):
+                    rx1, ry1, rx2, ry2 = self.preview_crop_coords
+                    w_offset = max(0, (c_w - new_w) // 2)
+                    h_offset = max(0, (c_h - new_h) // 2)
+                    bx1 = int(rx1 * scale) + w_offset
+                    by1 = int(ry1 * scale) + h_offset
+                    bx2 = int(rx2 * scale) + w_offset
+                    by2 = int(ry2 * scale) + h_offset
+                    if self.preview_canvas.find_withtag("selection_box"):
+                        self.preview_canvas.coords("selection_box", bx1, by1, bx2, by2)
+                    else:
+                        self.preview_canvas.create_rectangle(
+                            bx1, by1, bx2, by2, outline="#F59E0B", width=2, dash=(4, 2), tags="selection_box"
+                        )
+                    if self.preview_canvas.find_withtag("selection_text"):
+                        self.preview_canvas.coords("selection_text", bx1 + 4, max(14, by1 - 10))
+                    else:
+                        self.preview_canvas.create_text(
+                            bx1 + 4, max(14, by1 - 10),
+                            text=f"{rx2 - rx1}×{ry2 - ry1}",
+                            fill="#FBBF24",
+                            font=("Arial", 11, "bold"),
+                            anchor="w",
+                            tags="selection_text"
+                        )
+
+                self.preview_canvas.tag_raise("selection_box")
+                self.preview_canvas.tag_raise("selection_text")
         except Exception:
             pass
 
     def _on_preview_resize(self, e=None):
-        if e:
-            self.canvas_w = e.width
-            self.canvas_h = e.height
-        if self.current_screen_bgr is not None:
-            self._render_preview(self.current_screen_bgr)
+        # 畫布尺寸已完全鎖定為 PREVIEW_CANVAS_W × PREVIEW_CANVAS_H，不隨視窗變更縮放
+        pass
+
+    def _on_preview_press(self, e):
+        self.drag_start_x = max(0, min(PREVIEW_CANVAS_W, e.x))
+        self.drag_start_y = max(0, min(PREVIEW_CANVAS_H, e.y))
+        self.is_dragging = False
+        self.preview_canvas.delete("selection_box")
+        self.preview_canvas.delete("selection_text")
+        self.preview_crop_coords = None
+        if hasattr(self, "btn_crop_selection"):
+            self.btn_crop_selection.configure(state="disabled", text="✂️ 裁切截圖", fg_color=COLOR_BTN_DARK)
+
+    def _on_preview_drag(self, e):
+        if not hasattr(self, "drag_start_x"):
+            return
+        cur_x = max(0, min(PREVIEW_CANVAS_W, e.x))
+        cur_y = max(0, min(PREVIEW_CANVAS_H, e.y))
+        dx = abs(cur_x - self.drag_start_x)
+        dy = abs(cur_y - self.drag_start_y)
+        if dx > 4 or dy > 4:
+            self.is_dragging = True
+            x1 = min(self.drag_start_x, cur_x)
+            y1 = min(self.drag_start_y, cur_y)
+            x2 = max(self.drag_start_x, cur_x)
+            y2 = max(self.drag_start_y, cur_y)
+
+            if self.preview_canvas.find_withtag("selection_box"):
+                self.preview_canvas.coords("selection_box", x1, y1, x2, y2)
+            else:
+                self.preview_canvas.create_rectangle(
+                    x1, y1, x2, y2,
+                    outline="#F59E0B", width=2, dash=(4, 2), tags="selection_box"
+                )
+
+            rx1, ry1 = self._preview_to_real_clamped(x1, y1)
+            rx2, ry2 = self._preview_to_real_clamped(x2, y2)
+            rw = max(0, rx2 - rx1)
+            rh = max(0, ry2 - ry1)
+
+            tx = x1 + 4
+            ty = max(14, y1 - 10)
+            if self.preview_canvas.find_withtag("selection_text"):
+                self.preview_canvas.coords("selection_text", tx, ty)
+                self.preview_canvas.itemconfig("selection_text", text=f"{rw}×{rh}")
+            else:
+                self.preview_canvas.create_text(
+                    tx, ty, text=f"{rw}×{rh}", fill="#FBBF24",
+                    font=("Arial", 11, "bold"), anchor="w", tags="selection_text"
+                )
+
+            self.preview_canvas.tag_raise("selection_box")
+            self.preview_canvas.tag_raise("selection_text")
+            self.var_preview_coords.set(f"框選範圍: {rw}×{rh} (X:{rx1}~{rx2}, Y:{ry1}~{ry2})")
+
+    def _on_preview_release(self, e):
+        if getattr(self, "is_dragging", False):
+            self.is_dragging = False
+            cur_x = max(0, min(PREVIEW_CANVAS_W, e.x))
+            cur_y = max(0, min(PREVIEW_CANVAS_H, e.y))
+            x1 = min(self.drag_start_x, cur_x)
+            y1 = min(self.drag_start_y, cur_y)
+            x2 = max(self.drag_start_x, cur_x)
+            y2 = max(self.drag_start_y, cur_y)
+            rx1, ry1 = self._preview_to_real_clamped(x1, y1)
+            rx2, ry2 = self._preview_to_real_clamped(x2, y2)
+            rw = rx2 - rx1
+            rh = ry2 - ry1
+            if rw >= 8 and rh >= 8 and self.current_screen_bgr is not None:
+                self.preview_crop_coords = (rx1, ry1, rx2, ry2)
+                if hasattr(self, "btn_crop_selection"):
+                    self.btn_crop_selection.configure(
+                        state="normal",
+                        text=f"✂️ 裁切截圖 ({rw}×{rh})",
+                        fg_color="#10B981",
+                        hover_color="#059669"
+                    )
+                self.var_preview_coords.set(f"已選取範圍: {rw}×{rh} (X:{rx1}~{rx2}, Y:{ry1}~{ry2})，請按【✂️ 裁切截圖】")
+            else:
+                self.preview_canvas.delete("selection_box")
+                self.preview_canvas.delete("selection_text")
+                self.preview_crop_coords = None
+                if hasattr(self, "btn_crop_selection"):
+                    self.btn_crop_selection.configure(state="disabled", text="✂️ 裁切截圖", fg_color=COLOR_BTN_DARK)
+        else:
+            # 單純點擊（無拖曳）：清空選取框並執行單點自訂座標填入
+            self.preview_canvas.delete("selection_box")
+            self.preview_canvas.delete("selection_text")
+            self.preview_crop_coords = None
+            if hasattr(self, "btn_crop_selection"):
+                self.btn_crop_selection.configure(state="disabled", text="✂️ 裁切截圖", fg_color=COLOR_BTN_DARK)
+            self._on_preview_click(e)
 
     def _on_preview_mouse_move(self, e):
-        rx, ry = self._preview_to_real(e.x, e.y)
-        if rx is not None:
-            self.var_preview_coords.set(f"X: {rx}, Y: {ry}")
+        if not getattr(self, "is_dragging", False):
+            rx, ry = self._preview_to_real(e.x, e.y)
+            if rx is not None:
+                if self.preview_crop_coords:
+                    r1, r2, r3, r4 = self.preview_crop_coords
+                    self.var_preview_coords.set(f"選取: {r3-r1}×{r4-r2} | 游標: ({rx}, {ry})")
+                else:
+                    self.var_preview_coords.set(f"X: {rx}, Y: {ry}")
+
+    def _on_preview_mouse_leave(self, e):
+        if not getattr(self, "is_dragging", False) and not self.preview_crop_coords:
+            self.var_preview_coords.set("")
 
     def _on_preview_click(self, e):
         rx, ry = self._preview_to_real(e.x, e.y)
@@ -3894,16 +4620,16 @@ class BaseballBotGUI:
             # 1. 檢查優先動作中展開的卡片
             for p in self.priority_steps_list:
                 if p.get("expanded") and p["expanded"].get():
-                    # 若開啟命中後連點且設為自訂座標，優先填入連點座標
                     if p.get("repeat_enabled") and p["repeat_enabled"].get() and "自訂" in p.get("repeat_area", tk.StringVar()).get():
                         p["repeat_custom_x"].set(rx)
                         p["repeat_custom_y"].set(ry)
                         self.log_message(f"已填入優先動作 [{p['name'].get()}] 連點自訂座標: ({rx}, {ry})")
                         return
-                    elif p.get("action") and p["action"].get() in ("自訂座標", "自訂特定區塊"):
+                    else:
                         p["custom_x"].set(rx)
                         p["custom_y"].set(ry)
-                        self.log_message(f"已填入優先動作 [{p['name'].get()}] 點擊自訂座標: ({rx}, {ry})")
+                        p["action"].set(ACTION_CUSTOM_COORD)
+                        self.log_message(f"已填入優先動作 [{p['name'].get()}] 點擊指定座標: ({rx}, {ry})")
                         return
 
             # 2. 檢查一般步驟中展開的卡片
@@ -3917,23 +4643,31 @@ class BaseballBotGUI:
                     else:
                         s["custom_x"].set(rx)
                         s["custom_y"].set(ry)
-                        s["action"].set("自訂座標")
-                        self.log_message(f"已填入步驟 [{s['name'].get()}] 自訂座標: ({rx}, {ry})")
+                        s["action"].set(ACTION_CUSTOM_COORD)
+                        self.log_message(f"已填入步驟 [{s['name'].get()}] 點擊指定座標: ({rx}, {ry})")
                         return
 
-            # 3. 若無任何卡片展開，預設填入最後一個一般步驟
+            # 3. 若無任何卡片展開，預設填入最後一個一般步驟或優先動作
             if self.steps_list:
                 last_s = self.steps_list[-1]
                 last_s["custom_x"].set(rx)
                 last_s["custom_y"].set(ry)
-                last_s["action"].set("自訂座標")
-                self.log_message(f"已填入步驟 [{last_s['name'].get()}] 自訂座標: ({rx}, {ry})")
+                last_s["action"].set(ACTION_CUSTOM_COORD)
+                self.log_message(f"已填入步驟 [{last_s['name'].get()}] 點擊指定座標: ({rx}, {ry})")
+            elif self.priority_steps_list:
+                last_p = self.priority_steps_list[-1]
+                last_p["custom_x"].set(rx)
+                last_p["custom_y"].set(ry)
+                last_p["action"].set(ACTION_CUSTOM_COORD)
+                self.log_message(f"已填入優先動作 [{last_p['name'].get()}] 點擊指定座標: ({rx}, {ry})")
 
     def _preview_to_real(self, ex: int, ey: int) -> Tuple[Optional[int], Optional[int]]:
         if not self.raw_screen_w or not self.preview_scale:
             return None, None
-        w_offset = max(0, (self.canvas_w - self.preview_img_w) // 2)
-        h_offset = max(0, (self.canvas_h - self.preview_img_h) // 2)
+        c_w = PREVIEW_CANVAS_W
+        c_h = PREVIEW_CANVAS_H
+        w_offset = max(0, (c_w - self.preview_img_w) // 2)
+        h_offset = max(0, (c_h - self.preview_img_h) // 2)
         img_x = ex - w_offset
         img_y = ey - h_offset
         if 0 <= img_x <= self.preview_img_w and 0 <= img_y <= self.preview_img_h:
@@ -3942,15 +4676,114 @@ class BaseballBotGUI:
             return min(self.raw_screen_w, max(0, rx)), min(self.raw_screen_h, max(0, ry))
         return None, None
 
+    def _preview_to_real_clamped(self, ex: int, ey: int) -> Tuple[int, int]:
+        if not self.raw_screen_w or not self.preview_scale:
+            return 0, 0
+        c_w = PREVIEW_CANVAS_W
+        c_h = PREVIEW_CANVAS_H
+        w_offset = max(0, (c_w - self.preview_img_w) // 2)
+        h_offset = max(0, (c_h - self.preview_img_h) // 2)
+        img_x = ex - w_offset
+        img_y = ey - h_offset
+        rx = int(img_x / self.preview_scale)
+        ry = int(img_y / self.preview_scale)
+        return min(self.raw_screen_w, max(0, rx)), min(self.raw_screen_h, max(0, ry))
+
+    def on_crop_preview_selection(self):
+        """將在預覽畫布上框選的區域直接快速裁切儲存為模板圖片，無需彈出確認視窗"""
+        if self.current_screen_bgr is None or not self.preview_crop_coords:
+            messagebox.showwarning("提示", "尚未在預覽畫面上框選任何區域！\n請先用滑鼠在遊戲畫面上按住並拖曳出框選矩形。", parent=self.root)
+            return
+
+        rx1, ry1, rx2, ry2 = self.preview_crop_coords
+        crop_bgr = self.current_screen_bgr[ry1:ry2, rx1:rx2].copy()
+        ch, cw = crop_bgr.shape[:2]
+        if cw < 4 or ch < 4:
+            messagebox.showwarning("提示", "框選範圍過小，請重新框選！", parent=self.root)
+            return
+
+        # 自動生成檔名 (優先使用目前展開步驟之名稱，否則以時間戳命名)
+        active_step = None
+        for p in self.priority_steps_list:
+            if p.get("expanded") and p["expanded"].get():
+                active_step = p
+                break
+        if not active_step:
+            for s in self.steps_list:
+                if s.get("expanded") and s["expanded"].get():
+                    active_step = s
+                    break
+
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        if active_step:
+            step_name = active_step["name"].get().strip()
+            clean_name = "".join(c for c in step_name if c.isalnum() or c in ("_", "-")).strip()
+            fname = f"{clean_name}_{ts[-4:]}.png" if clean_name else f"snip_{ts}.png"
+        else:
+            fname = f"snip_{ts}.png"
+
+        target_path = os.path.join(self.templates_dir, fname)
+        try:
+            os.makedirs(self.templates_dir, exist_ok=True)
+            success = imwrite_unicode(target_path, crop_bgr)
+            if not success:
+                messagebox.showerror("錯誤", f"無法寫入圖檔至: {target_path}", parent=self.root)
+                return
+
+            self.last_snipped_template = fname
+            self.log_message(f"✂️ 快速截圖成功: {fname} ({cw}×{ch})，已儲存至 templates/，請在步驟卡片點擊【📥 帶入截圖】！")
+
+            # 清除畫布選取標記與重置裁切按鈕
+            self.preview_canvas.delete("selection_box")
+            self.preview_canvas.delete("selection_text")
+            self.preview_crop_coords = None
+            if hasattr(self, "btn_crop_selection"):
+                self.btn_crop_selection.configure(state="disabled", text="✂️ 裁切截圖", fg_color=COLOR_BTN_DARK)
+
+            self.var_preview_coords.set(f"✅ 已成功截圖: {fname} ({cw}×{ch})")
+        except Exception as ex:
+            self.log_message(f"❌ 快速截圖失敗: {ex}")
+            messagebox.showerror("截圖失敗", f"無法儲存截圖: {ex}", parent=self.root)
+
+    def on_apply_last_snippet(self, step_or_p: dict):
+        """將最近一次在預覽畫面上裁切的模板圖片直接載入至指定的步驟"""
+        if not getattr(self, "last_snipped_template", None):
+            messagebox.showinfo(
+                "提示",
+                "尚未在預覽畫面上裁切過任何圖片模板！\n\n使用方式：\n1. 在右側預覽畫面按住滑鼠左鍵拖曳框選目標按鈕\n2. 點擊【✂️ 裁切截圖】儲存模板\n3. 再點擊步驟上的【📥 帶入截圖】即可直接套用！",
+                parent=self.root
+            )
+            return
+
+        target_tpl = self.last_snipped_template
+        step_or_p["template_image"].set(target_tpl)
+        self.auto_save_current_config()
+        self.log_message(f"📥 已成功將最新截圖「{target_tpl}」帶入至步驟「{step_or_p['name'].get()}」")
+
+    def _get_preview_interval_ms(self) -> int:
+        try:
+            val_str = self.var_preview_interval.get().replace("秒", "").replace("s", "").strip()
+            return max(300, int(float(val_str) * 1000))
+        except Exception:
+            return 1500
+
+    def _on_preview_interval_change(self, val: str = None):
+        interval_ms = self._get_preview_interval_ms()
+        self.log_message(f"⏱ 預覽畫面自動刷新間隔已設定為: {self.var_preview_interval.get()}")
+        if self.var_auto_refresh.get() and self.bot.device and not (self.bot.is_running or self.is_running):
+            self._schedule_next_refresh(interval_ms)
+
     def on_toggle_auto_refresh(self):
         if self.var_auto_refresh.get():
-            self._schedule_next_refresh(1500)
+            self._schedule_next_refresh(self._get_preview_interval_ms())
         else:
             if self.auto_refresh_job:
                 self.root.after_cancel(self.auto_refresh_job)
                 self.auto_refresh_job = None
 
-    def _schedule_next_refresh(self, delay_ms: int = 1500):
+    def _schedule_next_refresh(self, delay_ms: int = None):
+        if delay_ms is None:
+            delay_ms = self._get_preview_interval_ms()
         if self.auto_refresh_job:
             self.root.after_cancel(self.auto_refresh_job)
         self.auto_refresh_job = self.root.after(delay_ms, self._auto_refresh_tick)
@@ -3959,9 +4792,14 @@ class BaseballBotGUI:
         self.auto_refresh_job = None
         if self.bot.is_running or self.is_running:
             return
+        if getattr(self, "is_dragging", False):
+            # 使用者正在畫面上拖曳框選截圖，暫緩刷新避免畫面閃爍打斷操作
+            self._schedule_next_refresh(600)
+            return
         if self.var_auto_refresh.get() and self.bot.device:
             self.on_preview_and_detect()
-            self._schedule_next_refresh(2000)
+            interval_ms = self._get_preview_interval_ms()
+            self._schedule_next_refresh(interval_ms)
 
     # ==========================================================================
     # 📜 日誌終端輸出與跨執行緒佇列渲染
@@ -4065,7 +4903,12 @@ class BaseballBotGUI:
         BaseballBotGUI(new_win, instance_id=self.instance_id + 1)
 
     def on_close_window(self):
-        self.auto_save_current_config()
+        self._do_auto_save_write()
+        if hasattr(self, "task_tab") and self.task_tab:
+            try:
+                self.task_tab.auto_save_config()
+            except Exception:
+                pass
         if hasattr(self, "batting_tab") and self.batting_tab:
             try:
                 self.batting_tab.on_close()

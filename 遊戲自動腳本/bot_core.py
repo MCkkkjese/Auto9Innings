@@ -1230,11 +1230,17 @@ class BaseballBot:
         - 右半側中央：點擊螢幕 (82%, 50%)
         """
         img_h, img_w = screen_shape
-        act = str(action).strip() if action else "點擊詞條"
+        act = str(action).strip() if action else "點擊目標"
         custom_x = int(step.get("custom_x", step.get("repeat_custom_x", 0)))
         custom_y = int(step.get("custom_y", step.get("repeat_custom_y", 0)))
 
-        if act in ("custom_coord", "自訂座標", "自訂特定區塊"):
+        is_custom = (
+            act in ("custom_coord", "自訂座標", "點擊指定座標", "自訂特定區塊")
+            or "指定座標" in act
+            or "自訂" in act
+            or "custom" in act.lower()
+        )
+        if is_custom:
             if custom_x > 0 and custom_y > 0:
                 return custom_x + random.randint(-4, 4), custom_y + random.randint(-4, 4)
             return custom_x, custom_y
@@ -1251,7 +1257,7 @@ class BaseballBot:
             bx, by = int(img_w * 0.82), int(img_h * 0.50)
             return bx + random.randint(-6, 6), by + random.randint(-6, 6)
         else:
-            # 點擊詞條 / 點擊字元 (預設)
+            # 點擊目標中心 (圖片模板或文字詞條)
             cx, cy = item["center"]
             bw, bh = item.get("size", (40, 20))
             off_x = min(max(3, bw // 8), 6)
@@ -1880,7 +1886,10 @@ class BaseballBot:
                 p_count = 0
                 while self.is_running and p_count < max_p_cycles:
                     p_count += 1
-                    self._log(f"⭐ [{p_tag}] 命中「{p_text}」({p_score:.2f}) → 優先點擊 ({px}, {py})")
+                    p_act = str(p_step.get("action", ""))
+                    is_p_cust = "custom" in p_act.lower() or "自訂" in p_act or "指定座標" in p_act
+                    click_target_desc = f"點擊指定座標 ({px}, {py})" if is_p_cust else f"優先點擊目標中心 ({px}, {py})"
+                    self._log(f"⭐ [{p_tag}] 命中「{p_text}」({p_score:.2f}) → {click_target_desc}")
 
                     rep_enabled = p_step.get("repeat_enabled", False)
                     # 1. 【0ms 極速下發 ADB 指令】：偵測到優先字元第一時間秒按！
@@ -2169,7 +2178,10 @@ class BaseballBot:
                         del detected
                     continue
 
-                self._log(f"🎯 [{step_tag}] 命中「{text}」({score:.2f}) → 點擊 ({x}, {y})")
+                s_act = str(step.get("action", ""))
+                is_s_cust = "custom" in s_act.lower() or "自訂" in s_act or "指定座標" in s_act
+                click_target_desc = f"點擊指定座標 ({x}, {y})" if is_s_cust else f"點擊目標中心 ({x}, {y})"
+                self._log(f"🎯 [{step_tag}] 命中「{text}」({score:.2f}) → {click_target_desc}")
 
                 # 1. 【0ms 極速下發 ADB 指令】：第一時間下發點擊指令，確保反應動作零延遲
                 self.tap(x, y, delay_range=(0.04, 0.08))

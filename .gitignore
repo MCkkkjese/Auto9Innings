@@ -1,0 +1,20 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Runtime sessions & database temp files
+*.ses
+:memory:.ses
+_memory:.ses
+
+# Local runtime config & autosave files (avoid git push/pull overwrite)
+autosave_last_config*.json
+baseball_last_config*.json
+tasks_flow*.json
+task_flow_save*.json
+

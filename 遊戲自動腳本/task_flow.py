@@ -1218,7 +1218,12 @@ class TaskFlowTab:
             self._render_preset_buttons()
             return
 
-        for fname in sorted(os.listdir(self.presets_dir)):
+        try:
+            entries = sorted(os.listdir(self.presets_dir))
+        except Exception:
+            entries = []
+
+        for fname in entries:
             if not fname.endswith(".json"):
                 continue
             fpath = os.path.join(self.presets_dir, fname)
@@ -3192,11 +3197,11 @@ class TaskFlowTab:
 
         row_dir = ctk.CTkFrame(inner_top, fg_color="transparent")
         row_dir.pack(fill="x", pady=(4, 0))
-        folder_name = os.path.basename(self.presets_dir)
-        ctk.CTkLabel(
-            row_dir, text=f"範本資料夾：{folder_name}/",
+        lbl_dir = ctk.CTkLabel(
+            row_dir, text=f"範本儲存目錄：{self.presets_dir}",
             font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED
-        ).pack(side="left")
+        )
+        lbl_dir.pack(side="left")
 
         def _open_folder():
             try:
@@ -3204,17 +3209,52 @@ class TaskFlowTab:
                 import subprocess, sys
                 if sys.platform == "darwin":
                     subprocess.Popen(["open", self.presets_dir])
-                else:
+                elif sys.platform == "win32":
                     os.startfile(self.presets_dir)
+                else:
+                    subprocess.Popen(["xdg-open", self.presets_dir])
             except Exception as ex:
                 messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=dlg)
 
+        def _change_task_dir():
+            d = filedialog.askdirectory(
+                parent=dlg,
+                initialdir=self.presets_dir if os.path.exists(self.presets_dir) else os.path.expanduser("~/Documents"),
+                title="📁 選擇任務範本儲存資料夾"
+            )
+            if d:
+                if self.gui and hasattr(self.gui, "set_storage_dir"):
+                    self.gui.set_storage_dir(d, seed=True)
+                    self.presets_dir = self.gui.task_presets_dir
+                else:
+                    self.presets_dir = d
+                    os.makedirs(self.presets_dir, exist_ok=True)
+                lbl_dir.configure(text=f"範本儲存目錄：{self.presets_dir}")
+                self.reload_presets()
+                p_keys = list(self.presets.keys())
+                combo_exist.configure(
+                    values=[f"{k}: {v.get('title', k)}" for k, v in self.presets.items()] if p_keys else ["(尚無範本)"],
+                    state="readonly" if p_keys else "disabled"
+                )
+                if p_keys:
+                    existing_var.set(f"{p_keys[0]}: {self.presets[p_keys[0]].get('title', p_keys[0])}")
+                else:
+                    existing_var.set("(尚無範本)")
+                self._log(f"📁 任務範本資料夾已切換至: {self.presets_dir}")
+
         btn_open = ctk.CTkButton(
-            row_dir, text="開啟資料夾", width=80, height=26, corner_radius=6,
+            row_dir, text="↗️ 開啟", width=60, height=26, corner_radius=6,
             font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
             command=_open_folder
         )
         btn_open.pack(side="right")
+
+        btn_change = ctk.CTkButton(
+            row_dir, text="📁 變更目錄", width=76, height=26, corner_radius=6,
+            font=ctk.CTkFont(size=11, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=_change_task_dir
+        )
+        btn_change.pack(side="right", padx=(0, 4))
 
         mode_var = tk.StringVar(value="new" if (default_mode == "new" or not self.presets) else "existing")
         name_var = tk.StringVar(value=f"自訂任務_{len(self.presets) + 1}")
