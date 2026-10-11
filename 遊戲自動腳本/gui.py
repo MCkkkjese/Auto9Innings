@@ -838,23 +838,223 @@ class BaseballBotGUI:
         ctk.CTkLabel(ra, text="範圍:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
         ctk.CTkOptionMenu(ra, variable=p["roi"], values=ROI_OPTIONS, width=110, height=24, corner_radius=6, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
 
+        ctk.CTkLabel(ra, text="延遲:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(ra, textvariable=p["delay"], width=42, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left")
+        ctk.CTkLabel(ra, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(2, 0))
+
+        # 任務清單跳轉面板 (動作為 📋 執行任務清單 時顯示)
+        box_task_flow = ctk.CTkFrame(detail, fg_color="#1E1B4B", corner_radius=6, border_width=1, border_color="#8B5CF6")
+        row_tf1 = ctk.CTkFrame(box_task_flow, fg_color="transparent")
+        row_tf1.pack(fill="x", padx=8, pady=(4, 2))
+        ctk.CTkLabel(row_tf1, text="跳轉目標:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#A78BFA").pack(side="left", padx=(0, 4))
+        combo_task_mode = ctk.CTkOptionMenu(
+            row_tf1,
+            variable=p["task_target_mode"],
+            values=["📋 完整任務清單", "🧩 指定積木步驟", "💡 常用日常範本"],
+            width=120,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10)
+        )
+        combo_task_mode.pack(side="left", padx=(0, 4))
+        combo_task_item = ctk.CTkOptionMenu(row_tf1, variable=p["task_target_item"], values=["(無)"], width=160, height=22, corner_radius=4, font=ctk.CTkFont(size=10))
+
+        def _update_p_task_items(*_):
+            m = p["task_target_mode"].get()
+            if m == "🧩 指定積木步驟":
+                choices = self.task_tab.get_block_choices() if hasattr(self, "task_tab") else []
+                combo_task_item.configure(values=choices if choices else ["(無步驟)"])
+                if choices and p["task_target_item"].get() not in choices:
+                    p["task_target_item"].set(choices[0])
+                combo_task_item.pack(side="left", padx=(2, 4))
+            elif m == "💡 常用日常範本":
+                choices = self.task_tab.get_preset_choices() if hasattr(self, "task_tab") else []
+                combo_task_item.configure(values=choices if choices else ["(無範本)"])
+                if choices and p["task_target_item"].get() not in choices:
+                    p["task_target_item"].set(choices[0])
+                combo_task_item.pack(side="left", padx=(2, 4))
+            else:
+                combo_task_item.pack_forget()
+
+        p["task_target_mode"].trace_add("write", _update_p_task_items)
+
+        row_tf2 = ctk.CTkFrame(box_task_flow, fg_color="transparent")
+        row_tf2.pack(fill="x", padx=8, pady=(2, 4))
+        ctk.CTkLabel(row_tf2, text="冷卻時間:", font=ctk.CTkFont(size=11), text_color="#A78BFA").pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(row_tf2, textvariable=p["task_cooldown"], width=46, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 2))
+        ctk.CTkLabel(row_tf2, text="秒 (避免短時間重複觸發)", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+        ctk.CTkButton(row_tf2, text="🔄 刷新", width=50, height=20, corner_radius=4, command=_update_p_task_items, font=ctk.CTkFont(size=10), fg_color="#4C1D95", hover_color="#5B21B6").pack(side="right")
+
         def _refresh_act_ui(*_):
             if p["action"].get() in ("自訂座標", "自訂特定區塊"):
                 box_act_xy.pack(side="left", padx=(0, 6))
             else:
                 box_act_xy.pack_forget()
+            if p["action"].get() == "📋 執行任務清單":
+                box_task_flow.pack(fill="x", pady=(4, 0))
+                _update_p_task_items()
+            else:
+                box_task_flow.pack_forget()
+
         p["action"].trace_add("write", _refresh_act_ui)
         _refresh_act_ui()
-
-        ctk.CTkLabel(ra, text="延遲:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
-        ctk.CTkEntry(ra, textvariable=p["delay"], width=42, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left")
-        ctk.CTkLabel(ra, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(2, 0))
 
         # 排除字詞列
         re = ctk.CTkFrame(detail, fg_color="transparent")
         re.pack(fill="x", pady=(4, 0))
         ctk.CTkLabel(re, text="排除字詞:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#F87171").pack(side="left", padx=(0, 4))
         ctk.CTkEntry(re, textvariable=p["exclude_keywords"], height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=10)).pack(side="left", fill="x", expand=True)
+
+        # 條件存在時重複執行（until消失）
+        row_while = ctk.CTkFrame(detail, fg_color="transparent")
+        row_while.pack(fill="x", pady=(4, 0))
+        ctk.CTkCheckBox(
+            row_while,
+            text="條件存在時重複執行（直到消失）",
+            variable=p["while_condition"],
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_PRIMARY,
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4
+        ).pack(side="left")
+
+        # ⚡ 命中後連點區塊
+        row_rep = ctk.CTkFrame(detail, fg_color="transparent")
+        row_rep.pack(fill="x", pady=(4, 0))
+        ctk.CTkCheckBox(
+            row_rep,
+            text="⚡ 命中後連點（過場跳過）",
+            variable=p["repeat_enabled"],
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#F59E0B",
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4
+        ).pack(side="left", padx=(0, 8))
+
+        # 連點細項面板
+        box_rep_detail = ctk.CTkFrame(detail, fg_color="#1E1E2E", corner_radius=6, border_width=1, border_color="#3B4252")
+
+        row_rep_opts = ctk.CTkFrame(box_rep_detail, fg_color="transparent")
+        row_rep_opts.pack(fill="x", padx=8, pady=(4, 2))
+
+        ctk.CTkLabel(row_rep_opts, text="模式:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(
+            row_rep_opts,
+            variable=p["repeat_mode"],
+            values=REPEAT_MODES,
+            width=90,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10)
+        ).pack(side="left", padx=(0, 8))
+
+        box_rep_cnt = ctk.CTkFrame(row_rep_opts, fg_color="transparent")
+        ctk.CTkLabel(box_rep_cnt, text="次數:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(box_rep_cnt, textvariable=p["repeat_count"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 2))
+        ctk.CTkLabel(box_rep_cnt, text="次", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(row_rep_opts, text="間隔:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(row_rep_opts, textvariable=p["repeat_speed"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 2))
+        ctk.CTkLabel(row_rep_opts, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 8))
+
+        row_rep_loc = ctk.CTkFrame(box_rep_detail, fg_color="transparent")
+        row_rep_loc.pack(fill="x", padx=8, pady=(2, 4))
+
+        ctk.CTkLabel(row_rep_loc, text="位置:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(
+            row_rep_loc,
+            variable=p["repeat_area"],
+            values=REPEAT_AREAS,
+            width=110,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10)
+        ).pack(side="left", padx=(0, 6))
+
+        box_rep_xy = ctk.CTkFrame(row_rep_loc, fg_color="transparent")
+        ctk.CTkLabel(box_rep_xy, text="X:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+        ctk.CTkEntry(box_rep_xy, textvariable=p["repeat_custom_x"], width=46, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 4))
+        ctk.CTkLabel(box_rep_xy, text="Y:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+        ctk.CTkEntry(box_rep_xy, textvariable=p["repeat_custom_y"], width=46, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 0))
+
+        def _refresh_p_repeat_ui(*_):
+            if p["repeat_enabled"].get():
+                box_rep_detail.pack(fill="x", pady=(2, 0))
+                if p["repeat_mode"].get() == "指定次數":
+                    box_rep_cnt.pack(side="left", padx=(0, 8))
+                else:
+                    box_rep_cnt.pack_forget()
+                if "自訂" in p["repeat_area"].get():
+                    box_rep_xy.pack(side="left", padx=(4, 0))
+                else:
+                    box_rep_xy.pack_forget()
+            else:
+                box_rep_detail.pack_forget()
+
+        p["repeat_enabled"].trace_add("write", _refresh_p_repeat_ui)
+        p["repeat_mode"].trace_add("write", _refresh_p_repeat_ui)
+        p["repeat_area"].trace_add("write", _refresh_p_repeat_ui)
+        _refresh_p_repeat_ui()
+
+        # Telegram 通知列
+        row_tg = ctk.CTkFrame(detail, fg_color="transparent")
+        row_tg.pack(fill="x", pady=(4, 0))
+        ctk.CTkCheckBox(
+            row_tg,
+            text="📱 成功後發送 Telegram 通知",
+            variable=p["tg_enabled"],
+            font=ctk.CTkFont(size=11),
+            text_color="#38BDF8",
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4
+        ).pack(side="left", padx=(0, 6))
+
+        box_tg_msg = ctk.CTkFrame(detail, fg_color="transparent")
+        ctk.CTkLabel(box_tg_msg, text="訊息內容:", font=ctk.CTkFont(size=10), text_color="#38BDF8").pack(side="left", padx=(22, 4))
+        ctk.CTkEntry(box_tg_msg, textvariable=p["tg_message"], height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=10)).pack(side="left", fill="x", expand=True)
+
+        def _refresh_p_tg_ui(*_):
+            if p["tg_enabled"].get():
+                box_tg_msg.pack(fill="x", pady=(2, 0))
+            else:
+                box_tg_msg.pack_forget()
+        p["tg_enabled"].trace_add("write", _refresh_p_tg_ui)
+        _refresh_p_tg_ui()
+
+        def summary() -> str:
+            act = p["action"].get()
+            if act in ("自訂座標", "自訂特定區塊"):
+                act += f" ({p['custom_x'].get()}, {p['custom_y'].get()})"
+            elif act == "📋 執行任務清單":
+                t_m = p["task_target_mode"].get()
+                t_i = p["task_target_item"].get()
+                act = f"📋 跳轉: {t_i if t_m != '📋 完整任務清單' and t_i else t_m}"
+            parts = [f"↳ {act}", p["roi"].get(), f"延遲 {_num(p['delay'], 1.0):g}s"]
+            if p["while_condition"].get():
+                parts.append("while重複")
+            if p["repeat_enabled"].get():
+                rep = "連點"
+                if p["repeat_mode"].get() == "指定次數":
+                    rep += f"×{_num(p['repeat_count'], 15, int)}"
+                area = p["repeat_area"].get()
+                if "自訂" in area:
+                    area = f"({_num(p['repeat_custom_x'], 0, int)}, {_num(p['repeat_custom_y'], 0, int)})"
+                parts.append(f"{rep}@{area}")
+            ex = p["exclude_keywords"].get().strip()
+            if ex:
+                parts.append(f"排除: {ex}")
+            if p["tg_enabled"].get():
+                parts.append("📱TG")
+            return "  ·  ".join(parts)
 
         # 展開/收合切換邏輯
         def refresh(*_):
@@ -865,7 +1065,7 @@ class BaseballBotGUI:
             else:
                 btn_toggle.configure(text="▸")
                 detail.pack_forget()
-                lbl_sum.configure(text=f"  ↳ {p['action'].get()} | 延遲 {p['delay'].get()}s | 範圍: {p['roi'].get()}")
+                lbl_sum.configure(text=summary())
                 lbl_sum.pack(fill="x", padx=12, pady=(0, 4))
 
         p["expanded"].trace_add("write", refresh)
@@ -1016,23 +1216,236 @@ class BaseballBotGUI:
         ctk.CTkLabel(ra, text="範圍:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
         ctk.CTkOptionMenu(ra, variable=s["roi"], values=ROI_OPTIONS, width=110, height=24, corner_radius=6, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
 
+        ctk.CTkLabel(ra, text="延遲:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(ra, textvariable=s["delay"], width=42, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left")
+        ctk.CTkLabel(ra, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(2, 0))
+
+        # 任務清單跳轉面板 (動作為 📋 執行任務清單 時顯示)
+        box_task_flow = ctk.CTkFrame(detail, fg_color="#1E1B4B", corner_radius=6, border_width=1, border_color="#8B5CF6")
+        row_tf1 = ctk.CTkFrame(box_task_flow, fg_color="transparent")
+        row_tf1.pack(fill="x", padx=8, pady=(4, 2))
+        ctk.CTkLabel(row_tf1, text="跳轉目標:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#A78BFA").pack(side="left", padx=(0, 4))
+        combo_task_mode = ctk.CTkOptionMenu(
+            row_tf1,
+            variable=s["task_target_mode"],
+            values=["📋 完整任務清單", "🧩 指定積木步驟", "💡 常用日常範本"],
+            width=120,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10)
+        )
+        combo_task_mode.pack(side="left", padx=(0, 4))
+        combo_task_item = ctk.CTkOptionMenu(row_tf1, variable=s["task_target_item"], values=["(無)"], width=160, height=22, corner_radius=4, font=ctk.CTkFont(size=10))
+
+        def _update_s_task_items(*_):
+            m = s["task_target_mode"].get()
+            if m == "🧩 指定積木步驟":
+                choices = self.task_tab.get_block_choices() if hasattr(self, "task_tab") else []
+                combo_task_item.configure(values=choices if choices else ["(無步驟)"])
+                if choices and s["task_target_item"].get() not in choices:
+                    s["task_target_item"].set(choices[0])
+                combo_task_item.pack(side="left", padx=(2, 4))
+            elif m == "💡 常用日常範本":
+                choices = self.task_tab.get_preset_choices() if hasattr(self, "task_tab") else []
+                combo_task_item.configure(values=choices if choices else ["(無範本)"])
+                if choices and s["task_target_item"].get() not in choices:
+                    s["task_target_item"].set(choices[0])
+                combo_task_item.pack(side="left", padx=(2, 4))
+            else:
+                combo_task_item.pack_forget()
+
+        s["task_target_mode"].trace_add("write", _update_s_task_items)
+
+        row_tf2 = ctk.CTkFrame(box_task_flow, fg_color="transparent")
+        row_tf2.pack(fill="x", padx=8, pady=(2, 4))
+        ctk.CTkLabel(row_tf2, text="冷卻時間:", font=ctk.CTkFont(size=11), text_color="#A78BFA").pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(row_tf2, textvariable=s["task_cooldown"], width=46, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 2))
+        ctk.CTkLabel(row_tf2, text="秒 (避免短時間重複觸發)", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+        ctk.CTkButton(row_tf2, text="🔄 刷新", width=50, height=20, corner_radius=4, command=_update_s_task_items, font=ctk.CTkFont(size=10), fg_color="#4C1D95", hover_color="#5B21B6").pack(side="right")
+
         def _refresh_s_act_ui(*_):
             if s["action"].get() in ("自訂座標", "自訂特定區塊"):
                 box_act_xy.pack(side="left", padx=(0, 6))
             else:
                 box_act_xy.pack_forget()
+            if s["action"].get() == "📋 執行任務清單":
+                box_task_flow.pack(fill="x", pady=(4, 0))
+                _update_s_task_items()
+            else:
+                box_task_flow.pack_forget()
+
         s["action"].trace_add("write", _refresh_s_act_ui)
         _refresh_s_act_ui()
-
-        ctk.CTkLabel(ra, text="延遲:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
-        ctk.CTkEntry(ra, textvariable=s["delay"], width=42, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left")
-        ctk.CTkLabel(ra, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(2, 0))
 
         # 排除字詞列
         re = ctk.CTkFrame(detail, fg_color="transparent")
         re.pack(fill="x", pady=(4, 0))
         ctk.CTkLabel(re, text="排除字詞:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#F87171").pack(side="left", padx=(0, 4))
         ctk.CTkEntry(re, textvariable=s["exclude_keywords"], height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=10)).pack(side="left", fill="x", expand=True)
+
+        # ⚡ 命中後連點區塊
+        row_rep = ctk.CTkFrame(detail, fg_color="transparent")
+        row_rep.pack(fill="x", pady=(4, 0))
+        ctk.CTkCheckBox(
+            row_rep,
+            text="⚡ 命中後連點（過場跳過）",
+            variable=s["repeat_enabled"],
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#F59E0B",
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4
+        ).pack(side="left", padx=(0, 8))
+
+        # 連點細項面板
+        box_rep_detail = ctk.CTkFrame(detail, fg_color="#1E1E2E", corner_radius=6, border_width=1, border_color="#3B4252")
+
+        row_rep_opts = ctk.CTkFrame(box_rep_detail, fg_color="transparent")
+        row_rep_opts.pack(fill="x", padx=8, pady=(4, 2))
+
+        ctk.CTkLabel(row_rep_opts, text="模式:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(
+            row_rep_opts,
+            variable=s["repeat_mode"],
+            values=REPEAT_MODES,
+            width=90,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10)
+        ).pack(side="left", padx=(0, 8))
+
+        box_rep_cnt = ctk.CTkFrame(row_rep_opts, fg_color="transparent")
+        ctk.CTkLabel(box_rep_cnt, text="次數:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(box_rep_cnt, textvariable=s["repeat_count"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 2))
+        ctk.CTkLabel(box_rep_cnt, text="次", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(row_rep_opts, text="間隔:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(row_rep_opts, textvariable=s["repeat_speed"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 2))
+        ctk.CTkLabel(row_rep_opts, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 8))
+
+        row_rep_loc = ctk.CTkFrame(box_rep_detail, fg_color="transparent")
+        row_rep_loc.pack(fill="x", padx=8, pady=(2, 4))
+
+        ctk.CTkLabel(row_rep_loc, text="位置:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(
+            row_rep_loc,
+            variable=s["repeat_area"],
+            values=REPEAT_AREAS,
+            width=110,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10)
+        ).pack(side="left", padx=(0, 6))
+
+        box_rep_xy = ctk.CTkFrame(row_rep_loc, fg_color="transparent")
+        ctk.CTkLabel(box_rep_xy, text="X:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+        ctk.CTkEntry(box_rep_xy, textvariable=s["repeat_custom_x"], width=46, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 4))
+        ctk.CTkLabel(box_rep_xy, text="Y:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+        ctk.CTkEntry(box_rep_xy, textvariable=s["repeat_custom_y"], width=46, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 0))
+
+        def _refresh_s_repeat_ui(*_):
+            if s["repeat_enabled"].get():
+                box_rep_detail.pack(fill="x", pady=(2, 0))
+                if s["repeat_mode"].get() == "指定次數":
+                    box_rep_cnt.pack(side="left", padx=(0, 8))
+                else:
+                    box_rep_cnt.pack_forget()
+                if "自訂" in s["repeat_area"].get():
+                    box_rep_xy.pack(side="left", padx=(4, 0))
+                else:
+                    box_rep_xy.pack_forget()
+            else:
+                box_rep_detail.pack_forget()
+
+        s["repeat_enabled"].trace_add("write", _refresh_s_repeat_ui)
+        s["repeat_mode"].trace_add("write", _refresh_s_repeat_ui)
+        s["repeat_area"].trace_add("write", _refresh_s_repeat_ui)
+        _refresh_s_repeat_ui()
+
+        # 超時未命中跳過
+        row_timeout = ctk.CTkFrame(detail, fg_color="transparent")
+        row_timeout.pack(fill="x", pady=(4, 0))
+        ctk.CTkCheckBox(
+            row_timeout,
+            text="⏱ 超時未命中跳過",
+            variable=s["timeout_enabled"],
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_PRIMARY,
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4
+        ).pack(side="left", padx=(0, 6))
+
+        box_timeout = ctk.CTkFrame(row_timeout, fg_color="transparent")
+        ctk.CTkLabel(box_timeout, text="等候上限:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(box_timeout, textvariable=s["timeout_seconds"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 2))
+        ctk.CTkLabel(box_timeout, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+
+        def _refresh_s_timeout_ui(*_):
+            if s["timeout_enabled"].get():
+                box_timeout.pack(side="left")
+            else:
+                box_timeout.pack_forget()
+        s["timeout_enabled"].trace_add("write", _refresh_s_timeout_ui)
+        _refresh_s_timeout_ui()
+
+        # Telegram 通知列
+        row_tg = ctk.CTkFrame(detail, fg_color="transparent")
+        row_tg.pack(fill="x", pady=(4, 0))
+        ctk.CTkCheckBox(
+            row_tg,
+            text="📱 成功後發送 Telegram 通知",
+            variable=s["tg_enabled"],
+            font=ctk.CTkFont(size=11),
+            text_color="#38BDF8",
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4
+        ).pack(side="left", padx=(0, 6))
+
+        box_tg_msg = ctk.CTkFrame(detail, fg_color="transparent")
+        ctk.CTkLabel(box_tg_msg, text="訊息內容:", font=ctk.CTkFont(size=10), text_color="#38BDF8").pack(side="left", padx=(22, 4))
+        ctk.CTkEntry(box_tg_msg, textvariable=s["tg_message"], height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=10)).pack(side="left", fill="x", expand=True)
+
+        def _refresh_s_tg_ui(*_):
+            if s["tg_enabled"].get():
+                box_tg_msg.pack(fill="x", pady=(2, 0))
+            else:
+                box_tg_msg.pack_forget()
+        s["tg_enabled"].trace_add("write", _refresh_s_tg_ui)
+        _refresh_s_tg_ui()
+
+        def summary() -> str:
+            act = s["action"].get()
+            if act in ("自訂座標", "自訂特定區塊"):
+                act += f" ({s['custom_x'].get()}, {s['custom_y'].get()})"
+            elif act == "📋 執行任務清單":
+                t_m = s["task_target_mode"].get()
+                t_i = s["task_target_item"].get()
+                act = f"📋 跳轉: {t_i if t_m != '📋 完整任務清單' and t_i else t_m}"
+            parts = [f"↳ {act}", s["roi"].get(), f"延遲 {_num(s['delay'], 2.5):g}s"]
+            if s["repeat_enabled"].get():
+                rep = "連點"
+                if s["repeat_mode"].get() == "指定次數":
+                    rep += f"×{_num(s['repeat_count'], 15, int)}"
+                area = s["repeat_area"].get()
+                if "自訂" in area:
+                    area = f"({_num(s['repeat_custom_x'], 0, int)}, {_num(s['repeat_custom_y'], 0, int)})"
+                parts.append(f"{rep}@{area}")
+            if s["timeout_enabled"].get():
+                parts.append(f"{_num(s['timeout_seconds'], 20, int)}s超時跳過")
+            ex = s["exclude_keywords"].get().strip()
+            if ex:
+                parts.append(f"排除: {ex}")
+            if s["tg_enabled"].get():
+                parts.append("📱TG")
+            return "  ·  ".join(parts)
 
         # 展開/收合切換邏輯
         def refresh(*_):
@@ -1043,7 +1456,7 @@ class BaseballBotGUI:
             else:
                 btn_toggle.configure(text="▸")
                 detail.pack_forget()
-                lbl_sum.configure(text=f"  ↳ {s['action'].get()} | 延遲 {s['delay'].get()}s | 範圍: {s['roi'].get()}")
+                lbl_sum.configure(text=summary())
                 lbl_sum.pack(fill="x", padx=12, pady=(0, 4))
 
         s["expanded"].trace_add("write", refresh)
@@ -1114,6 +1527,7 @@ class BaseballBotGUI:
     # ==========================================================================
     def serialize_current_config(self) -> dict:
         return {
+            "version": "1.0",
             "device": self.var_device.get(),
             "interval": self.var_interval.get(),
             "confidence": self.var_confidence.get(),
@@ -1122,50 +1536,84 @@ class BaseballBotGUI:
             "lang_tc": self.var_lang_tc.get(),
             "lang_sc": self.var_lang_sc.get(),
             "lang_en": self.var_lang_en.get(),
+            "ocr_languages": {
+                "tc": self.var_lang_tc.get(),
+                "sc": self.var_lang_sc.get(),
+                "en": self.var_lang_en.get(),
+            },
             "watchdog_enabled": self.var_watchdog_enabled.get(),
             "watchdog_seconds": self.var_watchdog_seconds.get(),
+            "watchdog": {
+                "enabled": self.var_watchdog_enabled.get(),
+                "seconds": self.var_watchdog_seconds.get(),
+            },
+            "idle_tap": {
+                "enabled": self.var_idle_tap_enabled.get(),
+                "area": self.var_idle_tap_area.get(),
+                "times": self.var_idle_tap_times.get(),
+                "interval": self.var_idle_tap_interval.get(),
+                "custom_x": self.var_idle_tap_custom_x.get(),
+                "custom_y": self.var_idle_tap_custom_y.get(),
+            },
             "tg_token": self.var_tg_token.get(),
             "tg_chat_id": self.var_tg_chat_id.get(),
+            "telegram_global": {
+                "token": self.var_tg_token.get(),
+                "chat_id": self.var_tg_chat_id.get(),
+            },
             "priority_steps": [
                 {
                     "name": p["name"].get(),
                     "keywords": p["keywords"].get(),
-                    "target_type": p["target_type"].get(),
-                    "exclude_keywords": p["exclude_keywords"].get(),
+                    "target_type": p["target_type"].get() if "target_type" in p else "📝 僅文字",
+                    "exclude_keywords": p["exclude_keywords"].get() if "exclude_keywords" in p else "",
                     "action": p["action"].get(),
                     "custom_x": p["custom_x"].get(),
                     "custom_y": p["custom_y"].get(),
                     "delay": p["delay"].get(),
                     "roi": p["roi"].get(),
+                    "while_condition": p["while_condition"].get() if "while_condition" in p else True,
+                    "repeat_enabled": p["repeat_enabled"].get() if "repeat_enabled" in p else False,
+                    "repeat_mode": p["repeat_mode"].get() if "repeat_mode" in p else "持續連點",
+                    "repeat_count": p["repeat_count"].get() if "repeat_count" in p else 5,
+                    "repeat_speed": p["repeat_speed"].get() if "repeat_speed" in p else 0.25,
+                    "repeat_area": p["repeat_area"].get() if "repeat_area" in p else "右下角區域",
+                    "repeat_custom_x": p["repeat_custom_x"].get() if "repeat_custom_x" in p else 960,
+                    "repeat_custom_y": p["repeat_custom_y"].get() if "repeat_custom_y" in p else 540,
                     "enabled": p["enabled"].get(),
-                    "tg_enabled": p["tg_enabled"].get(),
-                    "tg_message": p["tg_message"].get(),
-                    "task_target_mode": p["task_target_mode"].get(),
-                    "task_target_item": p["task_target_item"].get(),
-                    "task_cooldown": p["task_cooldown"].get(),
+                    "tg_enabled": p["tg_enabled"].get() if "tg_enabled" in p else False,
+                    "tg_message": p["tg_message"].get() if "tg_message" in p else "",
+                    "task_target_mode": p["task_target_mode"].get() if "task_target_mode" in p else "📋 完整任務清單",
+                    "task_target_item": p["task_target_item"].get() if "task_target_item" in p else "",
+                    "task_cooldown": p["task_cooldown"].get() if "task_cooldown" in p else 60.0,
                 } for p in self.priority_steps_list
             ],
             "steps": [
                 {
                     "name": s["name"].get(),
                     "keywords": s["keywords"].get(),
-                    "target_type": s["target_type"].get(),
-                    "exclude_keywords": s["exclude_keywords"].get(),
+                    "target_type": s["target_type"].get() if "target_type" in s else "📝 僅文字",
+                    "exclude_keywords": s["exclude_keywords"].get() if "exclude_keywords" in s else "",
                     "action": s["action"].get(),
                     "custom_x": s["custom_x"].get(),
                     "custom_y": s["custom_y"].get(),
                     "delay": s["delay"].get(),
                     "roi": s["roi"].get(),
                     "enabled": s["enabled"].get(),
-                    "repeat_enabled": s["repeat_enabled"].get(),
-                    "repeat_mode": s["repeat_mode"].get(),
-                    "repeat_count": s["repeat_count"].get(),
-                    "repeat_speed": s["repeat_speed"].get(),
-                    "repeat_area": s["repeat_area"].get(),
-                    "repeat_custom_x": s["repeat_custom_x"].get(),
-                    "repeat_custom_y": s["repeat_custom_y"].get(),
-                    "timeout_enabled": s["timeout_enabled"].get(),
-                    "timeout_seconds": s["timeout_seconds"].get(),
+                    "repeat_enabled": s["repeat_enabled"].get() if "repeat_enabled" in s else False,
+                    "repeat_mode": s["repeat_mode"].get() if "repeat_mode" in s else "持續連點",
+                    "repeat_count": s["repeat_count"].get() if "repeat_count" in s else 5,
+                    "repeat_speed": s["repeat_speed"].get() if "repeat_speed" in s else 0.25,
+                    "repeat_area": s["repeat_area"].get() if "repeat_area" in s else "右下角區域",
+                    "repeat_custom_x": s["repeat_custom_x"].get() if "repeat_custom_x" in s else 960,
+                    "repeat_custom_y": s["repeat_custom_y"].get() if "repeat_custom_y" in s else 540,
+                    "timeout_enabled": s["timeout_enabled"].get() if "timeout_enabled" in s else False,
+                    "timeout_seconds": s["timeout_seconds"].get() if "timeout_seconds" in s else 20,
+                    "tg_enabled": s["tg_enabled"].get() if "tg_enabled" in s else False,
+                    "tg_message": s["tg_message"].get() if "tg_message" in s else "",
+                    "task_target_mode": s["task_target_mode"].get() if "task_target_mode" in s else "📋 完整任務清單",
+                    "task_target_item": s["task_target_item"].get() if "task_target_item" in s else "",
+                    "task_cooldown": s["task_cooldown"].get() if "task_cooldown" in s else 60.0,
                 } for s in self.steps_list
             ]
         }
@@ -1173,62 +1621,161 @@ class BaseballBotGUI:
     def apply_config_dict(self, cfg: dict):
         if not isinstance(cfg, dict):
             return
-        if "interval" in cfg: self.var_interval.set(cfg["interval"])
-        if "confidence" in cfg: self.var_confidence.set(cfg["confidence"])
-        if "auto_refresh" in cfg: self.var_auto_refresh.set(cfg["auto_refresh"])
-        if "lang_tc" in cfg: self.var_lang_tc.set(cfg["lang_tc"])
-        if "lang_sc" in cfg: self.var_lang_sc.set(cfg["lang_sc"])
-        if "lang_en" in cfg: self.var_lang_en.set(cfg["lang_en"])
-        if "watchdog_enabled" in cfg: self.var_watchdog_enabled.set(cfg["watchdog_enabled"])
-        if "watchdog_seconds" in cfg: self.var_watchdog_seconds.set(cfg["watchdog_seconds"])
-        if "tg_token" in cfg: self.var_tg_token.set(cfg["tg_token"])
-        if "tg_chat_id" in cfg: self.var_tg_chat_id.set(cfg["tg_chat_id"])
+        if "device" in cfg and cfg["device"]:
+            self.var_device.set(cfg["device"])
+        if "interval" in cfg:
+            try:
+                self.var_interval.set(float(cfg["interval"]))
+            except Exception:
+                pass
+        if "confidence" in cfg:
+            try:
+                self.var_confidence.set(float(cfg["confidence"]))
+            except Exception:
+                pass
+        if "idle_strategy" in cfg:
+            self.var_idle_strategy.set(str(cfg["idle_strategy"]))
+        if "auto_refresh" in cfg:
+            self.var_auto_refresh.set(bool(cfg["auto_refresh"]))
 
-        if "priority_steps" in cfg:
+        # 語言設定
+        if "ocr_languages" in cfg and isinstance(cfg["ocr_languages"], dict):
+            langs = cfg["ocr_languages"]
+            self.var_lang_tc.set(bool(langs.get("tc", True)))
+            self.var_lang_sc.set(bool(langs.get("sc", False)))
+            self.var_lang_en.set(bool(langs.get("en", True)))
+        else:
+            if "lang_tc" in cfg: self.var_lang_tc.set(bool(cfg["lang_tc"]))
+            if "lang_sc" in cfg: self.var_lang_sc.set(bool(cfg["lang_sc"]))
+            if "lang_en" in cfg: self.var_lang_en.set(bool(cfg["lang_en"]))
+
+        if hasattr(self, "bot"):
+            self.bot.set_allowed_languages(
+                self.var_lang_tc.get(),
+                self.var_lang_sc.get(),
+                self.var_lang_en.get()
+            )
+
+        # 看門狗防卡死
+        if "watchdog" in cfg and isinstance(cfg["watchdog"], dict):
+            wd = cfg["watchdog"]
+            self.var_watchdog_enabled.set(bool(wd.get("enabled", False)))
+            self.var_watchdog_seconds.set(int(wd.get("seconds", 60)))
+        else:
+            if "watchdog_enabled" in cfg: self.var_watchdog_enabled.set(bool(cfg["watchdog_enabled"]))
+            if "watchdog_seconds" in cfg: self.var_watchdog_seconds.set(int(cfg["watchdog_seconds"]))
+
+        # 連點區塊
+        if "idle_tap" in cfg and isinstance(cfg["idle_tap"], dict):
+            it = cfg["idle_tap"]
+            self.var_idle_tap_enabled.set(bool(it.get("enabled", False)))
+            self.var_idle_tap_area.set(str(it.get("area", "右下角區域")))
+            self.var_idle_tap_times.set(int(it.get("times", 3)))
+            self.var_idle_tap_interval.set(float(it.get("interval", 0.4)))
+            self.var_idle_tap_custom_x.set(int(it.get("custom_x", 983)))
+            self.var_idle_tap_custom_y.set(int(it.get("custom_y", 1023)))
+
+        # Telegram
+        if "telegram_global" in cfg and isinstance(cfg["telegram_global"], dict):
+            tg_g = cfg["telegram_global"]
+            self.var_tg_token.set(str(tg_g.get("token", DEFAULT_TG_TOKEN)))
+            self.var_tg_chat_id.set(str(tg_g.get("chat_id", DEFAULT_TG_CHAT_ID)))
+        else:
+            if "tg_token" in cfg: self.var_tg_token.set(str(cfg["tg_token"]))
+            if "tg_chat_id" in cfg: self.var_tg_chat_id.set(str(cfg["tg_chat_id"]))
+
+        # 優先動作
+        p_list = cfg.get("priority_steps")
+        if p_list is None and "priority" in cfg and isinstance(cfg["priority"], dict):
+            p_old = cfg["priority"]
+            if p_old.get("keywords") or p_old.get("enabled"):
+                p_list = [p_old]
+
+        if isinstance(p_list, list):
             self._clear_all_priority_steps()
-            for p_data in cfg["priority_steps"]:
+            for p_data in p_list:
+                kw = p_data.get("keywords", "")
+                if isinstance(kw, list):
+                    kw = ", ".join(str(k) for k in kw)
+                ex_kw = p_data.get("exclude_keywords", "")
+                if isinstance(ex_kw, list):
+                    ex_kw = ", ".join(str(k) for k in ex_kw)
+
+                tg_on = p_data.get("tg_enabled", False)
+                tg_msg = p_data.get("tg_message", "")
+                if isinstance(p_data.get("telegram"), dict):
+                    tg_on = p_data["telegram"].get("enabled", tg_on)
+                    tg_msg = p_data["telegram"].get("message", tg_msg)
+
                 self._create_priority_step_widget(
-                    name=p_data.get("name", ""),
-                    keywords=p_data.get("keywords", ""),
-                    target_type=p_data.get("target_type", "📝 僅文字"),
-                    exclude_keywords=p_data.get("exclude_keywords", ""),
-                    action=p_data.get("action", "點擊詞條"),
-                    custom_x=p_data.get("custom_x", 960),
-                    custom_y=p_data.get("custom_y", 540),
-                    delay=p_data.get("delay", 2.0),
-                    roi_name=p_data.get("roi", "全畫面比對"),
-                    enabled=p_data.get("enabled", True),
-                    tg_enabled=p_data.get("tg_enabled", False),
-                    tg_message=p_data.get("tg_message", ""),
-                    task_target_mode=p_data.get("task_target_mode", "📋 完整任務清單"),
-                    task_target_item=p_data.get("task_target_item", ""),
-                    task_cooldown=p_data.get("task_cooldown", 60.0),
+                    name=str(p_data.get("name", "優先動作")),
+                    keywords=str(kw),
+                    target_type=str(p_data.get("target_type", "📝 僅文字")),
+                    exclude_keywords=str(ex_kw),
+                    action=str(p_data.get("action", "點擊詞條")),
+                    custom_x=int(p_data.get("custom_x", 960)),
+                    custom_y=int(p_data.get("custom_y", 540)),
+                    delay=float(p_data.get("delay", 2.0)),
+                    roi_name=str(p_data.get("roi", "全畫面比對")),
+                    while_condition=bool(p_data.get("while_condition", True)),
+                    repeat_enabled=bool(p_data.get("repeat_enabled", False)),
+                    repeat_mode=str(p_data.get("repeat_mode", "持續連點")),
+                    repeat_count=int(p_data.get("repeat_count", 5)),
+                    repeat_speed=float(p_data.get("repeat_speed", 0.25)),
+                    repeat_area=str(p_data.get("repeat_area", "右下角區域")),
+                    repeat_custom_x=int(p_data.get("repeat_custom_x", 960)),
+                    repeat_custom_y=int(p_data.get("repeat_custom_y", 540)),
+                    enabled=bool(p_data.get("enabled", True)),
+                    tg_enabled=bool(tg_on),
+                    tg_message=str(tg_msg),
+                    task_target_mode=str(p_data.get("task_target_mode", "📋 完整任務清單")),
+                    task_target_item=str(p_data.get("task_target_item", "")),
+                    task_cooldown=float(p_data.get("task_cooldown", 60.0)),
                     expanded=False
                 )
 
-        if "steps" in cfg:
+        # 一般步驟
+        if isinstance(cfg.get("steps"), list):
             self._clear_all_steps()
             for s_data in cfg["steps"]:
+                kw = s_data.get("keywords", "")
+                if isinstance(kw, list):
+                    kw = ", ".join(str(k) for k in kw)
+                ex_kw = s_data.get("exclude_keywords", "")
+                if isinstance(ex_kw, list):
+                    ex_kw = ", ".join(str(k) for k in ex_kw)
+
+                tg_on = s_data.get("tg_enabled", False)
+                tg_msg = s_data.get("tg_message", "")
+                if isinstance(s_data.get("telegram"), dict):
+                    tg_on = s_data["telegram"].get("enabled", tg_on)
+                    tg_msg = s_data["telegram"].get("message", tg_msg)
+
                 self._create_step_widget(
-                    name=s_data.get("name", ""),
-                    keywords=s_data.get("keywords", ""),
-                    target_type=s_data.get("target_type", "📝 僅文字"),
-                    exclude_keywords=s_data.get("exclude_keywords", ""),
-                    action=s_data.get("action", "點擊詞條"),
-                    custom_x=s_data.get("custom_x", 960),
-                    custom_y=s_data.get("custom_y", 540),
-                    delay=s_data.get("delay", 2.5),
-                    roi_name=s_data.get("roi", "右下角區域"),
-                    enabled=s_data.get("enabled", True),
-                    repeat_enabled=s_data.get("repeat_enabled", False),
-                    repeat_mode=s_data.get("repeat_mode", "持續連點"),
-                    repeat_count=s_data.get("repeat_count", 5),
-                    repeat_speed=s_data.get("repeat_speed", 0.25),
-                    repeat_area=s_data.get("repeat_area", "右下角區域"),
-                    repeat_custom_x=s_data.get("repeat_custom_x", 960),
-                    repeat_custom_y=s_data.get("repeat_custom_y", 540),
-                    timeout_enabled=s_data.get("timeout_enabled", False),
-                    timeout_seconds=s_data.get("timeout_seconds", 20),
+                    name=str(s_data.get("name", "步驟")),
+                    keywords=str(kw),
+                    target_type=str(s_data.get("target_type", "📝 僅文字")),
+                    exclude_keywords=str(ex_kw),
+                    action=str(s_data.get("action", "點擊詞條")),
+                    custom_x=int(s_data.get("custom_x", 960)),
+                    custom_y=int(s_data.get("custom_y", 540)),
+                    delay=float(s_data.get("delay", 2.5)),
+                    roi_name=str(s_data.get("roi", "右下角區域")),
+                    enabled=bool(s_data.get("enabled", True)),
+                    repeat_enabled=bool(s_data.get("repeat_enabled", False)),
+                    repeat_mode=str(s_data.get("repeat_mode", "持續連點")),
+                    repeat_count=int(s_data.get("repeat_count", 5)),
+                    repeat_speed=float(s_data.get("repeat_speed", 0.25)),
+                    repeat_area=str(s_data.get("repeat_area", "右下角區域")),
+                    repeat_custom_x=int(s_data.get("repeat_custom_x", 960)),
+                    repeat_custom_y=int(s_data.get("repeat_custom_y", 540)),
+                    timeout_enabled=bool(s_data.get("timeout_enabled", False)),
+                    timeout_seconds=int(s_data.get("timeout_seconds", 20)),
+                    tg_enabled=bool(tg_on),
+                    tg_message=str(tg_msg),
+                    task_target_mode=str(s_data.get("task_target_mode", "📋 完整任務清單")),
+                    task_target_item=str(s_data.get("task_target_item", "")),
+                    task_cooldown=float(s_data.get("task_cooldown", 60.0)),
                     expanded=False
                 )
 
@@ -1349,12 +1896,62 @@ class BaseballBotGUI:
     # ==========================================================================
     # 🧵 執行緒運作與背景巡檢 (Worker Loop)
     # ==========================================================================
+    def _map_roi_name_to_tuple(self, roi_name: str):
+        """範圍名稱 -> (ymin, xmin, ymax, xmax) 比例"""
+        return {
+            "右下角區域": (0.45, 0.45, 1.0, 1.0),
+            "右半側螢幕": (0.0, 0.45, 1.0, 1.0),
+            "下半部區域": (0.50, 0.0, 1.0, 1.0),
+            "中央區域": (0.25, 0.25, 0.75, 0.75),
+            "全畫面比對": (0.0, 0.0, 1.0, 1.0),
+        }.get(roi_name, (0.0, 0.0, 1.0, 1.0))
+
+    def _sync_bot_roi(self):
+        self.bot.confidence_threshold = _num(self.var_confidence, 0.65)
+        self.bot.roi = None
+
     def on_start_bot(self):
         if self.is_running:
             return
         if not self.bot.device:
             messagebox.showwarning("警告", "尚未連線至 ADB 裝置，請先點擊「連線」。")
             return
+        if hasattr(self, "task_tab") and self.task_tab and self.task_tab.engine.is_running:
+            messagebox.showwarning("提示", "【任務清單】正在執行中，請先停止任務清單再啟動聯賽自動刷關。")
+            return
+
+        steps = self._get_active_steps_config()
+        priority_steps = self._get_active_priority_steps_config()
+        if not any(s["enabled"] for s in steps) and not any(p["enabled"] for p in priority_steps):
+            messagebox.showwarning("提示", "請至少啟用一個步驟或優先動作")
+            return
+
+        self.auto_save_current_config()
+        self._sync_bot_roi()
+        self.current_screen_bgr = None
+        self._last_detected = None
+        self._preview_frame_count = 0
+        self._last_preview_time = 0.0
+        self._preview_update_pending = False
+        import gc
+        gc.collect()
+
+        interval = _num(self.var_interval, 2.5)
+        strat = self.var_idle_strategy.get()
+        idle = "skip" if "跳過" in strat else "stop" if "停止" in strat else "wait"
+        idle_tap_cfg = {
+            "enabled": self.var_idle_tap_enabled.get(),
+            "area": self.var_idle_tap_area.get(),
+            "times": _num(self.var_idle_tap_times, 3, int),
+            "interval": _num(self.var_idle_tap_interval, 0.4),
+            "custom_x": _num(self.var_idle_tap_custom_x, 983, int),
+            "custom_y": _num(self.var_idle_tap_custom_y, 1023, int),
+            "custom_coord": (_num(self.var_idle_tap_custom_x, 983, int), _num(self.var_idle_tap_custom_y, 1023, int)),
+        }
+        watchdog_cfg = {
+            "enabled": self.var_watchdog_enabled.get(),
+            "seconds": _num(self.var_watchdog_seconds, 60, int),
+        }
 
         self.is_running = True
         self.bot.is_running = True
@@ -1365,115 +1962,235 @@ class BaseballBotGUI:
         self.btn_stop.configure(state="normal")
         self.log_message("🚀 自動刷關執行緒已啟動！")
 
-        interval = float(self.var_interval.get())
-        steps = self._get_active_steps_config()
-        p_steps = self._get_active_priority_steps_config()
-
         self.worker_thread = threading.Thread(
             target=self._run_worker,
-            args=(interval, steps, p_steps),
+            args=(interval, steps, idle, idle_tap_cfg, priority_steps, watchdog_cfg),
             daemon=True
         )
         self.worker_thread.start()
 
     def on_stop_bot(self):
-        if not self.is_running:
-            return
+        if getattr(self, "_watchdog_restart_job", None):
+            self.root.after_cancel(self._watchdog_restart_job)
+            self._watchdog_restart_job = None
         self.log_message("🛑 正在停止自動刷關...")
-        self.bot.is_running = False
+        self.bot.stop()
+        if hasattr(self, "task_tab") and self.task_tab:
+            self.task_tab.engine.stop()
         self.is_running = False
         self._set_status("已停止 (STOPPED)", COLOR_STOPPED)
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
 
-    def _run_worker(self, interval: float, steps: list, priority_steps: list):
-        """背景執行緒迴圈：完全獨立運行，保證介面零卡頓"""
-        while self.is_running and self.bot.is_running:
-            self.loop_count += 1
-            screen = self.bot.capture_screen()
-            if screen is not None:
-                self.current_screen_bgr = screen
-                detected = self.bot.scan_text(screen)
-
-                # 1. 優先動作比對
-                matched_p = None
-                for p_cfg in priority_steps:
-                    if not p_cfg.get("enabled", True):
-                        continue
-                    kws = [k.strip() for k in p_cfg.get("keywords", "").split(",") if k.strip()]
-                    for d in detected:
-                        txt = d.get("text", "")
-                        if any(kw in txt for kw in kws):
-                            matched_p = (p_cfg, d)
-                            break
-                    if matched_p:
-                        break
-
-                if matched_p:
-                    p_cfg, d_item = matched_p
-                    self.hit_count += 1
-                    self.log_message(f"⚡ [優先命中] {p_cfg.get('name')}: {d_item.get('text')}")
-                    # 執行點擊
-                    cx, cy = d_item.get("center", (960, 540))
-                    self.bot.tap(cx, cy)
-                    time.sleep(float(p_cfg.get("delay", 2.0)))
-                    continue
-
-                # 2. 一般步驟比對
-                for s_cfg in steps:
-                    if not s_cfg.get("enabled", True):
-                        continue
-                    kws = [k.strip() for k in s_cfg.get("keywords", "").split(",") if k.strip()]
-                    matched_s = None
-                    for d in detected:
-                        txt = d.get("text", "")
-                        if any(kw in txt for kw in kws):
-                            matched_s = d
-                            break
-                    if matched_s:
-                        self.hit_count += 1
-                        self.log_message(f"🎯 [命中步驟] {s_cfg.get('name')}: {matched_s.get('text')}")
-                        cx, cy = matched_s.get("center", (960, 540))
-                        self.bot.tap(cx, cy)
-                        time.sleep(float(s_cfg.get("delay", 2.5)))
-                        break
-
-            # 睡眠等待下一輪
-            time.sleep(interval)
-
-        self.root.after(0, self._on_worker_stopped)
+    def _run_worker(self, interval: float, steps: list, idle: str, idle_tap_cfg: dict, priority_steps: list, watchdog_cfg: dict = None):
+        """背景執行緒迴圈：委託 bot_core.run_loop 運行完整比對與動作引擎"""
+        try:
+            self.bot.run_loop(
+                poll_interval=interval,
+                custom_steps=steps,
+                idle_strategy=idle,
+                idle_tap_config=idle_tap_cfg,
+                priority_steps=priority_steps,
+                watchdog_config=watchdog_cfg,
+            )
+        except Exception as e:
+            self.log_message(f"❌ 執行中斷: {e}")
+        finally:
+            self.root.after(0, self._on_worker_stopped)
 
     def _on_worker_stopped(self):
+        self.current_screen_bgr = None
+        self._last_detected = None
+        import gc
+        gc.collect()
+
+        was_watchdog = getattr(self.bot, "_watchdog_triggered", False)
+        self.bot._watchdog_triggered = False
+
+        if was_watchdog:
+            self.log_message("🔄 [防卡死守護] 腳本已由守護程式停止，將於 1.5 秒後自動重新開啟...")
+            self._set_status("● 防卡死重新啟動中...", COLOR_WARN)
+            self.btn_start.configure(state="disabled")
+            self.btn_stop.configure(state="normal")
+            self._watchdog_restart_job = self.root.after(1500, self._restart_worker_after_watchdog)
+            return
+
+        self.is_running = False
+        self.bot.is_running = False
         self._set_status("已停止 (STOPPED)", COLOR_STOPPED)
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         self.log_message("⏹ 背景工作執行緒已安全終止。")
 
+        if self.var_auto_refresh.get() and not self.auto_refresh_job:
+            self._schedule_next_refresh(500)
+
+    def _restart_worker_after_watchdog(self):
+        self._watchdog_restart_job = None
+        if not self.bot.device:
+            self.log_message("⚠️ 模擬器連線已中斷，無法自動重啟")
+            self._on_worker_stopped()
+            return
+        self.log_message("🚀 [防卡死守護] 自動重新開啟腳本！")
+        self.on_start_bot()
+
     def _get_active_steps_config(self) -> list:
-        return [
-            {
-                "name": s["name"].get(),
-                "keywords": s["keywords"].get(),
-                "delay": s["delay"].get(),
-                "roi": s["roi"].get(),
-                "enabled": s["enabled"].get()
-            } for s in self.steps_list if s["enabled"].get()
-        ]
+        cfg = []
+        for s in self.steps_list:
+            raw_kws = s["keywords"].get()
+            kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
+            raw_ex = s["exclude_keywords"].get() if "exclude_keywords" in s else ""
+            ex_kws = [k.strip() for k in raw_ex.replace("，", ",").split(",") if k.strip()]
+            delay = _num(s["delay"], 2.5)
+            rep_on = s["repeat_enabled"].get() if "repeat_enabled" in s else False
+            tt = s["target_type"].get() if "target_type" in s else "📝 僅文字"
+            is_sym = ("打勾" in tt or "叉叉" in tt or "混合" in tt)
+            cfg.append({
+                "name": s["name"].get().strip() or "步驟",
+                "target_type": tt,
+                "keywords": kws,
+                "exclude_keywords": ex_kws,
+                "action": "custom_coord" if s["action"].get() in ("自訂座標", "自訂特定區塊") else s["action"].get(),
+                "custom_x": _num(s["custom_x"], 0, int),
+                "custom_y": _num(s["custom_y"], 0, int),
+                "delay": delay,
+                "delay_min": max(0.05, delay - 0.15),
+                "delay_max": delay + 0.15,
+                "enabled": s["enabled"].get() and (bool(kws) or is_sym),
+                "roi": self._map_roi_name_to_tuple(s["roi"].get()),
+                "roi_name": s["roi"].get(),
+                "repeat_enabled": rep_on,
+                "repeat_mode": "count" if (s.get("repeat_mode") and s["repeat_mode"].get() == "指定次數") else "until_next",
+                "repeat_count": _num(s["repeat_count"], 15, int) if rep_on and "repeat_count" in s else 1,
+                "repeat_speed": _num(s["repeat_speed"], 0.3) if "repeat_speed" in s else 0.3,
+                "repeat_area": s["repeat_area"].get() if "repeat_area" in s else "右下角區域",
+                "repeat_custom_x": _num(s.get("repeat_custom_x", 0), 0, int),
+                "repeat_custom_y": _num(s.get("repeat_custom_y", 0), 0, int),
+                "repeat_custom_coord": (_num(s.get("repeat_custom_x", 0), 0, int), _num(s.get("repeat_custom_y", 0), 0, int)),
+                "timeout_enabled": s["timeout_enabled"].get() if "timeout_enabled" in s else False,
+                "timeout_seconds": _num(s["timeout_seconds"], 15, int) if "timeout_seconds" in s else 15,
+                "telegram": {
+                    "enabled": s["tg_enabled"].get() if "tg_enabled" in s else False,
+                    "message": s["tg_message"].get().strip() if "tg_message" in s else "",
+                    "token": self.var_tg_token.get().strip(),
+                    "chat_id": self.var_tg_chat_id.get().strip(),
+                },
+                "task_target_mode": s["task_target_mode"].get() if "task_target_mode" in s else "📋 完整任務清單",
+                "task_target_item": s["task_target_item"].get() if "task_target_item" in s else "",
+                "task_cooldown": _num(s["task_cooldown"], 60.0) if "task_cooldown" in s else 60.0,
+            })
+        return cfg
 
     def _get_active_priority_steps_config(self) -> list:
-        return [
-            {
-                "name": p["name"].get(),
-                "keywords": p["keywords"].get(),
-                "delay": p["delay"].get(),
-                "roi": p["roi"].get(),
-                "enabled": p["enabled"].get()
-            } for p in self.priority_steps_list if p["enabled"].get()
-        ]
+        cfg = []
+        for p in self.priority_steps_list:
+            raw_kws = p["keywords"].get()
+            kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
+            raw_ex = p["exclude_keywords"].get() if "exclude_keywords" in p else ""
+            ex_kws = [k.strip() for k in raw_ex.replace("，", ",").split(",") if k.strip()]
+            rep_on = p["repeat_enabled"].get() if "repeat_enabled" in p else False
+            tt = p["target_type"].get() if "target_type" in p else "📝 僅文字"
+            is_sym = ("打勾" in tt or "叉叉" in tt or "混合" in tt)
+            delay = _num(p["delay"], 1.0)
+            cfg.append({
+                "type": "priority",
+                "name": p["name"].get().strip() or "優先動作",
+                "target_type": tt,
+                "keywords": kws,
+                "exclude_keywords": ex_kws,
+                "action": "custom_coord" if p["action"].get() in ("自訂座標", "自訂特定區塊") else p["action"].get(),
+                "custom_x": _num(p["custom_x"], 0, int),
+                "custom_y": _num(p["custom_y"], 0, int),
+                "delay": delay,
+                "delay_min": max(0.05, delay - 0.15),
+                "delay_max": delay + 0.15,
+                "roi": self._map_roi_name_to_tuple(p["roi"].get()),
+                "roi_name": p["roi"].get(),
+                "while_condition": p["while_condition"].get() if "while_condition" in p else True,
+                "repeat_enabled": rep_on,
+                "repeat_mode": "count" if (p.get("repeat_mode") and p["repeat_mode"].get() == "指定次數") else "until_next",
+                "repeat_count": _num(p["repeat_count"], 15, int) if rep_on and "repeat_count" in p else 1,
+                "repeat_speed": _num(p["repeat_speed"], 0.3) if "repeat_speed" in p else 0.3,
+                "repeat_area": p["repeat_area"].get() if "repeat_area" in p else "右下角區域",
+                "repeat_custom_x": _num(p.get("repeat_custom_x", 0), 0, int),
+                "repeat_custom_y": _num(p.get("repeat_custom_y", 0), 0, int),
+                "repeat_custom_coord": (_num(p.get("repeat_custom_x", 0), 0, int), _num(p.get("repeat_custom_y", 0), 0, int)),
+                "telegram": {
+                    "enabled": p["tg_enabled"].get() if "tg_enabled" in p else False,
+                    "message": p["tg_message"].get().strip() if "tg_message" in p else "",
+                    "token": self.var_tg_token.get().strip(),
+                    "chat_id": self.var_tg_chat_id.get().strip(),
+                },
+                "task_target_mode": p["task_target_mode"].get() if "task_target_mode" in p else "📋 完整任務清單",
+                "task_target_item": p["task_target_item"].get() if "task_target_item" in p else "",
+                "task_cooldown": _num(p["task_cooldown"], 60.0) if "task_cooldown" in p else 60.0,
+                "enabled": p["enabled"].get() and (bool(kws) or is_sym),
+                "max_continuous": 25,
+            })
+        return cfg
 
     def _execute_task_flow_for_event(self, step_cfg: dict) -> bool:
-        self.log_message(f"觸發任務清單跳轉: {step_cfg}")
-        return True
+        """
+        當聯賽自動刷偵測到指定事件/文字時，暫停聯賽循環，跳轉至任務清單執行特定功能，完成後無縫恢復聯賽。
+        本方法由工作執行緒直接呼叫，會同步執行直到任務完成或被停止。
+        """
+        if not hasattr(self, "task_tab") or not self.task_tab:
+            self.log_message("⚠️ 尚未初始化任務清單元件，跳過執行。")
+            return False
+
+        mode = step_cfg.get("task_target_mode", "📋 完整任務清單")
+        target_item = step_cfg.get("task_target_item", "")
+        step_name = step_cfg.get("name", "事件步驟")
+
+        blocks_to_run = []
+        if mode == "💡 常用日常範本" and target_item:
+            preset_key = target_item.split(":")[0].strip()
+            preset = self.task_tab.get_preset_data(preset_key) if hasattr(self.task_tab, "get_preset_data") else None
+            if not preset:
+                from task_flow import DAILY_PRESETS
+                preset = DAILY_PRESETS.get(preset_key)
+            if preset:
+                blocks_to_run = [dict(b) for b in preset.get("blocks", [])]
+                self.log_message(f"📋 [任務跳轉] 載入日常範本「{preset.get('title', preset_key)}」(共 {len(blocks_to_run)} 個步驟)")
+            else:
+                self.log_message(f"⚠️ [任務跳轉] 找不到日常範本「{target_item}」，執行完整任務清單備援")
+                blocks_to_run = self.task_tab._serialize_all_blocks()
+        elif mode == "🧩 指定積木步驟" and target_item:
+            single_block = self.task_tab.get_block_data_by_choice(target_item)
+            if single_block:
+                blocks_to_run = [single_block]
+                self.log_message(f"📋 [任務跳轉] 執行指定積木「{single_block.get('name', target_item)}」")
+            else:
+                self.log_message(f"⚠️ [任務跳轉] 找不到指定積木「{target_item}」，執行完整任務清單備援")
+                blocks_to_run = self.task_tab._serialize_all_blocks()
+        else:
+            blocks_to_run = self.task_tab._serialize_all_blocks()
+            self.log_message(f"📋 [任務跳轉] 執行完整任務清單 (共 {len(blocks_to_run)} 個步驟)")
+
+        if not blocks_to_run:
+            self.log_message("⚠️ [任務跳轉] 任務清單中無可執行的步驟，結束跳轉並恢復聯賽。")
+            return False
+
+        self.root.after(0, lambda: self._set_status(f"● 執行任務: {step_name}", "#8b5cf6"))
+
+        def _on_step_change(idx, cycle, total):
+            if idx >= 0:
+                self.root.after(0, lambda: self.task_tab.highlight_active_step(idx))
+            else:
+                self.root.after(0, lambda: self.task_tab.highlight_active_step(-1))
+
+        ok = self.task_tab.engine.run_sync(
+            blocks_data=blocks_to_run,
+            loop_count=1,
+            on_step_change=_on_step_change,
+            global_settings=self.task_tab.get_global_settings()
+        )
+
+        self.root.after(0, lambda: self.task_tab.highlight_active_step(-1))
+        if self.bot.is_running:
+            self.root.after(0, lambda: self._set_status("運作中 (RUNNING)", COLOR_RUNNING))
+
+        return ok
 
     # ==========================================================================
     # 📸 即時截圖與畫面預覽 (Canvas Preview & Mouse Picking)
@@ -1492,12 +2209,14 @@ class BaseballBotGUI:
                 if screen is not None:
                     self.current_screen_bgr = screen
                     self._render_preview(screen)
-                    self.log_message("📸 畫面截圖成功！")
             self.root.after(0, done)
         threading.Thread(target=work, daemon=True).start()
 
     def on_bot_frame_update(self, screen_bgr: np.ndarray, detected_items: list, matched=None):
-        """當背景 bot 截取到新畫面時，由回呼推播至預覽"""
+        """當背景 bot 截取到新畫面時，由回呼推播至預覽與統計"""
+        self.loop_count += 1
+        if matched is not None:
+            self.hit_count += 1
         if screen_bgr is not None:
             self.current_screen_bgr = screen_bgr
             self._render_preview(screen_bgr)
@@ -1540,8 +2259,44 @@ class BaseballBotGUI:
         rx, ry = self._preview_to_real(e.x, e.y)
         if rx is not None:
             self.log_message(f"🎯 選取座標: ({rx}, {ry})")
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(f"{rx}, {ry}")
+            except Exception:
+                pass
+
+            # 1. 檢查優先動作中展開的卡片
+            for p in self.priority_steps_list:
+                if p.get("expanded") and p["expanded"].get():
+                    # 若開啟命中後連點且設為自訂座標，優先填入連點座標
+                    if p.get("repeat_enabled") and p["repeat_enabled"].get() and "自訂" in p.get("repeat_area", tk.StringVar()).get():
+                        p["repeat_custom_x"].set(rx)
+                        p["repeat_custom_y"].set(ry)
+                        self.log_message(f"已填入優先動作 [{p['name'].get()}] 連點自訂座標: ({rx}, {ry})")
+                        return
+                    elif p.get("action") and p["action"].get() in ("自訂座標", "自訂特定區塊"):
+                        p["custom_x"].set(rx)
+                        p["custom_y"].set(ry)
+                        self.log_message(f"已填入優先動作 [{p['name'].get()}] 點擊自訂座標: ({rx}, {ry})")
+                        return
+
+            # 2. 檢查一般步驟中展開的卡片
+            for s in self.steps_list:
+                if s.get("expanded") and s["expanded"].get():
+                    if s.get("repeat_enabled") and s["repeat_enabled"].get() and "自訂" in s.get("repeat_area", tk.StringVar()).get():
+                        s["repeat_custom_x"].set(rx)
+                        s["repeat_custom_y"].set(ry)
+                        self.log_message(f"已填入步驟 [{s['name'].get()}] 連點自訂座標: ({rx}, {ry})")
+                        return
+                    else:
+                        s["custom_x"].set(rx)
+                        s["custom_y"].set(ry)
+                        s["action"].set("自訂座標")
+                        self.log_message(f"已填入步驟 [{s['name'].get()}] 自訂座標: ({rx}, {ry})")
+                        return
+
+            # 3. 若無任何卡片展開，預設填入最後一個一般步驟
             if self.steps_list:
-                # 填入最新展開的一般步驟
                 last_s = self.steps_list[-1]
                 last_s["custom_x"].set(rx)
                 last_s["custom_y"].set(ry)
@@ -1576,6 +2331,8 @@ class BaseballBotGUI:
 
     def _auto_refresh_tick(self):
         self.auto_refresh_job = None
+        if self.bot.is_running or self.is_running:
+            return
         if self.var_auto_refresh.get() and self.bot.device:
             self.on_preview_and_detect()
             self._schedule_next_refresh(2000)
@@ -1683,7 +2440,17 @@ class BaseballBotGUI:
 
     def on_close_window(self):
         self.auto_save_current_config()
-        if self.is_running:
+        if hasattr(self, "batting_tab") and self.batting_tab:
+            try:
+                self.batting_tab.on_close()
+            except Exception:
+                pass
+        if hasattr(self, "task_tab") and self.task_tab:
+            try:
+                self.task_tab.engine.stop()
+            except Exception:
+                pass
+        if self.is_running or self.bot.is_running:
             self.on_stop_bot()
         self.root.destroy()
 

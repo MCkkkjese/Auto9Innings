@@ -1,16 +1,38 @@
 {
-  "device": "127.0.0.1:5555",
-  "interval": 0.4,
-  "confidence": 0.4,
+  "version": "1.0",
+  "device": "",
+  "interval": 2.5,
+  "confidence": 0.65,
   "idle_strategy": "常規等待",
   "auto_refresh": true,
   "lang_tc": true,
   "lang_sc": false,
   "lang_en": true,
+  "ocr_languages": {
+    "tc": true,
+    "sc": false,
+    "en": true
+  },
   "watchdog_enabled": false,
   "watchdog_seconds": 60,
+  "watchdog": {
+    "enabled": false,
+    "seconds": 60
+  },
+  "idle_tap": {
+    "enabled": false,
+    "area": "右下角區域",
+    "times": 3,
+    "interval": 0.4,
+    "custom_x": 983,
+    "custom_y": 1023
+  },
   "tg_token": "",
   "tg_chat_id": "",
+  "telegram_global": {
+    "token": "",
+    "chat_id": ""
+  },
   "priority_steps": [],
   "steps": []
 }

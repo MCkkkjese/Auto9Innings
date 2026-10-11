@@ -2,8 +2,8 @@
   "version": "1.0",
   "loop_count": 1,
   "global_settings": {
-    "interval": 0.4,
-    "confidence": 0.4,
+    "interval": 2.5,
+    "confidence": 0.65,
     "idle_strategy": "常規等待",
     "lang_tc": true,
     "lang_sc": false,
