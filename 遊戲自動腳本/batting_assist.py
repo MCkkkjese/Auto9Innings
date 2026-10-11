@@ -22,11 +22,14 @@ except ImportError:
     HAS_MSS = False
 
 try:
-    import pydirectinput
-    pydirectinput.FAILSAFE = False
-    pydirectinput.PAUSE = 0.001
-    HAS_PDI = True
-except ImportError:
+    if sys.platform == "win32":
+        import pydirectinput
+        pydirectinput.FAILSAFE = False
+        pydirectinput.PAUSE = 0.001
+        HAS_PDI = True
+    else:
+        HAS_PDI = False
+except Exception:
     HAS_PDI = False
 
 import ctypes
