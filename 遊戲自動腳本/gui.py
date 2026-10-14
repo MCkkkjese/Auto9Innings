@@ -31,6 +31,7 @@ from bot_core import BaseballBot
 # [AI協作註記] 即時打擊輔助功能已全面關閉（停用狀態），協作與維護聯賽/任務時可直接跳過此模組。
 from batting_tab import BattingAssistTab
 from task_flow import TaskFlowTab
+from iphone_tab import IPhoneMirrorTab
 
 
 # ==============================================================================
@@ -229,16 +230,18 @@ def _normalize_action(a: str, is_image: bool = True) -> str:
 
 
 def imread_unicode(path: str, flags: int = cv2.IMREAD_COLOR) -> Optional[np.ndarray]:
-    """跨平台安全讀取包含中文檔名的圖片"""
+    """跨平台安全讀取包含中文檔名的圖片 (使用原生 Python IO，徹底解決 macOS/Windows 中文路徑失敗問題)"""
     try:
-        data = np.fromfile(path, dtype=np.uint8)
-        return cv2.imdecode(data, flags)
+        with open(path, "rb") as f:
+            data = f.read()
+        nparr = np.frombuffer(data, dtype=np.uint8)
+        return cv2.imdecode(nparr, flags)
     except Exception:
         return None
 
 
 def imwrite_unicode(path: str, img: np.ndarray) -> bool:
-    """跨平台安全寫入包含中文檔名與路徑的圖片"""
+    """跨平台安全寫入包含中文檔名與路徑的圖片 (使用原生 Python IO，徹底解決 macOS/Windows 中文路徑寫入問題)"""
     try:
         p = os.path.abspath(path)
         ext = os.path.splitext(p)[1]
@@ -250,7 +253,8 @@ def imwrite_unicode(path: str, img: np.ndarray) -> bool:
             os.makedirs(parent_dir, exist_ok=True)
         success, encoded = cv2.imencode(ext, img)
         if success:
-            encoded.tofile(p)
+            with open(p, "wb") as f:
+                f.write(encoded.tobytes())
             return os.path.exists(p) and os.path.getsize(p) > 0
         return False
     except Exception:
@@ -683,7 +687,11 @@ class BaseballBotGUI:
         tab_league = self.tabview.add("🏆 聯賽自動刷")
         self._build_league_tab(tab_league)
 
-        # 頁籤 2: 📋 任務清單 (Scratch 積木)
+        # 頁籤 2: 📱 iPhone 鏡像自動刷
+        tab_iphone = self.tabview.add("📱 iPhone 鏡像自動刷")
+        self.iphone_tab = IPhoneMirrorTab(self, tab_iphone)
+
+        # 頁籤 3: 📋 任務清單 (Scratch 積木)
         tab_tasks = self.tabview.add("📋 任務清單 (Scratch 積木)")
         self.task_tab = TaskFlowTab(
             tab_tasks,
@@ -1508,11 +1516,17 @@ class BaseballBotGUI:
         )
 
     def on_delete_priority_step(self, p_step):
-        if p_step in self.priority_steps_list:
-            self.priority_steps_list.remove(p_step)
-            p_step["frame"].destroy()
-            self._renumber_priority_steps()
-            self.auto_save_current_config()
+        p_list = p_step.get("_parent_list", self.priority_steps_list)
+        if p_step in p_list:
+            p_list.remove(p_step)
+            if "frame" in p_step and p_step["frame"]:
+                p_step["frame"].destroy()
+            self._renumber_priority_steps(p_list, p_step.get("_lbl_empty"))
+            on_changed = p_step.get("_on_changed")
+            if callable(on_changed):
+                on_changed()
+            else:
+                self.auto_save_current_config()
 
     def _clear_all_priority_steps(self):
         for p in self.priority_steps_list:
@@ -1521,15 +1535,28 @@ class BaseballBotGUI:
         self.lbl_p_count.configure(text="(0)")
         self.lbl_no_priority.pack(pady=4)
 
-    def _renumber_priority_steps(self):
-        for i, p in enumerate(self.priority_steps_list, start=1):
-            if "lbl_num" in p:
-                p["lbl_num"].configure(text=f"P{i}")
-        self.lbl_p_count.configure(text=f"({len(self.priority_steps_list)})")
-        if self.priority_steps_list:
-            self.lbl_no_priority.pack_forget()
-        else:
-            self.lbl_no_priority.pack(pady=4)
+    def _renumber_priority_steps(self, p_list=None, lbl_empty=None):
+        if p_list is None:
+            p_list = self.priority_steps_list
+        if lbl_empty is None:
+            lbl_empty = getattr(self, "lbl_no_priority", None)
+
+        for i, p in enumerate(p_list, start=1):
+            if "lbl_num" in p and p["lbl_num"]:
+                try:
+                    p["lbl_num"].configure(text=f"P{i}")
+                except Exception:
+                    pass
+        if p_list is self.priority_steps_list and hasattr(self, "lbl_p_count") and self.lbl_p_count:
+            try:
+                self.lbl_p_count.configure(text=f"({len(p_list)})")
+            except Exception:
+                pass
+        if lbl_empty and hasattr(lbl_empty, "pack"):
+            if p_list:
+                lbl_empty.pack_forget()
+            else:
+                lbl_empty.pack(pady=4)
 
     def _create_priority_step_widget(
         self,
@@ -1561,8 +1588,83 @@ class BaseballBotGUI:
         enabled: bool = True,
         expanded: bool = False
     ):
+        return self._create_priority_step_widget_impl(
+            container=self.frame_priority_cards,
+            steps_collection=self.priority_steps_list,
+            lbl_empty=self.lbl_no_priority,
+            name=name,
+            keywords=keywords,
+            target_type=target_type,
+            template_image=template_image,
+            image_threshold=image_threshold,
+            image_multiscale=image_multiscale,
+            exclude_keywords=exclude_keywords,
+            action=action,
+            custom_x=custom_x,
+            custom_y=custom_y,
+            delay=delay,
+            roi_name=roi_name,
+            while_condition=while_condition,
+            repeat_enabled=repeat_enabled,
+            repeat_mode=repeat_mode,
+            repeat_count=repeat_count,
+            repeat_speed=repeat_speed,
+            repeat_area=repeat_area,
+            repeat_custom_x=repeat_custom_x,
+            repeat_custom_y=repeat_custom_y,
+            tg_enabled=tg_enabled,
+            tg_message=tg_message,
+            task_target_mode=task_target_mode,
+            task_target_item=task_target_item,
+            task_cooldown=task_cooldown,
+            enabled=enabled,
+            expanded=expanded,
+            on_changed=self.auto_save_current_config
+        )
+
+    def _create_priority_step_widget_impl(
+        self,
+        container=None,
+        steps_collection=None,
+        lbl_empty=None,
+        on_changed=None,
+        name: str = "",
+        keywords: str = "",
+        target_type: str = "📝 文字辨識 (OCR)",
+        template_image: str = "",
+        image_threshold: float = 0.80,
+        image_multiscale: bool = False,
+        exclude_keywords: str = "",
+        action: str = ACTION_TARGET_IMAGE,
+        custom_x: int = 960,
+        custom_y: int = 540,
+        delay: float = 2.0,
+        roi_name: str = "全畫面比對",
+        while_condition: bool = False,
+        repeat_enabled: bool = False,
+        repeat_mode: str = "持續連點",
+        repeat_count: int = 5,
+        repeat_speed: float = 0.25,
+        repeat_area: str = "右下角區域",
+        repeat_custom_x: int = 960,
+        repeat_custom_y: int = 540,
+        tg_enabled: bool = False,
+        tg_message: str = "",
+        task_target_mode: str = "📋 完整任務清單",
+        task_target_item: str = "",
+        task_cooldown: float = 60.0,
+        enabled: bool = True,
+        expanded: bool = False
+    ):
+        if container is None:
+            container = self.frame_priority_cards
+        if steps_collection is None:
+            steps_collection = self.priority_steps_list
+        if lbl_empty is None:
+            lbl_empty = getattr(self, "lbl_no_priority", None)
+
         color = "#F59E0B"
-        card = ctk.CTkFrame(self.frame_priority_cards, fg_color=COLOR_CARD_ITEM, corner_radius=8, border_width=1, border_color=color)
+        card = ctk.CTkFrame(container, fg_color=COLOR_CARD_ITEM, corner_radius=8, border_width=1, border_color=color)
         card.pack(fill="x", pady=4, padx=2)
 
         target_type = _normalize_target_type(target_type)
@@ -1601,13 +1703,19 @@ class BaseballBotGUI:
             "task_cooldown": tk.DoubleVar(value=task_cooldown),
             "expanded": tk.BooleanVar(value=expanded),
             "frame": card,
+            "_parent_list": steps_collection,
+            "_lbl_empty": lbl_empty,
+            "_on_changed": on_changed,
         }
-        self.priority_steps_list.append(p)
+        steps_collection.append(p)
 
         def _on_p_var_changed(*_):
             if getattr(self, "_is_loading_config", False):
                 return
-            self.auto_save_current_config()
+            if callable(on_changed):
+                on_changed()
+            else:
+                self.auto_save_current_config()
 
         for _v in [
             p["enabled"], p["name"], p["target_type"], p["template_image"],
@@ -1630,7 +1738,7 @@ class BaseballBotGUI:
         self._bind_drag_priority_events(handle, p)
 
         ctk.CTkCheckBox(head, text="", variable=p["enabled"], width=18, height=18, corner_radius=4).pack(side="left", padx=(0, 4))
-        lbl_num = ctk.CTkLabel(head, text=f"P{len(self.priority_steps_list)}", font=ctk.CTkFont(family="Arial", size=12, weight="bold"), text_color=color, width=28)
+        lbl_num = ctk.CTkLabel(head, text=f"P{len(steps_collection)}", font=ctk.CTkFont(family="Arial", size=12, weight="bold"), text_color=color, width=28)
         lbl_num.pack(side="left")
         p["lbl_num"] = lbl_num
 
@@ -2079,7 +2187,8 @@ class BaseballBotGUI:
 
         p["expanded"].trace_add("write", refresh)
         refresh()
-        self._renumber_priority_steps()
+        self._renumber_priority_steps(steps_collection, lbl_empty)
+        return p
 
     # --------------------------------------------------------------------------
     # 一般步驟卡片建立 (Normal Steps)
@@ -2129,11 +2238,17 @@ class BaseballBotGUI:
             messagebox.showerror("錯誤", f"無法打開資料夾: {ex}", parent=self.root)
 
     def on_delete_step(self, step):
-        if step in self.steps_list:
-            self.steps_list.remove(step)
-            step["frame"].destroy()
-            self._renumber_steps()
-            self.auto_save_current_config()
+        s_list = step.get("_parent_list", self.steps_list)
+        if step in s_list:
+            s_list.remove(step)
+            if "frame" in step and step["frame"]:
+                step["frame"].destroy()
+            self._renumber_steps(s_list, step.get("_lbl_empty"))
+            on_changed = step.get("_on_changed")
+            if callable(on_changed):
+                on_changed()
+            else:
+                self.auto_save_current_config()
 
     def _clear_all_steps(self):
         for s in self.steps_list:
@@ -2141,11 +2256,28 @@ class BaseballBotGUI:
         self.steps_list.clear()
         self.lbl_n_count.configure(text="(0)")
 
-    def _renumber_steps(self):
-        for i, s in enumerate(self.steps_list, start=1):
-            if "lbl_num" in s:
-                s["lbl_num"].configure(text=str(i))
-        self.lbl_n_count.configure(text=f"({len(self.steps_list)})")
+    def _renumber_steps(self, s_list=None, lbl_empty=None):
+        if s_list is None:
+            s_list = self.steps_list
+        if lbl_empty is None:
+            lbl_empty = getattr(self, "lbl_no_steps", None)
+
+        for i, s in enumerate(s_list, start=1):
+            if "lbl_num" in s and s["lbl_num"]:
+                try:
+                    s["lbl_num"].configure(text=str(i))
+                except Exception:
+                    pass
+        if s_list is self.steps_list and hasattr(self, "lbl_n_count") and self.lbl_n_count:
+            try:
+                self.lbl_n_count.configure(text=f"({len(s_list)})")
+            except Exception:
+                pass
+        if lbl_empty and hasattr(lbl_empty, "pack"):
+            if s_list:
+                lbl_empty.pack_forget()
+            else:
+                lbl_empty.pack(pady=6)
 
     def _create_step_widget(
         self,
@@ -2178,8 +2310,85 @@ class BaseballBotGUI:
         enabled: bool = True,
         expanded: bool = False
     ):
-        color = STEP_COLORS[len(self.steps_list) % len(STEP_COLORS)]
-        card = ctk.CTkFrame(self.frame_normal_cards, fg_color=COLOR_CARD_ITEM, corner_radius=8, border_width=1, border_color=color)
+        return self._create_step_widget_impl(
+            container=self.frame_normal_cards,
+            steps_collection=self.steps_list,
+            lbl_empty=getattr(self, "lbl_no_steps", None),
+            name=name,
+            keywords=keywords,
+            target_type=target_type,
+            template_image=template_image,
+            image_threshold=image_threshold,
+            image_multiscale=image_multiscale,
+            exclude_keywords=exclude_keywords,
+            action=action,
+            custom_x=custom_x,
+            custom_y=custom_y,
+            delay=delay,
+            roi_name=roi_name,
+            repeat_enabled=repeat_enabled,
+            repeat_mode=repeat_mode,
+            repeat_count=repeat_count,
+            repeat_speed=repeat_speed,
+            repeat_area=repeat_area,
+            repeat_custom_x=repeat_custom_x,
+            repeat_custom_y=repeat_custom_y,
+            timeout_enabled=timeout_enabled,
+            timeout_seconds=timeout_seconds,
+            tg_enabled=tg_enabled,
+            tg_message=tg_message,
+            task_target_mode=task_target_mode,
+            task_target_item=task_target_item,
+            task_cooldown=task_cooldown,
+            enabled=enabled,
+            expanded=expanded,
+            on_changed=self.auto_save_current_config
+        )
+
+    def _create_step_widget_impl(
+        self,
+        container=None,
+        steps_collection=None,
+        lbl_empty=None,
+        on_changed=None,
+        name: str = "",
+        keywords: str = "",
+        target_type: str = "📝 文字辨識 (OCR)",
+        template_image: str = "",
+        image_threshold: float = 0.80,
+        image_multiscale: bool = False,
+        exclude_keywords: str = "",
+        action: str = ACTION_TARGET_IMAGE,
+        custom_x: int = 960,
+        custom_y: int = 540,
+        delay: float = 2.5,
+        roi_name: str = "右下角區域",
+        repeat_enabled: bool = False,
+        repeat_mode: str = "持續連點",
+        repeat_count: int = 5,
+        repeat_speed: float = 0.25,
+        repeat_area: str = "右下角區域",
+        repeat_custom_x: int = 960,
+        repeat_custom_y: int = 540,
+        timeout_enabled: bool = False,
+        timeout_seconds: int = 20,
+        tg_enabled: bool = False,
+        tg_message: str = "",
+        task_target_mode: str = "📋 完整任務清單",
+        task_target_item: str = "",
+        task_cooldown: float = 60.0,
+        enabled: bool = True,
+        expanded: bool = False
+    ):
+        if container is None:
+            container = self.frame_normal_cards
+        if steps_collection is None:
+            steps_collection = self.steps_list
+        if lbl_empty is None:
+            lbl_empty = getattr(self, "lbl_no_steps", None)
+
+        color = STEP_COLORS[len(steps_collection) % len(STEP_COLORS)]
+        card = ctk.CTkFrame(container, fg_color=COLOR_CARD_ITEM, corner_radius=8, border_width=1, border_color=color)
         card.pack(fill="x", pady=4, padx=2)
 
         target_type = _normalize_target_type(target_type)
@@ -2220,13 +2429,19 @@ class BaseballBotGUI:
             "expanded": tk.BooleanVar(value=expanded),
             "frame": card,
             "border_color": color,
+            "_parent_list": steps_collection,
+            "_lbl_empty": lbl_empty,
+            "_on_changed": on_changed,
         }
-        self.steps_list.append(s)
+        steps_collection.append(s)
 
         def _on_s_var_changed(*_):
             if getattr(self, "_is_loading_config", False):
                 return
-            self.auto_save_current_config()
+            if callable(on_changed):
+                on_changed()
+            else:
+                self.auto_save_current_config()
 
         for _v in [
             s["enabled"], s["name"], s["target_type"], s["template_image"],
@@ -2249,7 +2464,7 @@ class BaseballBotGUI:
         self._bind_drag_events(handle, s)
 
         ctk.CTkCheckBox(head, text="", variable=s["enabled"], width=18, height=18, corner_radius=4).pack(side="left", padx=(0, 4))
-        lbl_num = ctk.CTkLabel(head, text=str(len(self.steps_list)), font=ctk.CTkFont(family="Arial", size=12, weight="bold"), text_color=color, width=24)
+        lbl_num = ctk.CTkLabel(head, text=str(len(steps_collection)), font=ctk.CTkFont(family="Arial", size=12, weight="bold"), text_color=color, width=28)
         lbl_num.pack(side="left")
         s["lbl_num"] = lbl_num
 
@@ -2711,66 +2926,258 @@ class BaseballBotGUI:
 
         s["expanded"].trace_add("write", refresh)
         refresh()
-        self._renumber_steps()
+        self._renumber_steps(steps_collection, lbl_empty)
+        return s
 
     # --------------------------------------------------------------------------
     # 拖曳排序實作 (Drag & Drop Reordering)
     # --------------------------------------------------------------------------
     def _bind_drag_priority_events(self, handle, step):
         def on_start(e):
+            p_list = step.get("_parent_list", self.priority_steps_list)
             step["_drag_start_y"] = e.y_root
-            step["_orig_idx"] = self.priority_steps_list.index(step)
+            step["_orig_idx"] = p_list.index(step) if step in p_list else 0
         def on_motion(e):
+            p_list = step.get("_parent_list", self.priority_steps_list)
+            if step not in p_list:
+                return
             dy = e.y_root - step.get("_drag_start_y", e.y_root)
             step_height = 40
             steps_moved = int(dy // step_height)
             orig = step.get("_orig_idx", 0)
-            new_idx = max(0, min(len(self.priority_steps_list) - 1, orig + steps_moved))
-            cur = self.priority_steps_list.index(step)
+            new_idx = max(0, min(len(p_list) - 1, orig + steps_moved))
+            cur = p_list.index(step)
             if new_idx != cur:
-                self.priority_steps_list.remove(step)
-                self.priority_steps_list.insert(new_idx, step)
-                self._repack_all_priority_steps()
+                p_list.remove(step)
+                p_list.insert(new_idx, step)
+                self._repack_all_priority_steps(p_list, step.get("_lbl_empty"))
         def on_end(e):
-            self.auto_save_current_config()
+            on_changed = step.get("_on_changed")
+            if callable(on_changed):
+                on_changed()
+            else:
+                self.auto_save_current_config()
         handle.bind("<Button-1>", on_start)
         handle.bind("<B1-Motion>", on_motion)
         handle.bind("<ButtonRelease-1>", on_end)
 
-    def _repack_all_priority_steps(self):
-        for p in self.priority_steps_list:
+    def _repack_all_priority_steps(self, p_list=None, lbl_empty=None):
+        if p_list is None:
+            p_list = self.priority_steps_list
+        for p in p_list:
             p["frame"].pack_forget()
-        for p in self.priority_steps_list:
+        for p in p_list:
             p["frame"].pack(fill="x", pady=4, padx=2)
-        self._renumber_priority_steps()
+        self._renumber_priority_steps(p_list, lbl_empty)
 
     def _bind_drag_events(self, handle, step):
         def on_start(e):
+            s_list = step.get("_parent_list", self.steps_list)
             step["_drag_start_y"] = e.y_root
-            step["_orig_idx"] = self.steps_list.index(step)
+            step["_orig_idx"] = s_list.index(step) if step in s_list else 0
         def on_motion(e):
+            s_list = step.get("_parent_list", self.steps_list)
+            if step not in s_list:
+                return
             dy = e.y_root - step.get("_drag_start_y", e.y_root)
             step_height = 40
             steps_moved = int(dy // step_height)
             orig = step.get("_orig_idx", 0)
-            new_idx = max(0, min(len(self.steps_list) - 1, orig + steps_moved))
-            cur = self.steps_list.index(step)
+            new_idx = max(0, min(len(s_list) - 1, orig + steps_moved))
+            cur = s_list.index(step)
             if new_idx != cur:
-                self.steps_list.remove(step)
-                self.steps_list.insert(new_idx, step)
-                self._repack_all_steps()
+                s_list.remove(step)
+                s_list.insert(new_idx, step)
+                self._repack_all_steps(s_list, step.get("_lbl_empty"))
         def on_end(e):
-            self.auto_save_current_config()
+            on_changed = step.get("_on_changed")
+            if callable(on_changed):
+                on_changed()
+            else:
+                self.auto_save_current_config()
         handle.bind("<Button-1>", on_start)
         handle.bind("<B1-Motion>", on_motion)
         handle.bind("<ButtonRelease-1>", on_end)
 
-    def _repack_all_steps(self):
-        for s in self.steps_list:
+    def _repack_all_steps(self, s_list=None, lbl_empty=None):
+        if s_list is None:
+            s_list = self.steps_list
+        for s in s_list:
             s["frame"].pack_forget()
-        for s in self.steps_list:
+        for s in s_list:
             s["frame"].pack(fill="x", pady=4, padx=2)
-        self._renumber_steps()
+        self._renumber_steps(s_list, lbl_empty)
+
+    # --------------------------------------------------------------------------
+    # 步驟序列化與反序列化通用函式 (支援聯賽分頁與 iPhone 鏡像分頁)
+    # --------------------------------------------------------------------------
+    def _serialize_priority_steps_data(self, p_list=None) -> list:
+        if p_list is None:
+            p_list = self.priority_steps_list
+        res = []
+        for p in p_list:
+            res.append({
+                "name": p["name"].get(),
+                "keywords": p["keywords"].get(),
+                "target_type": _normalize_target_type(p["target_type"].get() if "target_type" in p else ""),
+                "template_image": self._ensure_template_in_storage(p["template_image"].get()) if "template_image" in p else "",
+                "image_threshold": _num(p.get("image_threshold", 0.80), 0.80),
+                "image_multiscale": bool(p["image_multiscale"].get()) if "image_multiscale" in p else False,
+                "exclude_keywords": p["exclude_keywords"].get() if "exclude_keywords" in p else "",
+                "action": p["action"].get(),
+                "custom_x": p["custom_x"].get(),
+                "custom_y": p["custom_y"].get(),
+                "delay": p["delay"].get(),
+                "roi": p["roi"].get(),
+                "while_condition": p["while_condition"].get() if "while_condition" in p else True,
+                "repeat_enabled": p["repeat_enabled"].get() if "repeat_enabled" in p else False,
+                "repeat_mode": p["repeat_mode"].get() if "repeat_mode" in p else "持續連點",
+                "repeat_count": p["repeat_count"].get() if "repeat_count" in p else 5,
+                "repeat_speed": p["repeat_speed"].get() if "repeat_speed" in p else 0.25,
+                "repeat_area": p["repeat_area"].get() if "repeat_area" in p else "右下角區域",
+                "repeat_custom_x": p["repeat_custom_x"].get() if "repeat_custom_x" in p else 960,
+                "repeat_custom_y": p["repeat_custom_y"].get() if "repeat_custom_y" in p else 540,
+                "enabled": p["enabled"].get(),
+                "tg_enabled": p["tg_enabled"].get() if "tg_enabled" in p else False,
+                "tg_message": p["tg_message"].get() if "tg_message" in p else "",
+                "task_target_mode": p["task_target_mode"].get() if "task_target_mode" in p else "📋 完整任務清單",
+                "task_target_item": p["task_target_item"].get() if "task_target_item" in p else "",
+                "task_cooldown": p["task_cooldown"].get() if "task_cooldown" in p else 60.0,
+            })
+        return res
+
+    def _serialize_steps_data(self, s_list=None) -> list:
+        if s_list is None:
+            s_list = self.steps_list
+        res = []
+        for s in s_list:
+            res.append({
+                "name": s["name"].get(),
+                "keywords": s["keywords"].get(),
+                "target_type": _normalize_target_type(s["target_type"].get() if "target_type" in s else ""),
+                "template_image": self._ensure_template_in_storage(s["template_image"].get()) if "template_image" in s else "",
+                "image_threshold": _num(s.get("image_threshold", 0.80), 0.80),
+                "image_multiscale": bool(s["image_multiscale"].get()) if "image_multiscale" in s else False,
+                "exclude_keywords": s["exclude_keywords"].get() if "exclude_keywords" in s else "",
+                "action": s["action"].get(),
+                "custom_x": s["custom_x"].get(),
+                "custom_y": s["custom_y"].get(),
+                "delay": s["delay"].get(),
+                "roi": s["roi"].get(),
+                "enabled": s["enabled"].get(),
+                "repeat_enabled": s["repeat_enabled"].get() if "repeat_enabled" in s else False,
+                "repeat_mode": s["repeat_mode"].get() if "repeat_mode" in s else "持續連點",
+                "repeat_count": s["repeat_count"].get() if "repeat_count" in s else 5,
+                "repeat_speed": s["repeat_speed"].get() if "repeat_speed" in s else 0.25,
+                "repeat_area": s["repeat_area"].get() if "repeat_area" in s else "右下角區域",
+                "repeat_custom_x": s["repeat_custom_x"].get() if "repeat_custom_x" in s else 960,
+                "repeat_custom_y": s["repeat_custom_y"].get() if "repeat_custom_y" in s else 540,
+                "timeout_enabled": s["timeout_enabled"].get() if "timeout_enabled" in s else False,
+                "timeout_seconds": s["timeout_seconds"].get() if "timeout_seconds" in s else 20,
+                "tg_enabled": s["tg_enabled"].get() if "tg_enabled" in s else False,
+                "tg_message": s["tg_message"].get() if "tg_message" in s else "",
+                "task_target_mode": s["task_target_mode"].get() if "task_target_mode" in s else "📋 完整任務清單",
+                "task_target_item": s["task_target_item"].get() if "task_target_item" in s else "",
+                "task_cooldown": s["task_cooldown"].get() if "task_cooldown" in s else 60.0,
+            })
+        return res
+
+    def _create_priority_step_from_dict(self, container, steps_collection, lbl_empty, p_data: dict, on_changed=None):
+        kw = p_data.get("keywords", "")
+        if isinstance(kw, list):
+            kw = ", ".join(str(k) for k in kw)
+        ex_kw = p_data.get("exclude_keywords", "")
+        if isinstance(ex_kw, list):
+            ex_kw = ", ".join(str(k) for k in ex_kw)
+
+        tg_on = p_data.get("tg_enabled", False)
+        tg_msg = p_data.get("tg_message", "")
+        if isinstance(p_data.get("telegram"), dict):
+            tg_on = p_data["telegram"].get("enabled", tg_on)
+            tg_msg = p_data["telegram"].get("message", tg_msg)
+
+        return self._create_priority_step_widget_impl(
+            container=container,
+            steps_collection=steps_collection,
+            lbl_empty=lbl_empty,
+            on_changed=on_changed,
+            name=str(p_data.get("name", "優先動作")),
+            keywords=str(kw),
+            target_type=str(p_data.get("target_type", "📝 文字辨識 (OCR)")),
+            template_image=str(p_data.get("template_image", "")),
+            image_threshold=float(p_data.get("image_threshold", 0.80)),
+            image_multiscale=bool(p_data.get("image_multiscale", False)),
+            exclude_keywords=str(ex_kw),
+            action=str(p_data.get("action", "點擊目標中心 / 詞條")),
+            custom_x=int(p_data.get("custom_x", 960)),
+            custom_y=int(p_data.get("custom_y", 540)),
+            delay=float(p_data.get("delay", 2.0)),
+            roi_name=str(p_data.get("roi", "全畫面比對")),
+            while_condition=bool(p_data.get("while_condition", True)),
+            repeat_enabled=bool(p_data.get("repeat_enabled", False)),
+            repeat_mode=str(p_data.get("repeat_mode", "持續連點")),
+            repeat_count=int(p_data.get("repeat_count", 5)),
+            repeat_speed=float(p_data.get("repeat_speed", 0.25)),
+            repeat_area=str(p_data.get("repeat_area", "右下角區域")),
+            repeat_custom_x=int(p_data.get("repeat_custom_x", 960)),
+            repeat_custom_y=int(p_data.get("repeat_custom_y", 540)),
+            enabled=bool(p_data.get("enabled", True)),
+            tg_enabled=bool(tg_on),
+            tg_message=str(tg_msg),
+            task_target_mode=str(p_data.get("task_target_mode", "📋 完整任務清單")),
+            task_target_item=str(p_data.get("task_target_item", "")),
+            task_cooldown=float(p_data.get("task_cooldown", 60.0)),
+            expanded=False
+        )
+
+    def _create_step_from_dict(self, container, steps_collection, lbl_empty, s_data: dict, on_changed=None):
+        kw = s_data.get("keywords", "")
+        if isinstance(kw, list):
+            kw = ", ".join(str(k) for k in kw)
+        ex_kw = s_data.get("exclude_keywords", "")
+        if isinstance(ex_kw, list):
+            ex_kw = ", ".join(str(k) for k in ex_kw)
+
+        tg_on = s_data.get("tg_enabled", False)
+        tg_msg = s_data.get("tg_message", "")
+        if isinstance(s_data.get("telegram"), dict):
+            tg_on = s_data["telegram"].get("enabled", tg_on)
+            tg_msg = s_data["telegram"].get("message", tg_msg)
+
+        return self._create_step_widget_impl(
+            container=container,
+            steps_collection=steps_collection,
+            lbl_empty=lbl_empty,
+            on_changed=on_changed,
+            name=str(s_data.get("name", "步驟")),
+            keywords=str(kw),
+            target_type=str(s_data.get("target_type", "📝 文字辨識 (OCR)")),
+            template_image=str(s_data.get("template_image", "")),
+            image_threshold=float(s_data.get("image_threshold", 0.80)),
+            image_multiscale=bool(s_data.get("image_multiscale", False)),
+            exclude_keywords=str(ex_kw),
+            action=str(s_data.get("action", "點擊目標中心 / 詞條")),
+            custom_x=int(s_data.get("custom_x", 960)),
+            custom_y=int(s_data.get("custom_y", 540)),
+            delay=float(s_data.get("delay", 2.5)),
+            roi_name=str(s_data.get("roi", "右下角區域")),
+            enabled=bool(s_data.get("enabled", True)),
+            repeat_enabled=bool(s_data.get("repeat_enabled", False)),
+            repeat_mode=str(s_data.get("repeat_mode", "持續連點")),
+            repeat_count=int(s_data.get("repeat_count", 5)),
+            repeat_speed=float(s_data.get("repeat_speed", 0.25)),
+            repeat_area=str(s_data.get("repeat_area", "右下角區域")),
+            repeat_custom_x=int(s_data.get("repeat_custom_x", 960)),
+            repeat_custom_y=int(s_data.get("repeat_custom_y", 540)),
+            timeout_enabled=bool(s_data.get("timeout_enabled", False)),
+            timeout_seconds=int(s_data.get("timeout_seconds", 20)),
+            tg_enabled=bool(tg_on),
+            tg_message=str(tg_msg),
+            task_target_mode=str(s_data.get("task_target_mode", "📋 完整任務清單")),
+            task_target_item=str(s_data.get("task_target_item", "")),
+            task_cooldown=float(s_data.get("task_cooldown", 60.0)),
+            expanded=False
+        )
 
     # ==========================================================================
     # ⚙️ 設定檔序列化、自動儲存與載入 (100% 相容 JSON)
@@ -2813,67 +3220,8 @@ class BaseballBotGUI:
                 "token": self.var_tg_token.get(),
                 "chat_id": self.var_tg_chat_id.get(),
             },
-            "priority_steps": [
-                {
-                    "name": p["name"].get(),
-                    "keywords": p["keywords"].get(),
-                    "target_type": _normalize_target_type(p["target_type"].get() if "target_type" in p else ""),
-                    "template_image": self._ensure_template_in_storage(p["template_image"].get()) if "template_image" in p else "",
-                    "image_threshold": _num(p.get("image_threshold", 0.80), 0.80),
-                    "image_multiscale": bool(p["image_multiscale"].get()) if "image_multiscale" in p else False,
-                    "exclude_keywords": p["exclude_keywords"].get() if "exclude_keywords" in p else "",
-                    "action": p["action"].get(),
-                    "custom_x": p["custom_x"].get(),
-                    "custom_y": p["custom_y"].get(),
-                    "delay": p["delay"].get(),
-                    "roi": p["roi"].get(),
-                    "while_condition": p["while_condition"].get() if "while_condition" in p else True,
-                    "repeat_enabled": p["repeat_enabled"].get() if "repeat_enabled" in p else False,
-                    "repeat_mode": p["repeat_mode"].get() if "repeat_mode" in p else "持續連點",
-                    "repeat_count": p["repeat_count"].get() if "repeat_count" in p else 5,
-                    "repeat_speed": p["repeat_speed"].get() if "repeat_speed" in p else 0.25,
-                    "repeat_area": p["repeat_area"].get() if "repeat_area" in p else "右下角區域",
-                    "repeat_custom_x": p["repeat_custom_x"].get() if "repeat_custom_x" in p else 960,
-                    "repeat_custom_y": p["repeat_custom_y"].get() if "repeat_custom_y" in p else 540,
-                    "enabled": p["enabled"].get(),
-                    "tg_enabled": p["tg_enabled"].get() if "tg_enabled" in p else False,
-                    "tg_message": p["tg_message"].get() if "tg_message" in p else "",
-                    "task_target_mode": p["task_target_mode"].get() if "task_target_mode" in p else "📋 完整任務清單",
-                    "task_target_item": p["task_target_item"].get() if "task_target_item" in p else "",
-                    "task_cooldown": p["task_cooldown"].get() if "task_cooldown" in p else 60.0,
-                } for p in self.priority_steps_list
-            ],
-            "steps": [
-                {
-                    "name": s["name"].get(),
-                    "keywords": s["keywords"].get(),
-                    "target_type": _normalize_target_type(s["target_type"].get() if "target_type" in s else ""),
-                    "template_image": self._ensure_template_in_storage(s["template_image"].get()) if "template_image" in s else "",
-                    "image_threshold": _num(s.get("image_threshold", 0.80), 0.80),
-                    "image_multiscale": bool(s["image_multiscale"].get()) if "image_multiscale" in s else False,
-                    "exclude_keywords": s["exclude_keywords"].get() if "exclude_keywords" in s else "",
-                    "action": s["action"].get(),
-                    "custom_x": s["custom_x"].get(),
-                    "custom_y": s["custom_y"].get(),
-                    "delay": s["delay"].get(),
-                    "roi": s["roi"].get(),
-                    "enabled": s["enabled"].get(),
-                    "repeat_enabled": s["repeat_enabled"].get() if "repeat_enabled" in s else False,
-                    "repeat_mode": s["repeat_mode"].get() if "repeat_mode" in s else "持續連點",
-                    "repeat_count": s["repeat_count"].get() if "repeat_count" in s else 5,
-                    "repeat_speed": s["repeat_speed"].get() if "repeat_speed" in s else 0.25,
-                    "repeat_area": s["repeat_area"].get() if "repeat_area" in s else "右下角區域",
-                    "repeat_custom_x": s["repeat_custom_x"].get() if "repeat_custom_x" in s else 960,
-                    "repeat_custom_y": s["repeat_custom_y"].get() if "repeat_custom_y" in s else 540,
-                    "timeout_enabled": s["timeout_enabled"].get() if "timeout_enabled" in s else False,
-                    "timeout_seconds": s["timeout_seconds"].get() if "timeout_seconds" in s else 20,
-                    "tg_enabled": s["tg_enabled"].get() if "tg_enabled" in s else False,
-                    "tg_message": s["tg_message"].get() if "tg_message" in s else "",
-                    "task_target_mode": s["task_target_mode"].get() if "task_target_mode" in s else "📋 完整任務清單",
-                    "task_target_item": s["task_target_item"].get() if "task_target_item" in s else "",
-                    "task_cooldown": s["task_cooldown"].get() if "task_cooldown" in s else 60.0,
-                } for s in self.steps_list
-            ]
+            "priority_steps": self._serialize_priority_steps_data(self.priority_steps_list),
+            "steps": self._serialize_steps_data(self.steps_list),
         }
         if hasattr(self, "task_tab") and self.task_tab:
             try:
@@ -2979,95 +3327,24 @@ class BaseballBotGUI:
         if isinstance(p_list, list):
             self._clear_all_priority_steps()
             for p_data in p_list:
-                kw = p_data.get("keywords", "")
-                if isinstance(kw, list):
-                    kw = ", ".join(str(k) for k in kw)
-                ex_kw = p_data.get("exclude_keywords", "")
-                if isinstance(ex_kw, list):
-                    ex_kw = ", ".join(str(k) for k in ex_kw)
-
-                tg_on = p_data.get("tg_enabled", False)
-                tg_msg = p_data.get("tg_message", "")
-                if isinstance(p_data.get("telegram"), dict):
-                    tg_on = p_data["telegram"].get("enabled", tg_on)
-                    tg_msg = p_data["telegram"].get("message", tg_msg)
-
-                self._create_priority_step_widget(
-                    name=str(p_data.get("name", "優先動作")),
-                    keywords=str(kw),
-                    target_type=str(p_data.get("target_type", "📝 文字辨識 (OCR)")),
-                    template_image=str(p_data.get("template_image", "")),
-                    image_threshold=float(p_data.get("image_threshold", 0.80)),
-                    image_multiscale=bool(p_data.get("image_multiscale", False)),
-                    exclude_keywords=str(ex_kw),
-                    action=str(p_data.get("action", "點擊目標中心 / 詞條")),
-                    custom_x=int(p_data.get("custom_x", 960)),
-                    custom_y=int(p_data.get("custom_y", 540)),
-                    delay=float(p_data.get("delay", 2.0)),
-                    roi_name=str(p_data.get("roi", "全畫面比對")),
-                    while_condition=bool(p_data.get("while_condition", True)),
-                    repeat_enabled=bool(p_data.get("repeat_enabled", False)),
-                    repeat_mode=str(p_data.get("repeat_mode", "持續連點")),
-                    repeat_count=int(p_data.get("repeat_count", 5)),
-                    repeat_speed=float(p_data.get("repeat_speed", 0.25)),
-                    repeat_area=str(p_data.get("repeat_area", "右下角區域")),
-                    repeat_custom_x=int(p_data.get("repeat_custom_x", 960)),
-                    repeat_custom_y=int(p_data.get("repeat_custom_y", 540)),
-                    enabled=bool(p_data.get("enabled", True)),
-                    tg_enabled=bool(tg_on),
-                    tg_message=str(tg_msg),
-                    task_target_mode=str(p_data.get("task_target_mode", "📋 完整任務清單")),
-                    task_target_item=str(p_data.get("task_target_item", "")),
-                    task_cooldown=float(p_data.get("task_cooldown", 60.0)),
-                    expanded=False
+                self._create_priority_step_from_dict(
+                    container=self.frame_priority_cards,
+                    steps_collection=self.priority_steps_list,
+                    lbl_empty=self.lbl_no_priority,
+                    p_data=p_data,
+                    on_changed=self.auto_save_current_config
                 )
 
         # 一般步驟
         if isinstance(cfg.get("steps"), list):
             self._clear_all_steps()
             for s_data in cfg["steps"]:
-                kw = s_data.get("keywords", "")
-                if isinstance(kw, list):
-                    kw = ", ".join(str(k) for k in kw)
-                ex_kw = s_data.get("exclude_keywords", "")
-                if isinstance(ex_kw, list):
-                    ex_kw = ", ".join(str(k) for k in ex_kw)
-
-                tg_on = s_data.get("tg_enabled", False)
-                tg_msg = s_data.get("tg_message", "")
-                if isinstance(s_data.get("telegram"), dict):
-                    tg_on = s_data["telegram"].get("enabled", tg_on)
-                    tg_msg = s_data["telegram"].get("message", tg_msg)
-
-                self._create_step_widget(
-                    name=str(s_data.get("name", "步驟")),
-                    keywords=str(kw),
-                    target_type=str(s_data.get("target_type", "📝 文字辨識 (OCR)")),
-                    template_image=str(s_data.get("template_image", "")),
-                    image_threshold=float(s_data.get("image_threshold", 0.80)),
-                    image_multiscale=bool(s_data.get("image_multiscale", False)),
-                    exclude_keywords=str(ex_kw),
-                    action=str(s_data.get("action", "點擊目標中心 / 詞條")),
-                    custom_x=int(s_data.get("custom_x", 960)),
-                    custom_y=int(s_data.get("custom_y", 540)),
-                    delay=float(s_data.get("delay", 2.5)),
-                    roi_name=str(s_data.get("roi", "右下角區域")),
-                    enabled=bool(s_data.get("enabled", True)),
-                    repeat_enabled=bool(s_data.get("repeat_enabled", False)),
-                    repeat_mode=str(s_data.get("repeat_mode", "持續連點")),
-                    repeat_count=int(s_data.get("repeat_count", 5)),
-                    repeat_speed=float(s_data.get("repeat_speed", 0.25)),
-                    repeat_area=str(s_data.get("repeat_area", "右下角區域")),
-                    repeat_custom_x=int(s_data.get("repeat_custom_x", 960)),
-                    repeat_custom_y=int(s_data.get("repeat_custom_y", 540)),
-                    timeout_enabled=bool(s_data.get("timeout_enabled", False)),
-                    timeout_seconds=int(s_data.get("timeout_seconds", 20)),
-                    tg_enabled=bool(tg_on),
-                    tg_message=str(tg_msg),
-                    task_target_mode=str(s_data.get("task_target_mode", "📋 完整任務清單")),
-                    task_target_item=str(s_data.get("task_target_item", "")),
-                    task_cooldown=float(s_data.get("task_cooldown", 60.0)),
-                    expanded=False
+                self._create_step_from_dict(
+                    container=self.frame_normal_cards,
+                    steps_collection=self.steps_list,
+                    lbl_empty=self.lbl_no_steps,
+                    s_data=s_data,
+                    on_changed=self.auto_save_current_config
                 )
 
         # 任務清單積木載入
@@ -3211,6 +3488,11 @@ class BaseballBotGUI:
         if hasattr(self, "bot") and self.bot:
             self.bot.set_templates_dir(self.templates_dir)
 
+        if hasattr(self, "iphone_tab") and self.iphone_tab:
+            if hasattr(self.iphone_tab, "bot") and self.iphone_tab.bot:
+                self.iphone_tab.bot.set_templates_dir(self.templates_dir)
+            self.iphone_tab.save_file = os.path.join(self.storage_dir, "iphone_last_config.json")
+
         if hasattr(self, "task_tab") and self.task_tab:
             self.task_tab.presets_dir = self.task_presets_dir
             self.task_tab.save_file = self.task_save_file
@@ -3232,16 +3514,20 @@ class BaseballBotGUI:
             p,
             os.path.join(self.storage_dir, p),
             os.path.join(self.storage_dir, os.path.basename(p)),
+            os.path.join(self.storage_dir, "截圖存檔", os.path.basename(p)),
+            os.path.join(self.storage_dir, "templates", os.path.basename(p)),
             os.path.join(self.config_dir, "templates", os.path.basename(p)),
             os.path.join(self.config_dir, "templates", p),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", os.path.basename(p)),
             os.path.join(os.getcwd(), p),
             os.path.join(os.getcwd(), os.path.basename(p)),
+            os.path.join(os.getcwd(), "截圖存檔", os.path.basename(p)),
         ]
         if hasattr(self, "auto_save_file") and self.auto_save_file:
             save_p_dir = os.path.dirname(self.auto_save_file)
             candidates.append(os.path.join(save_p_dir, os.path.basename(p)))
             candidates.append(os.path.join(save_p_dir, p))
+            candidates.append(os.path.join(save_p_dir, "截圖存檔", os.path.basename(p)))
         if hasattr(self, "bot") and self.bot:
             bot_res = self.bot.resolve_template_path(p)
             if bot_res and os.path.isfile(bot_res):
@@ -3322,6 +3608,8 @@ class BaseballBotGUI:
         def on_saved(saved_path: str):
             fname = os.path.basename(saved_path)
             self.last_snipped_template = saved_path
+            if hasattr(self, "task_tab") and self.task_tab:
+                self.task_tab.last_snipped_template = saved_path
             # 若位於目前存檔目錄下，儲存檔名；否則儲存絕對路徑
             if self.storage_dir and os.path.commonpath([os.path.abspath(saved_path), os.path.abspath(self.storage_dir)]) == os.path.abspath(self.storage_dir):
                 step_or_p["template_image"].set(fname)

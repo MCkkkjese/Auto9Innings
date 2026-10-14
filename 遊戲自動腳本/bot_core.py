@@ -383,10 +383,16 @@ class BaseballBot:
             p,
             os.path.join(self.templates_dir, p),
             os.path.join(self.templates_dir, os.path.basename(p)),
+            os.path.join(self.templates_dir, "截圖存檔", os.path.basename(p)),
+            os.path.join(self.templates_dir, "截圖存檔", p),
+            os.path.join(self.templates_dir, "templates", os.path.basename(p)),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), p),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", os.path.basename(p)),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", "templates", os.path.basename(p)),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", "templates", p),
+            os.path.join(os.getcwd(), p),
+            os.path.join(os.getcwd(), os.path.basename(p)),
+            os.path.join(os.getcwd(), "截圖存檔", os.path.basename(p)),
         ]
         for c in candidates:
             if os.path.isfile(c):
@@ -407,8 +413,10 @@ class BaseballBot:
             if cached is not None and cached[2] == mtime:
                 return cached[0]
 
-            img_bytes = np.fromfile(resolved, dtype=np.uint8)
-            gray = cv2.imdecode(img_bytes, cv2.IMREAD_GRAYSCALE)
+            with open(resolved, "rb") as f:
+                img_bytes = f.read()
+            nparr = np.frombuffer(img_bytes, dtype=np.uint8)
+            gray = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
             if gray is None:
                 return None
             h, w = gray.shape[:2]

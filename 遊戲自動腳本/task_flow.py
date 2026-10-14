@@ -88,18 +88,24 @@ BLOCK_TYPES = {
             "interval": 0.3,
             "stop_mode": "無 (僅點滿次數)",
             "stop_keywords": "確認, 確定, 完成, 上限",
+            "template_image": "",
+            "image_threshold": 0.80,
+            "image_multiscale": False,
             "check_every": 1,
             "delay_after": 0.5
         }
     },
     "detect_click": {
-        "title": "偵測文字並點擊",
+        "title": "偵測文字或圖片並點擊",
         "badge": "偵測",
         "color": COLOR_BLOCK_DETECT,
         "default_name": "等待並點擊",
         "default_params": {
             "target_type": "📝 僅文字",
             "keywords": "確認, 確定",
+            "template_image": "",
+            "image_threshold": 0.80,
+            "image_multiscale": False,
             "timeout": 10,
             "click_mode": "click_text",
             "custom_x": 960,
@@ -112,7 +118,7 @@ BLOCK_TYPES = {
         "title": "條件分支（If / Else）",
         "badge": "條件",
         "color": COLOR_BLOCK_BRANCH,
-        "default_name": "文字條件分支",
+        "default_name": "條件分支",
         "default_params": {
             "timeout": 8,
             "delay": 1.5,
@@ -120,8 +126,8 @@ BLOCK_TYPES = {
             "else_x": 960,
             "else_y": 950,
             "branches": [
-                {"name": "If", "keywords": "勝利, 挑戰成功", "x": 1650, "y": 950},
-                {"name": "Else If", "keywords": "失敗, 挑戰失敗", "x": 960, "y": 950}
+                {"name": "If", "keywords": "勝利, 挑戰成功", "template_image": "", "threshold": 0.80, "multiscale": False, "x": 1650, "y": 950},
+                {"name": "Else If", "keywords": "失敗, 挑戰失敗", "template_image": "", "threshold": 0.80, "multiscale": False, "x": 960, "y": 950}
             ]
         }
     },
@@ -134,6 +140,9 @@ BLOCK_TYPES = {
             "stop_mode": "依指定次數",
             "count": 3,
             "keywords": "",
+            "template_image": "",
+            "image_threshold": 0.80,
+            "image_multiscale": False,
             "check_timing": "每輪開始與結束",
             "delay_after": 0.5,
             "inner_blocks": []
@@ -148,6 +157,9 @@ BLOCK_TYPES = {
             "cond_mode": "出現 (Wait Appear)",
             "target_type": "📝 僅文字",
             "keywords": "確認, 確定",
+            "template_image": "",
+            "image_threshold": 0.80,
+            "image_multiscale": False,
             "interval": 1.0,
             "timeout": 30,
             "delay_after": 0.5,
@@ -200,6 +212,38 @@ BLOCK_TYPES = {
 
 # 常用任務範本字典 (動態從 task_presets/ 資料夾載入，支援使用者自訂新增與修改)
 DAILY_PRESETS: Dict[str, Dict[str, Any]] = {}
+
+
+def imread_unicode(path: str, flags: int = cv2.IMREAD_COLOR) -> Optional[np.ndarray]:
+    """跨平台安全讀取包含中文檔名的圖片 (使用原生 Python IO)"""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        nparr = np.frombuffer(data, dtype=np.uint8)
+        return cv2.imdecode(nparr, flags)
+    except Exception:
+        return None
+
+
+def imwrite_unicode(path: str, img: np.ndarray) -> bool:
+    """跨平台安全寫入包含中文檔名與路徑的圖片 (使用原生 Python IO)"""
+    try:
+        p = os.path.abspath(path)
+        ext = os.path.splitext(p)[1]
+        if not ext:
+            ext = ".png"
+            p = p + ext
+        parent_dir = os.path.dirname(p)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+        success, encoded = cv2.imencode(ext, img)
+        if success:
+            with open(p, "wb") as f:
+                f.write(encoded.tobytes())
+            return os.path.exists(p) and os.path.getsize(p) > 0
+        return False
+    except Exception:
+        return False
 
 
 def _safe_float(val, default=0.0):
@@ -476,8 +520,15 @@ class TaskEngine:
         self._sleep_interruptible(delay)
         return True
 
-    def _check_condition_met(self, stop_mode: str, raw_keywords: str) -> Tuple[bool, str]:
-        """檢測當前畫面是否滿足終止條件 (文字出現/消失、打勾/叉叉符號)"""
+    def _check_condition_met(
+        self,
+        stop_mode: str,
+        raw_keywords: str,
+        template_image: str = "",
+        threshold: float = 0.80,
+        multiscale: bool = False
+    ) -> Tuple[bool, str]:
+        """檢測當前畫面是否滿足終止條件 (文字出現/消失、圖片出現/消失、打勾/叉叉符號)"""
         if not self.bot:
             return False, ""
 
@@ -487,9 +538,8 @@ class TaskEngine:
         is_disappear = ("消失" in stop_mode or "disappear" in stop_mode.lower())
         is_check = ("打勾" in stop_mode or "check" in stop_mode.lower())
         is_cross = ("叉叉" in stop_mode or "cross" in stop_mode.lower())
+        is_image = ("圖片" in stop_mode or "image" in stop_mode.lower() or "模板" in stop_mode or bool(template_image))
         is_appear = (not is_disappear)
-
-        kws = [k.strip() for k in raw_keywords.replace("，", ",").split(",") if k.strip()]
 
         screen = None
         try:
@@ -500,11 +550,35 @@ class TaskEngine:
         if screen is None:
             return False, ""
 
+        # 圖片模板比對條件
+        if is_image and template_image:
+            screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+            matched = False
+            score_val = 0.0
+            match_res = None
+            if hasattr(self.bot, "match_template"):
+                match_res = self.bot.match_template(
+                    screen_gray,
+                    template_image,
+                    threshold=threshold,
+                    multi_scale=multiscale
+                )
+            if match_res is not None:
+                cx, cy, score_val, _ = match_res
+                matched = True
+
+            img_fname = os.path.basename(template_image)
+            if is_appear and matched:
+                return True, f"偵測到圖片「{img_fname}」出現 (相似度 {score_val:.2f})"
+            elif is_disappear and not matched:
+                return True, f"圖片「{img_fname}」已消失"
+            return False, ""
+
+        # 符號比對
         det_results = self.bot.scan_text(screen)
         present = False
         matched_desc = ""
 
-        # 符號比對
         if is_check or is_cross:
             for item in det_results:
                 sym = item.get("symbol")
@@ -519,6 +593,7 @@ class TaskEngine:
                     break
 
         # 文字比對
+        kws = [k.strip() for k in raw_keywords.replace("，", ",").split(",") if k.strip()]
         conf_thresh = self._get_confidence()
         if not present and kws:
             for kw in kws:
@@ -546,6 +621,9 @@ class TaskEngine:
         interval = max(0.05, _safe_float(p.get("interval", 0.3)))
         stop_mode = p.get("stop_mode", "無 (僅點滿次數)")
         raw_kws = p.get("stop_keywords", "")
+        template_img = p.get("template_image", "").strip()
+        img_thresh = _safe_float(p.get("image_threshold", 0.80), 0.80)
+        img_multiscale = bool(p.get("image_multiscale", False))
         check_every = max(1, _safe_int(p.get("check_every", 1)))
         delay_after = max(0.0, _safe_float(p.get("delay_after", 0.5)))
 
@@ -562,7 +640,13 @@ class TaskEngine:
             taps_done += 1
 
             if has_stop_cond and (taps_done % check_every == 0):
-                met, desc = self._check_condition_met(stop_mode, raw_kws)
+                met, desc = self._check_condition_met(
+                    stop_mode,
+                    raw_kws,
+                    template_image=template_img,
+                    threshold=img_thresh,
+                    multiscale=img_multiscale
+                )
                 if met:
                     self._log(f"  🛑 觸發停止條件！{desc}，停止連點 (共完成 {taps_done} 次)")
                     break
@@ -579,20 +663,25 @@ class TaskEngine:
     def _exec_detect_click(self, p: Dict[str, Any]) -> bool:
         target_type = p.get("target_type", "📝 僅文字")
         raw_kws = p.get("keywords", "")
+        template_img = p.get("template_image", "").strip()
+        img_thresh = _safe_float(p.get("image_threshold", 0.80), 0.80)
+        img_multiscale = bool(p.get("image_multiscale", False))
         timeout = max(1, _safe_int(p.get("timeout", 10)))
         click_mode = p.get("click_mode", "click_text")
         cx = _safe_int(p.get("custom_x", 960))
         cy = _safe_int(p.get("custom_y", 540))
         delay = _safe_float(p.get("delay", 1.5))
 
-        kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
+        is_image_mode = ("圖片" in target_type or "image" in target_type.lower() or "模板" in target_type)
         is_check = ("打勾" in target_type or "check" in target_type.lower())
         is_cross = ("叉叉" in target_type or "cross" in target_type.lower() or "關閉" in target_type)
 
+        kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
         scan_delay = self._get_scan_interval()
-        conf_thresh = self._get_confidence()
         deadline = time.time() + timeout
-        self._log(f"  🔍 等待目標出現 (限時 {timeout}s, 刷新速度 {scan_delay:.2f}s)...")
+
+        desc_target = f"圖片「{os.path.basename(template_img)}」" if is_image_mode else (f"文字/符號「{raw_kws}」" if raw_kws else target_type)
+        self._log(f"  🔍 等待目標【{desc_target}】出現 (限時 {timeout}s, 刷新速度 {scan_delay:.2f}s)...")
 
         while time.time() < deadline:
             if self._stop_event.is_set():
@@ -600,32 +689,57 @@ class TaskEngine:
 
             screen = self.bot.capture_screen()
             if screen is not None:
-                det_results = self.bot.scan_text(screen)
+                # 1. 圖片模板模式
+                if is_image_mode:
+                    if not template_img:
+                        self._log("  ⚠️ 未指定模板圖檔，無法進行圖片比對！")
+                        return False
+                    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                    if hasattr(self.bot, "match_template"):
+                        res = self.bot.match_template(
+                            screen_gray,
+                            template_img,
+                            threshold=img_thresh,
+                            multi_scale=img_multiscale
+                        )
+                        if res is not None:
+                            tx, ty, score_val, bbox = res
+                            img_name = os.path.basename(template_img)
+                            target_x = cx if click_mode in ("custom_coord", "自訂座標", "📍 點擊自訂座標") else tx
+                            target_y = cy if click_mode in ("custom_coord", "自訂座標", "📍 點擊自訂座標") else ty
+                            self._log(f"  🎯 命中圖片模板「{img_name}」(相似度 {score_val:.2f})，點擊 ({target_x}, {target_y})")
+                            self.bot.tap(target_x, target_y)
+                            self._sleep_interruptible(delay)
+                            return True
+                else:
+                    # 2. 文字/符號 OCR 模式
+                    det_results = self.bot.scan_text(screen)
 
-                # 優先比對符號
-                if is_check or is_cross:
-                    for item in det_results:
-                        sym = item.get("symbol")
-                        txt = item.get("text", "")
-                        if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
-                            return self._do_click(click_mode, item, cx, cy, delay)
-                        if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
-                            return self._do_click(click_mode, item, cx, cy, delay)
+                    # 優先比對符號
+                    if is_check or is_cross:
+                        for item in det_results:
+                            sym = item.get("symbol")
+                            txt = item.get("text", "")
+                            if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
+                                return self._do_click(click_mode, item, cx, cy, delay)
+                            if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
+                                return self._do_click(click_mode, item, cx, cy, delay)
 
-                # 比對關鍵字
-                for kw in kws:
-                    for item in det_results:
-                        matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
-                        if matched and ratio >= conf_thresh:
-                            return self._do_click(click_mode, item, cx, cy, delay)
+                    # 比對關鍵字
+                    conf_thresh = self._get_confidence()
+                    for kw in kws:
+                        for item in det_results:
+                            matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
+                            if matched and ratio >= conf_thresh:
+                                return self._do_click(click_mode, item, cx, cy, delay)
 
             time.sleep(scan_delay)
 
-        self._log(f"  ⚠️ 等待超時 ({timeout}s 未偵測到目標)")
+        self._log(f"  ⚠️ 等待超時 ({timeout}s 未偵測到目標【{desc_target}】)")
         return False
 
     def _do_click(self, click_mode: str, item: Dict[str, Any], cx: int, cy: int, delay: float) -> bool:
-        if click_mode == "custom_coord":
+        if click_mode in ("custom_coord", "自訂座標", "📍 點擊自訂座標"):
             tx, ty = cx, cy
         else:
             tx, ty = item["center"]
@@ -635,7 +749,7 @@ class TaskEngine:
         return True
 
     def _exec_branch_if(self, p: Dict[str, Any]) -> bool:
-        """條件分支：判斷當前畫面文字來去點擊不同的座標 (支援多個 If 與 Else If)"""
+        """條件分支：判斷當前畫面文字或圖片來去點擊不同的座標 (支援多個 If 與 Else If)"""
         branches = p.get("branches")
         if not branches:
             branches = []
@@ -643,6 +757,9 @@ class TaskEngine:
                 branches.append({
                     "name": "If",
                     "keywords": p.get("cond_a_kws", ""),
+                    "template_image": "",
+                    "threshold": 0.80,
+                    "multiscale": False,
                     "x": _safe_int(p.get("cond_a_x", 1650)),
                     "y": _safe_int(p.get("cond_a_y", 950))
                 })
@@ -650,6 +767,9 @@ class TaskEngine:
                 branches.append({
                     "name": "Else If",
                     "keywords": p.get("cond_b_kws", ""),
+                    "template_image": "",
+                    "threshold": 0.80,
+                    "multiscale": False,
                     "x": _safe_int(p.get("cond_b_x", 960)),
                     "y": _safe_int(p.get("cond_b_y", 950))
                 })
@@ -672,24 +792,43 @@ class TaskEngine:
 
             screen = self.bot.capture_screen()
             if screen is not None:
-                det_results = self.bot.scan_text(screen)
+                screen_gray = None
+                det_results = None
 
                 # 依序檢查 If 以及各個 Else If 分支
                 for b_idx, branch in enumerate(branches):
                     b_tag = branch.get("name", "If" if b_idx == 0 else f"Else If {b_idx}")
+                    tpl_img = branch.get("template_image", "").strip()
                     raw_kws = branch.get("keywords", "")
                     kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
                     bx = _safe_int(branch.get("x", 960))
                     by = _safe_int(branch.get("y", 540))
 
-                    for kw in kws:
-                        for item in det_results:
-                            matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
-                            if matched and ratio >= conf_thresh:
-                                self._log(f"  🎯 命中分支 [{b_tag}] 關鍵字「{kw}」➜ 點擊座標 ({bx}, {by})")
-                                self.bot.tap(bx, by)
-                                self._sleep_interruptible(delay)
-                                return True
+                    # 1. 優先判斷分支圖片模板
+                    if tpl_img and hasattr(self.bot, "match_template"):
+                        if screen_gray is None:
+                            screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                        br_thresh = _safe_float(branch.get("threshold", 0.80), 0.80)
+                        br_multi = bool(branch.get("multiscale", False))
+                        m_res = self.bot.match_template(screen_gray, tpl_img, threshold=br_thresh, multi_scale=br_multi)
+                        if m_res is not None:
+                            self._log(f"  🎯 命中分支 [{b_tag}] 圖片「{os.path.basename(tpl_img)}」(相似度 {m_res[2]:.2f}) ➜ 點擊座標 ({bx}, {by})")
+                            self.bot.tap(bx, by)
+                            self._sleep_interruptible(delay)
+                            return True
+
+                    # 2. 判斷分支關鍵字 (OCR)
+                    if kws:
+                        if det_results is None:
+                            det_results = self.bot.scan_text(screen)
+                        for kw in kws:
+                            for item in det_results:
+                                matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
+                                if matched and ratio >= conf_thresh:
+                                    self._log(f"  🎯 命中分支 [{b_tag}] 關鍵字「{kw}」➜ 點擊座標 ({bx}, {by})")
+                                    self.bot.tap(bx, by)
+                                    self._sleep_interruptible(delay)
+                                    return True
 
             time.sleep(scan_delay)
 
@@ -706,6 +845,9 @@ class TaskEngine:
         """迴圈容器：重複執行內部包含的積木步驟 (支援 While 條件與指定次數)"""
         stop_mode = p.get("stop_mode", "依指定次數")
         raw_kws = p.get("keywords", p.get("stop_keywords", ""))
+        template_img = p.get("template_image", "").strip()
+        img_thresh = _safe_float(p.get("image_threshold", 0.80), 0.80)
+        img_multiscale = bool(p.get("image_multiscale", False))
         count = max(0, _safe_int(p.get("count", 3)))
         check_timing = p.get("check_timing", "每輪開始與結束")
         delay_after = max(0.0, _safe_float(p.get("delay_after", 0.5)))
@@ -718,7 +860,7 @@ class TaskEngine:
         is_cond_mode = (stop_mode != "依指定次數" and "無" not in stop_mode)
         tot_str = str(count) if count > 0 else "∞"
         if is_cond_mode:
-            target_desc = f"「{raw_kws}」" if raw_kws else stop_mode
+            target_desc = f"圖片「{os.path.basename(template_img)}」" if template_img else (f"「{raw_kws}」" if raw_kws else stop_mode)
             self._log(f"  🔁 進入 While 條件迴圈 [停止條件: {stop_mode} {target_desc}，上限: {tot_str} 次，內含 {len(inner_blocks)} 個步驟]...")
         else:
             self._log(f"  🔁 進入重複迴圈 [共 {tot_str} 次，內含 {len(inner_blocks)} 個步驟]...")
@@ -731,7 +873,13 @@ class TaskEngine:
 
             # 每輪開始前檢查 (While 模式)
             if is_cond_mode and ("開始" in check_timing or "While" in check_timing):
-                met, desc = self._check_condition_met(stop_mode, raw_kws)
+                met, desc = self._check_condition_met(
+                    stop_mode,
+                    raw_kws,
+                    template_image=template_img,
+                    threshold=img_thresh,
+                    multiscale=img_multiscale
+                )
                 if met:
                     self._log(f"  🛑 迴圈終止！在第 {cycle} 輪開始前觸發停止條件 ({desc})")
                     break
@@ -756,7 +904,13 @@ class TaskEngine:
 
                 # 每個子步驟後檢查
                 if is_cond_mode and "子步驟" in check_timing:
-                    met, desc = self._check_condition_met(stop_mode, raw_kws)
+                    met, desc = self._check_condition_met(
+                        stop_mode,
+                        raw_kws,
+                        template_image=template_img,
+                        threshold=img_thresh,
+                        multiscale=img_multiscale
+                    )
                     if met:
                         self._log(f"  🛑 迴圈終止！在子步驟 [{sb_name}] 執行後觸發停止條件 ({desc})")
                         broken_by_step = True
@@ -768,7 +922,13 @@ class TaskEngine:
 
             # 每輪結束後檢查 (Do-While 模式)
             if is_cond_mode and ("結束" in check_timing or "Do-While" in check_timing):
-                met, desc = self._check_condition_met(stop_mode, raw_kws)
+                met, desc = self._check_condition_met(
+                    stop_mode,
+                    raw_kws,
+                    template_image=template_img,
+                    threshold=img_thresh,
+                    multiscale=img_multiscale
+                )
                 if met:
                     self._log(f"  🛑 迴圈終止！第 {cycle} 輪結束時觸發停止條件 ({desc})")
                     break
@@ -782,12 +942,19 @@ class TaskEngine:
         return True
 
     def _exec_wait_condition(self, p: Dict[str, Any]) -> bool:
-        """等待指定條件達成 (畫面出現或消失特定文字/符號)，期間依設定的頻率 (秒) 循環檢測"""
+        """等待指定條件達成 (畫面出現或消失特定文字/圖片/符號)，期間依設定的頻率 (秒) 循環檢測"""
         cond_mode = p.get("cond_mode", "出現 (Wait Appear)")
         is_wait_disappear = ("消失" in cond_mode or "disappear" in cond_mode.lower())
         is_wait_appear = not is_wait_disappear
         target_type = p.get("target_type", "📝 僅文字")
         raw_kws = p.get("keywords", "")
+        template_img = p.get("template_image", "").strip()
+        img_thresh = _safe_float(p.get("image_threshold", 0.80), 0.80)
+        img_multiscale = bool(p.get("image_multiscale", False))
+
+        is_image_mode = ("圖片" in target_type or "image" in target_type.lower() or "模板" in target_type)
+        is_check = ("打勾" in target_type or "check" in target_type.lower())
+        is_cross = ("叉叉" in target_type or "cross" in target_type.lower() or "關閉" in target_type)
 
         scan_delay = self._get_scan_interval()
         default_interval = scan_delay if "interval" not in p else _safe_float(p.get("interval", scan_delay))
@@ -797,12 +964,13 @@ class TaskEngine:
         delay_after = max(0.0, _safe_float(p.get("delay_after", 0.5)))
         on_timeout = p.get("on_timeout", "continue")
 
-        kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
-        is_check = ("打勾" in target_type or "check" in target_type.lower())
-        is_cross = ("叉叉" in target_type or "cross" in target_type.lower() or "關閉" in target_type)
-
         mode_str = "出現" if is_wait_appear else "消失"
-        desc = f"{target_type} [{raw_kws}]" if kws else target_type
+        if is_image_mode:
+            desc = f"圖片「{os.path.basename(template_img)}」"
+        else:
+            kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
+            desc = f"{target_type} [{raw_kws}]" if kws else target_type
+
         self._log(f"  ⏳ 等待「{desc}」{mode_str} (每 {interval:.2f}s 偵測一次，限時 {timeout}s)...")
 
         start_time = time.time()
@@ -817,43 +985,56 @@ class TaskEngine:
             matched_desc = ""
 
             if screen is not None:
-                det_results = self.bot.scan_text(screen)
-
-                # 優先比對符號
-                if is_check or is_cross:
-                    for item in det_results:
-                        sym = item.get("symbol")
-                        txt = item.get("text", "")
-                        if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
+                if is_image_mode:
+                    if template_img and hasattr(self.bot, "match_template"):
+                        screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                        m_res = self.bot.match_template(
+                            screen_gray,
+                            template_img,
+                            threshold=img_thresh,
+                            multi_scale=img_multiscale
+                        )
+                        if m_res is not None:
                             present = True
-                            matched_desc = f"打勾圖案 [{txt}]"
-                            break
-                        if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
-                            present = True
-                            matched_desc = f"叉叉圖案 [{txt}]"
-                            break
+                            matched_desc = f"圖片「{os.path.basename(template_img)}」(相似度 {m_res[2]:.2f})"
+                else:
+                    det_results = self.bot.scan_text(screen)
 
-                # 比對關鍵字
-                conf_thresh = self._get_confidence()
-                if not present:
-                    for kw in kws:
+                    # 優先比對符號
+                    if is_check or is_cross:
                         for item in det_results:
-                            matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
-                            if matched and ratio >= conf_thresh:
+                            sym = item.get("symbol")
+                            txt = item.get("text", "")
+                            if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
                                 present = True
-                                matched_desc = f"關鍵字「{kw}」({item.get('text')})"
+                                matched_desc = f"打勾圖案 [{txt}]"
                                 break
-                        if present:
-                            break
+                            if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
+                                present = True
+                                matched_desc = f"叉叉圖案 [{txt}]"
+                                break
+
+                    # 比對關鍵字
+                    conf_thresh = self._get_confidence()
+                    if not present and kws:
+                        for kw in kws:
+                            for item in det_results:
+                                matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
+                                if matched and ratio >= conf_thresh:
+                                    present = True
+                                    matched_desc = f"關鍵字「{kw}」({item.get('text')})"
+                                    break
+                            if present:
+                                break
 
             elapsed = time.time() - start_time
             if is_wait_appear and present:
-                self._log(f"  ✅ 條件達成！已偵測到 {matched_desc} 出現 (耗時 {elapsed:.1f}s)")
+                self._log(f"  ✅ 條件達成！已偵測到「{matched_desc}」出現 (耗時 {elapsed:.1f}s)")
                 if delay_after > 0:
                     self._sleep_interruptible(delay_after)
                 return True
             elif not is_wait_appear and not present:
-                self._log(f"  ✅ 條件達成！目標已從畫面消失 (耗時 {elapsed:.1f}s)")
+                self._log(f"  ✅ 條件達成！目標「{desc}」已消失 (耗時 {elapsed:.1f}s)")
                 if delay_after > 0:
                     self._sleep_interruptible(delay_after)
                 return True
@@ -862,6 +1043,8 @@ class TaskEngine:
                 return False
 
         self._log(f"  ⚠️ 等待超時 ({timeout}s 未滿足「{desc}」{mode_str} 條件)")
+        if delay_after > 0:
+            self._sleep_interruptible(delay_after)
         return (on_timeout != "stop")
 
     def _exec_wait_sec(self, p: Dict[str, Any]) -> bool:
@@ -1084,9 +1267,278 @@ class TaskFlowTab:
             self.save_file = os.path.join(self.config_dir, tf_name)
         self.presets: Dict[str, Dict[str, Any]] = {}
 
+        self.last_snipped_template = ""
+        if self.gui and hasattr(self.gui, "last_snipped_template"):
+            self.last_snipped_template = self.gui.last_snipped_template
+
         self._build_ui()
         self.reload_presets()
         self.load_config_auto()
+
+    def resolve_image_path(self, p: str) -> Optional[str]:
+        """解析圖片模板路徑，支援絕對路徑、相對路徑、截圖存檔、存檔目錄"""
+        if not p:
+            return None
+        p = str(p).strip()
+        if not p:
+            return None
+        if os.path.isabs(p) and os.path.isfile(p):
+            return os.path.abspath(p)
+
+        candidates = [
+            p,
+            os.path.join(self.presets_dir, p),
+            os.path.join(self.presets_dir, os.path.basename(p)),
+            os.path.join(self.presets_dir, "截圖存檔", os.path.basename(p)),
+            os.path.join(self.presets_dir, "截圖存檔", p),
+            os.path.join(self.presets_dir, "templates", os.path.basename(p)),
+            os.path.join(self.presets_dir, "templates", p),
+            os.path.join(self.config_dir, p),
+            os.path.join(self.config_dir, "templates", os.path.basename(p)),
+            os.path.join(os.getcwd(), p),
+            os.path.join(os.getcwd(), "截圖存檔", os.path.basename(p)),
+        ]
+        if self.gui and hasattr(self.gui, "storage_dir") and self.gui.storage_dir:
+            sd = self.gui.storage_dir
+            candidates.append(os.path.join(sd, p))
+            candidates.append(os.path.join(sd, os.path.basename(p)))
+            candidates.append(os.path.join(sd, "截圖存檔", os.path.basename(p)))
+            candidates.append(os.path.join(sd, "templates", os.path.basename(p)))
+
+        if hasattr(self.bot, "resolve_template_path"):
+            b_res = self.bot.resolve_template_path(p)
+            if b_res and os.path.isfile(b_res):
+                return os.path.abspath(b_res)
+
+        for c in candidates:
+            if c and os.path.isfile(c):
+                return os.path.abspath(c)
+        return None
+
+    def on_snip_template_dialog(self, target_vp: Dict[str, Any], initial_name: str = "btn_template"):
+        """開啟拖曳框選裁切對話框，儲存為圖片模板"""
+        screen_bgr = self.current_screen_bgr
+        if screen_bgr is None and self.gui and getattr(self.gui, "current_screen_bgr", None) is not None:
+            screen_bgr = self.gui.current_screen_bgr
+        if screen_bgr is None and self.bot and hasattr(self.bot, "capture_screen"):
+            try:
+                screen_bgr = self.bot.capture_screen()
+                if screen_bgr is not None:
+                    self.current_screen_bgr = screen_bgr
+                    self._render_preview(screen_bgr)
+            except Exception:
+                screen_bgr = None
+
+        if screen_bgr is None:
+            messagebox.showwarning(
+                "提示",
+                "目前尚無畫面可用於截圖！\n請先確認模擬器已連線，並點擊右側「📸 截圖」取得畫面。",
+                parent=self.parent
+            )
+            return
+
+        save_dir = self.presets_dir
+        if self.gui and hasattr(self.gui, "storage_dir") and self.gui.storage_dir:
+            save_dir = self.gui.storage_dir
+
+        def on_saved(saved_path: str):
+            self.last_snipped_template = saved_path
+            if self.gui and hasattr(self.gui, "last_snipped_template"):
+                self.gui.last_snipped_template = saved_path
+            if "template_image" in target_vp:
+                target_vp["template_image"].set(saved_path)
+            self.auto_save_config()
+            self._log(f"✂️ 已框選並儲存模板圖片: {saved_path}")
+
+        try:
+            from gui import TemplateSnipperDialog
+            TemplateSnipperDialog(
+                parent=self.parent,
+                screen_bgr=screen_bgr,
+                initial_name=initial_name,
+                templates_dir=save_dir,
+                on_save_callback=on_saved
+            )
+        except Exception as e:
+            messagebox.showerror("錯誤", f"開啟框選工具失敗: {e}", parent=self.parent)
+
+    def on_browse_template_dialog(self, target_vp: Dict[str, Any]):
+        """開啟檔案選擇器選擇本機圖片"""
+        init_dir = self.presets_dir
+        if self.gui and hasattr(self.gui, "storage_dir") and self.gui.storage_dir:
+            init_dir = self.gui.storage_dir
+        f = filedialog.askopenfilename(
+            parent=self.parent,
+            title="選擇圖片模板",
+            initialdir=init_dir,
+            filetypes=[("圖片檔案", "*.png *.jpg *.jpeg *.bmp"), ("所有檔案", "*.*")]
+        )
+        if f:
+            abs_f = os.path.abspath(f)
+            self.last_snipped_template = abs_f
+            if self.gui and hasattr(self.gui, "last_snipped_template"):
+                self.gui.last_snipped_template = abs_f
+            if "template_image" in target_vp:
+                target_vp["template_image"].set(abs_f)
+            self.auto_save_config()
+            self._log(f"📂 已選取圖片模板: {abs_f}")
+
+    def on_apply_last_snippet(self, target_vp: Dict[str, Any]):
+        """帶入最新裁切的截圖"""
+        target = self.last_snipped_template
+        if not target and self.gui and getattr(self.gui, "last_snipped_template", ""):
+            target = self.gui.last_snipped_template
+
+        if not target:
+            search_dirs = [self.presets_dir]
+            if self.gui and hasattr(self.gui, "storage_dir") and self.gui.storage_dir:
+                search_dirs.append(self.gui.storage_dir)
+            search_dirs.append(os.path.join(self.presets_dir, "截圖存檔"))
+
+            all_imgs = []
+            for sd in search_dirs:
+                if sd and os.path.exists(sd):
+                    try:
+                        for fn in os.listdir(sd):
+                            if fn.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+                                fp = os.path.join(sd, fn)
+                                if os.path.isfile(fp):
+                                    all_imgs.append((os.path.getmtime(fp), fp))
+                    except Exception:
+                        pass
+            if all_imgs:
+                all_imgs.sort(key=lambda x: x[0], reverse=True)
+                target = all_imgs[0][1]
+
+        if not target:
+            messagebox.showinfo("提示", "目前尚無任何截圖歷史記錄！\n請先點擊「✂️ 截圖」框選畫面。", parent=self.parent)
+            return
+
+        self.last_snipped_template = target
+        if "template_image" in target_vp:
+            target_vp["template_image"].set(target)
+        self.auto_save_config()
+        self._log(f"📥 已成功帶入最新截圖: {target}")
+
+    def _build_image_template_row(self, parent_frame, vp: Dict[str, Any], block_dict: Optional[Dict[str, Any]] = None) -> ctk.CTkFrame:
+        """建立圖片特徵比對專用控制面板 (縮圖、路徑、截圖、瀏覽、帶入、門檻、多尺度)"""
+        box = ctk.CTkFrame(parent_frame, fg_color="#181825", corner_radius=6, border_width=1, border_color="#334155")
+
+        # 行 1: 縮圖 + 門檻值滑桿 + 多尺度容錯
+        row1 = ctk.CTkFrame(box, fg_color="transparent")
+        row1.pack(fill="x", padx=8, pady=(4, 2))
+
+        lbl_thumb = tk.Label(row1, bg="#11111B", fg=COLOR_TEXT_DIM, font=("Arial", 10), text="（未選圖）", width=8, height=2)
+        lbl_thumb.pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(row1, text="門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 2))
+        lbl_thresh_val = ctk.CTkLabel(row1, text=f"{_safe_float(vp['image_threshold'].get(), 0.80):.2f}", width=34, font=ctk.CTkFont(family="Menlo", size=11))
+        slider_thresh = ctk.CTkSlider(row1, from_=0.50, to=0.98, number_of_steps=48, variable=vp["image_threshold"], width=110, height=16)
+        slider_thresh.pack(side="left", padx=(2, 2))
+        lbl_thresh_val.pack(side="left", padx=(0, 6))
+
+        def _on_slider(v):
+            lbl_thresh_val.configure(text=f"{float(v):.2f}")
+            self.auto_save_config()
+
+        slider_thresh.configure(command=_on_slider)
+
+        chk_multi = ctk.CTkCheckBox(
+            row1,
+            text="多尺度容錯 (0.95x~1.05x)",
+            variable=vp["image_multiscale"],
+            font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_PRIMARY,
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4,
+            command=self.auto_save_config
+        )
+        chk_multi.pack(side="left", padx=(4, 0))
+
+        # 行 2: 圖片檔名/路徑輸入框 + 動作按鈕 (✂️ 截圖 / 📂 瀏覽 / 📥 帶入最新截圖)
+        row2 = ctk.CTkFrame(box, fg_color="transparent")
+        row2.pack(fill="x", padx=8, pady=(2, 5))
+
+        ctk.CTkLabel(row2, text="圖檔:", font=ctk.CTkFont(size=10, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
+        ent_img = ctk.CTkEntry(row2, textvariable=vp["template_image"], height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(size=10))
+        ent_img.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        init_name = block_dict["name"].get() if (block_dict and "name" in block_dict and hasattr(block_dict["name"], "get")) else "btn_task"
+
+        btn_snip = ctk.CTkButton(
+            row2,
+            text="✂️ 截圖",
+            width=54,
+            height=24,
+            corner_radius=4,
+            command=lambda: self.on_snip_template_dialog(vp, initial_name=init_name),
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#0284C7",
+            hover_color="#0369A1"
+        )
+        btn_snip.pack(side="left", padx=(0, 4))
+
+        btn_browse = ctk.CTkButton(
+            row2,
+            text="📂 瀏覽",
+            width=54,
+            height=24,
+            corner_radius=4,
+            command=lambda: self.on_browse_template_dialog(vp),
+            font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER
+        )
+        btn_browse.pack(side="left", padx=(0, 4))
+
+        btn_apply = ctk.CTkButton(
+            row2,
+            text="📥 帶入最新截圖",
+            width=96,
+            height=24,
+            corner_radius=4,
+            command=lambda: self.on_apply_last_snippet(vp),
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#F59E0B",
+            hover_color="#D97706"
+        )
+        btn_apply.pack(side="left")
+
+        def _update_thumb(*_):
+            img_val = vp["template_image"].get().strip()
+            if not img_val:
+                lbl_thumb.configure(image="", text="（未選圖）", fg=COLOR_TEXT_DIM, width=8, height=2)
+                vp["_thumb_img"] = None
+                return
+            full_p = self.resolve_image_path(img_val)
+            if full_p and os.path.exists(full_p):
+                try:
+                    bgr = imread_unicode(full_p)
+                    if bgr is not None:
+                        th_h, th_w = bgr.shape[:2]
+                        max_dim = 36
+                        scale = min(max_dim / max(1, th_w), max_dim / max(1, th_h))
+                        tw, th = max(1, int(th_w * scale)), max(1, int(th_h * scale))
+                        resized = cv2.resize(bgr, (tw, th), interpolation=cv2.INTER_AREA)
+                        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                        pil_img = Image.fromarray(rgb)
+                        tk_img = ImageTk.PhotoImage(pil_img)
+                        lbl_thumb.configure(image=tk_img, text="", width=tw, height=th)
+                        vp["_thumb_img"] = tk_img
+                        return
+                except Exception:
+                    pass
+            lbl_thumb.configure(image="", text="⚠️ 缺檔", fg="#EF4444", width=8, height=2)
+            vp["_thumb_img"] = None
+
+        vp["template_image"].trace_add("write", _update_thumb)
+        vp["template_image"].trace_add("write", lambda *_: self.auto_save_config())
+        self.parent.after(100, _update_thumb)
+
+        return box
 
     def get_global_settings(self) -> Dict[str, Any]:
         return {
@@ -1974,6 +2426,9 @@ class TaskFlowTab:
             vp["interval"] = tk.DoubleVar(value=_safe_float(p.get("interval", 0.3)))
             vp["stop_mode"] = tk.StringVar(value=p.get("stop_mode", "無 (僅點滿次數)"))
             vp["stop_keywords"] = tk.StringVar(value=p.get("stop_keywords", "確認, 確定, 完成, 上限"))
+            vp["template_image"] = tk.StringVar(value=p.get("template_image", ""))
+            vp["image_threshold"] = tk.DoubleVar(value=_safe_float(p.get("image_threshold", 0.80), 0.80))
+            vp["image_multiscale"] = tk.BooleanVar(value=bool(p.get("image_multiscale", False)))
             vp["check_every"] = tk.IntVar(value=_safe_int(p.get("check_every", 1)))
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
 
@@ -2001,6 +2456,8 @@ class TaskFlowTab:
                 "無 (僅點滿次數)",
                 "偵測到文字出現",
                 "偵測到文字消失",
+                "偵測到圖片出現",
+                "偵測到圖片消失",
                 "偵測到打勾圖案",
                 "偵測到叉叉圖案"
             ], width=130, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
@@ -2010,15 +2467,6 @@ class TaskFlowTab:
             ctk.CTkLabel(box_kws, text="關鍵字:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
             ctk.CTkEntry(box_kws, textvariable=vp["stop_keywords"], width=130, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
 
-            def _toggle_stop_kws(*_):
-                sm = vp["stop_mode"].get()
-                if "文字" in sm:
-                    box_kws.pack(side="left")
-                else:
-                    box_kws.pack_forget()
-            vp["stop_mode"].trace_add("write", _toggle_stop_kws)
-            _toggle_stop_kws()
-
             ctk.CTkLabel(row2, text="每:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
             ctk.CTkEntry(row2, textvariable=vp["check_every"], width=36, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
             ctk.CTkLabel(row2, text="次檢查", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
@@ -2027,9 +2475,28 @@ class TaskFlowTab:
             ctk.CTkEntry(row2, textvariable=vp["delay_after"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
             ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
 
+            box_img_multi = self._build_image_template_row(body, vp, block_dict=block)
+
+            def _toggle_stop_mode(*_):
+                sm = vp["stop_mode"].get()
+                if "圖片" in sm:
+                    box_kws.pack_forget()
+                    box_img_multi.pack(fill="x", pady=(2, 2))
+                elif "文字" in sm:
+                    box_img_multi.pack_forget()
+                    box_kws.pack(side="left")
+                else:
+                    box_img_multi.pack_forget()
+                    box_kws.pack_forget()
+            vp["stop_mode"].trace_add("write", _toggle_stop_mode)
+            _toggle_stop_mode()
+
         elif b_type == "detect_click":
             vp["target_type"] = tk.StringVar(value=p.get("target_type", "📝 僅文字"))
             vp["keywords"] = tk.StringVar(value=p.get("keywords", "確認, 確定"))
+            vp["template_image"] = tk.StringVar(value=p.get("template_image", ""))
+            vp["image_threshold"] = tk.DoubleVar(value=_safe_float(p.get("image_threshold", 0.80), 0.80))
+            vp["image_multiscale"] = tk.BooleanVar(value=bool(p.get("image_multiscale", False)))
             vp["timeout"] = tk.IntVar(value=p.get("timeout", 10))
             vp["click_mode"] = tk.StringVar(value=p.get("click_mode", "click_text"))
             vp["custom_x"] = tk.IntVar(value=p.get("custom_x", 960))
@@ -2040,9 +2507,33 @@ class TaskFlowTab:
             row1 = ctk.CTkFrame(body, fg_color="transparent")
             row1.pack(fill="x", pady=2)
             ctk.CTkLabel(row1, text="類型:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkComboBox(row1, variable=vp["target_type"], values=["📝 僅文字", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"], width=110, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly").pack(side="left", padx=(2, 6))
-            ctk.CTkLabel(row1, text="關鍵字:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkEntry(row1, textvariable=vp["keywords"], width=150, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6), fill="x", expand=True)
+            ctk.CTkComboBox(
+                row1,
+                variable=vp["target_type"],
+                values=["📝 僅文字", "🖼️ 圖片特徵 (模板比對)", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"],
+                width=140,
+                height=26,
+                corner_radius=4,
+                fg_color=COLOR_INPUT_BG,
+                border_color=COLOR_INPUT_BORDER,
+                state="readonly"
+            ).pack(side="left", padx=(2, 6))
+
+            box_kw = ctk.CTkFrame(row1, fg_color="transparent")
+            ctk.CTkLabel(box_kw, text="關鍵字:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(box_kw, textvariable=vp["keywords"], width=150, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6), fill="x", expand=True)
+
+            box_img_det = self._build_image_template_row(body, vp, block_dict=block)
+
+            def _toggle_det_type(*_):
+                tt = vp["target_type"].get()
+                if "圖片" in tt or "模板" in tt:
+                    box_kw.pack_forget()
+                    box_img_det.pack(fill="x", pady=(2, 2), before=row2)
+                else:
+                    box_img_det.pack_forget()
+                    box_kw.pack(side="left", fill="x", expand=True)
+            vp["target_type"].trace_add("write", _toggle_det_type)
 
             row2 = ctk.CTkFrame(body, fg_color="transparent")
             row2.pack(fill="x", pady=2)
@@ -2072,6 +2563,8 @@ class TaskFlowTab:
             ctk.CTkEntry(row2, textvariable=vp["delay"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
             ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
 
+            _toggle_det_type()
+
         elif b_type == "branch_if":
             branches_data = p.get("branches")
             if not branches_data:
@@ -2080,6 +2573,9 @@ class TaskFlowTab:
                     branches_data.append({
                         "name": "If",
                         "keywords": p.get("cond_a_kws", "勝利, 挑戰成功"),
+                        "template_image": "",
+                        "threshold": 0.80,
+                        "multiscale": False,
                         "x": _safe_int(p.get("cond_a_x", 1650)),
                         "y": _safe_int(p.get("cond_a_y", 950))
                     })
@@ -2087,13 +2583,16 @@ class TaskFlowTab:
                     branches_data.append({
                         "name": "Else If",
                         "keywords": p.get("cond_b_kws", "失敗, 挑戰失敗"),
+                        "template_image": "",
+                        "threshold": 0.80,
+                        "multiscale": False,
                         "x": _safe_int(p.get("cond_b_x", 960)),
                         "y": _safe_int(p.get("cond_b_y", 950))
                     })
                 if not branches_data:
                     branches_data = [
-                        {"name": "If", "keywords": "勝利, 挑戰成功", "x": 1650, "y": 950},
-                        {"name": "Else If", "keywords": "失敗, 挑戰失敗", "x": 960, "y": 950}
+                        {"name": "If", "keywords": "勝利, 挑戰成功", "template_image": "", "threshold": 0.80, "multiscale": False, "x": 1650, "y": 950},
+                        {"name": "Else If", "keywords": "失敗, 挑戰失敗", "template_image": "", "threshold": 0.80, "multiscale": False, "x": 960, "y": 950}
                     ]
 
             vp["timeout"] = tk.IntVar(value=p.get("timeout", 8))
@@ -2108,13 +2607,16 @@ class TaskFlowTab:
                 vp["branches"].append({
                     "name": b_name,
                     "keywords": tk.StringVar(value=bd.get("keywords", "")),
+                    "template_image": tk.StringVar(value=bd.get("template_image", "")),
+                    "threshold": tk.DoubleVar(value=_safe_float(bd.get("threshold", 0.80), 0.80)),
+                    "multiscale": tk.BooleanVar(value=bool(bd.get("multiscale", False))),
                     "x": tk.IntVar(value=_safe_int(bd.get("x", 960))),
                     "y": tk.IntVar(value=_safe_int(bd.get("y", 540)))
                 })
 
             row_ctrl = ctk.CTkFrame(body, fg_color="transparent")
             row_ctrl.pack(fill="x", pady=(0, 4))
-            ctk.CTkLabel(row_ctrl, text="條件分支:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#F59E0B").pack(side="left")
+            ctk.CTkLabel(row_ctrl, text="條件分支 (支援文字/圖片):", font=ctk.CTkFont(size=11, weight="bold"), text_color="#F59E0B").pack(side="left")
 
             btn_add_br = ctk.CTkButton(
                 row_ctrl, text="＋ 新增 Else If", width=100, height=24, corner_radius=4,
@@ -2147,19 +2649,37 @@ class TaskFlowTab:
                     lbl_badge = ctk.CTkLabel(row, text=f" {br['name']} ", fg_color=badge_bg, corner_radius=4, text_color="#FFFFFF", font=ctk.CTkFont(size=10, weight="bold"), width=64)
                     lbl_badge.pack(side="left", padx=(4, 6), pady=2)
 
-                    ctk.CTkLabel(row, text="若包含:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-                    ctk.CTkEntry(row, textvariable=br["keywords"], width=130, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
+                    ctk.CTkLabel(row, text="文字:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+                    ctk.CTkEntry(row, textvariable=br["keywords"], width=90, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 4))
 
-                    ctk.CTkLabel(row, text="點擊 X:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-                    ctk.CTkEntry(row, textvariable=br["x"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
-                    ctk.CTkLabel(row, text="Y:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-                    ctk.CTkEntry(row, textvariable=br["y"], width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(1, 4))
+                    ctk.CTkLabel(row, text="或圖片:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+                    ent_br_img = ctk.CTkEntry(row, textvariable=br["template_image"], width=90, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+                    ent_br_img.pack(side="left", padx=(2, 2))
 
-                    btn_fill = ctk.CTkButton(row, text="填入", width=42, height=24, corner_radius=4, font=ctk.CTkFont(size=10), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, command=lambda target=br: self._fill_branch_from_picker(target))
-                    btn_fill.pack(side="left", padx=2)
+                    btn_br_snip = ctk.CTkButton(
+                        row, text="✂️", width=24, height=22, corner_radius=4, font=ctk.CTkFont(size=10),
+                        fg_color="#0284C7", hover_color="#0369A1",
+                        command=lambda b_ref=br: self.on_snip_template_dialog(b_ref, initial_name=f"branch_{b_ref['name']}")
+                    )
+                    btn_br_snip.pack(side="left", padx=1)
+
+                    btn_br_apply = ctk.CTkButton(
+                        row, text="📥", width=24, height=22, corner_radius=4, font=ctk.CTkFont(size=10),
+                        fg_color="#F59E0B", hover_color="#D97706",
+                        command=lambda b_ref=br: self.on_apply_last_snippet(b_ref)
+                    )
+                    btn_br_apply.pack(side="left", padx=(1, 4))
+
+                    ctk.CTkLabel(row, text="點擊 X:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+                    ctk.CTkEntry(row, textvariable=br["x"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
+                    ctk.CTkLabel(row, text="Y:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+                    ctk.CTkEntry(row, textvariable=br["y"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(1, 4))
+
+                    btn_fill = ctk.CTkButton(row, text="填入", width=38, height=24, corner_radius=4, font=ctk.CTkFont(size=10), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, command=lambda target=br: self._fill_branch_from_picker(target))
+                    btn_fill.pack(side="left", padx=1)
 
                     if not is_first:
-                        btn_del = ctk.CTkButton(row, text="✕", width=24, height=22, corner_radius=4, font=ctk.CTkFont(size=10, weight="bold"), fg_color="#EF4444", hover_color="#DC2626", command=lambda target_idx=idx: _remove_branch(target_idx))
+                        btn_del = ctk.CTkButton(row, text="✕", width=22, height=22, corner_radius=4, font=ctk.CTkFont(size=10, weight="bold"), fg_color="#EF4444", hover_color="#DC2626", command=lambda target_idx=idx: _remove_branch(target_idx))
                         btn_del.pack(side="right", padx=4)
 
             def _add_branch():
@@ -2167,6 +2687,9 @@ class TaskFlowTab:
                 vp["branches"].append({
                     "name": f"Else If {new_idx}",
                     "keywords": tk.StringVar(value=""),
+                    "template_image": tk.StringVar(value=""),
+                    "threshold": tk.DoubleVar(value=0.80),
+                    "multiscale": tk.BooleanVar(value=False),
                     "x": tk.IntVar(value=960),
                     "y": tk.IntVar(value=540)
                 })
@@ -2211,6 +2734,9 @@ class TaskFlowTab:
             vp["stop_mode"] = tk.StringVar(value=p.get("stop_mode", "依指定次數"))
             vp["count"] = tk.IntVar(value=_safe_int(p.get("count", 3)))
             vp["keywords"] = tk.StringVar(value=p.get("keywords", p.get("stop_keywords", "")))
+            vp["template_image"] = tk.StringVar(value=p.get("template_image", ""))
+            vp["image_threshold"] = tk.DoubleVar(value=_safe_float(p.get("image_threshold", 0.80), 0.80))
+            vp["image_multiscale"] = tk.BooleanVar(value=bool(p.get("image_multiscale", False)))
             vp["check_timing"] = tk.StringVar(value=p.get("check_timing", "每輪開始與結束"))
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
 
@@ -2225,6 +2751,8 @@ class TaskFlowTab:
                 "依指定次數",
                 "偵測到文字出現",
                 "偵測到文字消失",
+                "偵測到圖片出現",
+                "偵測到圖片消失",
                 "偵測到打勾圖案",
                 "偵測到叉叉圖案"
             ]
@@ -2259,13 +2787,22 @@ class TaskFlowTab:
             cbo_timing = ctk.CTkComboBox(row_cond_detail, variable=vp["check_timing"], values=TIMINGS, width=130, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
             cbo_timing.pack(side="left", padx=2)
 
+            box_loop_img = self._build_image_template_row(box_loop_header, vp, block_dict=block)
+
             def _on_loop_mode_change(*_):
                 mode = vp["stop_mode"].get()
                 if mode == "依指定次數":
                     row_cond_detail.pack_forget()
+                    box_loop_img.pack_forget()
                     lbl_cnt_title.configure(text="重複次數:")
                     lbl_cnt_hint.configure(text="次(0=無限)")
+                elif "圖片" in mode:
+                    row_cond_detail.pack_forget()
+                    box_loop_img.pack(fill="x", pady=(2, 2))
+                    lbl_cnt_title.configure(text="上限次數:")
+                    lbl_cnt_hint.configure(text="次(0=不限)")
                 else:
+                    box_loop_img.pack_forget()
                     row_cond_detail.pack(fill="x", pady=(2, 2))
                     lbl_cnt_title.configure(text="上限次數:")
                     lbl_cnt_hint.configure(text="次(0=不限)")
@@ -2317,6 +2854,9 @@ class TaskFlowTab:
             vp["cond_mode"] = tk.StringVar(value=p.get("cond_mode", "出現 (Wait Appear)"))
             vp["target_type"] = tk.StringVar(value=p.get("target_type", "📝 僅文字"))
             vp["keywords"] = tk.StringVar(value=p.get("keywords", "確認, 確定"))
+            vp["template_image"] = tk.StringVar(value=p.get("template_image", ""))
+            vp["image_threshold"] = tk.DoubleVar(value=_safe_float(p.get("image_threshold", 0.80), 0.80))
+            vp["image_multiscale"] = tk.BooleanVar(value=bool(p.get("image_multiscale", False)))
             vp["interval"] = tk.DoubleVar(value=_safe_float(p.get("interval", 1.0)))
             vp["timeout"] = tk.IntVar(value=_safe_int(p.get("timeout", 30)))
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
@@ -2327,9 +2867,33 @@ class TaskFlowTab:
             ctk.CTkLabel(row1, text="條件:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
             ctk.CTkComboBox(row1, variable=vp["cond_mode"], values=["出現 (Wait Appear)", "消失 (Wait Disappear)"], width=135, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly").pack(side="left", padx=(2, 6))
             ctk.CTkLabel(row1, text="類型:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkComboBox(row1, variable=vp["target_type"], values=["📝 僅文字", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"], width=110, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly").pack(side="left", padx=(2, 6))
-            ctk.CTkLabel(row1, text="關鍵字:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkEntry(row1, textvariable=vp["keywords"], width=130, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 4), fill="x", expand=True)
+            ctk.CTkComboBox(
+                row1,
+                variable=vp["target_type"],
+                values=["📝 僅文字", "🖼️ 圖片特徵 (模板比對)", "✓ 打勾圖案", "✕ 叉叉/關閉", "🔀 文字或圖案"],
+                width=140,
+                height=26,
+                corner_radius=4,
+                fg_color=COLOR_INPUT_BG,
+                border_color=COLOR_INPUT_BORDER,
+                state="readonly"
+            ).pack(side="left", padx=(2, 6))
+
+            box_wait_kw = ctk.CTkFrame(row1, fg_color="transparent")
+            ctk.CTkLabel(box_wait_kw, text="關鍵字:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(box_wait_kw, textvariable=vp["keywords"], width=130, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 4), fill="x", expand=True)
+
+            box_wait_img = self._build_image_template_row(body, vp, block_dict=block)
+
+            def _toggle_wait_type(*_):
+                tt = vp["target_type"].get()
+                if "圖片" in tt or "模板" in tt:
+                    box_wait_kw.pack_forget()
+                    box_wait_img.pack(fill="x", pady=(2, 2), before=row2)
+                else:
+                    box_wait_img.pack_forget()
+                    box_wait_kw.pack(side="left", fill="x", expand=True)
+            vp["target_type"].trace_add("write", _toggle_wait_type)
 
             row2 = ctk.CTkFrame(body, fg_color="transparent")
             row2.pack(fill="x", pady=2)
@@ -2343,10 +2907,12 @@ class TaskFlowTab:
 
             ctk.CTkLabel(row2, text="延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
             ctk.CTkEntry(row2, textvariable=vp["delay_after"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
-            ctk.CTkLabel(row2, text="s", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
+            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
 
             ctk.CTkLabel(row2, text="超時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
             ctk.CTkComboBox(row2, variable=vp["on_timeout"], values=["continue", "stop"], width=90, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly").pack(side="left", padx=(2, 0))
+
+            _toggle_wait_type()
 
         elif b_type == "wait_sec":
             vp["seconds"] = tk.DoubleVar(value=p.get("seconds", 3.0))
@@ -3027,6 +3593,9 @@ class TaskFlowTab:
                     {
                         "name": br.get("name", "If"),
                         "keywords": br["keywords"].get() if hasattr(br.get("keywords"), "get") else br.get("keywords", ""),
+                        "template_image": br["template_image"].get() if hasattr(br.get("template_image"), "get") else br.get("template_image", ""),
+                        "threshold": br["threshold"].get() if hasattr(br.get("threshold"), "get") else br.get("threshold", 0.80),
+                        "multiscale": br["multiscale"].get() if hasattr(br.get("multiscale"), "get") else br.get("multiscale", False),
                         "x": br["x"].get() if hasattr(br.get("x"), "get") else br.get("x", 0),
                         "y": br["y"].get() if hasattr(br.get("y"), "get") else br.get("y", 0)
                     }
