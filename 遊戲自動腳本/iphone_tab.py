@@ -194,11 +194,11 @@ class IPhoneMirrorTab:
         body.grid_columnconfigure(1, weight=0)
         body.grid_rowconfigure(0, weight=1)
 
-        # 左欄：步驟卡片列表 + 進階參數卡片
+        # 左欄：步驟卡片列表 + 進階參數卡片 (進階參數置底鎖定，步驟滾動自適應)
         left_pane = ctk.CTkFrame(body, fg_color="transparent")
         left_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
-        self._build_steps_panel(left_pane)
         self._build_advanced_panel(left_pane)
+        self._build_steps_panel(left_pane)
 
         # 右欄：即時預覽卡片 + 日誌終端視窗 (固定寬度 824px)
         right_pane = ctk.CTkFrame(body, fg_color="transparent", width=824)
@@ -218,149 +218,67 @@ class IPhoneMirrorTab:
         inner = ctk.CTkFrame(top_bar, fg_color="transparent")
         inner.pack(fill="x", padx=12, pady=10)
 
-        # 左側：狀態指示燈 + iPhone 視窗鎖定控制器
-        left_box = ctk.CTkFrame(inner, fg_color="transparent")
-        left_box.pack(side="left", fill="x", expand=True)
-
-        row1 = ctk.CTkFrame(left_box, fg_color="transparent")
-        row1.pack(anchor="w", fill="x")
-
-        self.indicator_light = ctk.CTkLabel(row1, text="●", font=ctk.CTkFont(size=18, weight="bold"), text_color=COLOR_STOPPED)
-        self.indicator_light.pack(side="left", padx=(0, 6))
-
-        self.lbl_status = ctk.CTkLabel(row1, textvariable=self.var_status_text, font=ctk.CTkFont(family="Arial", size=13, weight="bold"), text_color=COLOR_STOPPED)
-        self.lbl_status.pack(side="left", padx=(0, 14))
-
-        ctk.CTkLabel(row1, text="📱 目標視窗:", font=ctk.CTkFont(size=12, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 4))
-
-        self.combo_windows = ctk.CTkComboBox(
-            row1,
-            variable=self.var_window_name,
-            values=["iPhone Mirroring", "iPhone鏡像輸出", "QuickTime Player"],
-            width=160,
-            height=28,
-            corner_radius=6,
-            font=ctk.CTkFont(size=11)
-        )
-        self.combo_windows.pack(side="left", padx=(0, 6))
-
-        ctk.CTkButton(
-            row1,
-            text="🔍 鎖定 iPhone 鏡像",
-            width=120,
-            height=28,
-            corner_radius=6,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color=COLOR_BTN_PRIMARY,
-            hover_color=COLOR_BTN_PRIMARY_HOVER,
-            command=self.on_lock_window
-        ).pack(side="left", padx=(0, 4))
-
-        ctk.CTkButton(
-            row1,
-            text="🔄 刷新視窗",
-            width=76,
-            height=28,
-            corner_radius=6,
-            font=ctk.CTkFont(size=11),
-            fg_color=COLOR_BTN_DARK,
-            hover_color=COLOR_BTN_DARK_HOVER,
-            command=self.on_refresh_windows
-        ).pack(side="left", padx=(0, 10))
-
-        # 視窗資訊顯示與滑鼠點擊設定
-        row2 = ctk.CTkFrame(left_box, fg_color="transparent")
-        row2.pack(anchor="w", fill="x", pady=(4, 0))
-
-        self.lbl_win_info = ctk.CTkLabel(
-            row2,
-            text="視窗資訊: 尚未鎖定視窗 (請確保 iPhone 鏡像輸出 App 已開啟)",
-            font=ctk.CTkFont(family="Menlo", size=11),
-            text_color="#60A5FA"
-        )
-        self.lbl_win_info.pack(side="left", padx=(0, 14))
-
-        ctk.CTkCheckBox(
-            row2,
-            text="⚡ 點擊時移至最前景",
-            variable=self.var_auto_activate,
-            font=ctk.CTkFont(size=11),
-            width=120,
-            checkbox_width=16,
-            checkbox_height=16
-        ).pack(side="left", padx=(0, 8))
-
-        ctk.CTkCheckBox(
-            row2,
-            text="🎯 點擊後游標歸位 (不搶滑鼠)",
-            variable=self.var_restore_cursor,
-            font=ctk.CTkFont(size=11),
-            width=150,
-            checkbox_width=16,
-            checkbox_height=16
-        ).pack(side="left")
-
-        # 右側：存檔、載入、啟動、停止按鈕
+        # 右側：存檔、載入、啟動、停止按鈕 (優先靠右錨定，確保小螢幕下不被遮擋)
         right_box = ctk.CTkFrame(inner, fg_color="transparent")
         right_box.pack(side="right")
 
         ctk.CTkButton(
             right_box,
-            text="💾 儲存設定",
-            width=84,
-            height=34,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            text="💾 存檔",
+            width=58,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
             fg_color="#10B981",
             hover_color="#059669",
             command=self.on_save_config_dialog
-        ).pack(side="left", padx=(0, 6))
+        ).pack(side="left", padx=(0, 3))
 
         ctk.CTkButton(
             right_box,
-            text="📂 載入設定",
-            width=84,
-            height=34,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            text="📂 載入",
+            width=58,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER,
             command=self.on_load_config_dialog
-        ).pack(side="left", padx=(0, 6))
+        ).pack(side="left", padx=(0, 3))
 
         ctk.CTkButton(
             right_box,
-            text="🔄 套用聯賽步驟",
-            width=100,
-            height=34,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            text="🔄 套用",
+            width=58,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
             fg_color="#8B5CF6",
             hover_color="#7C3AED",
             command=self.on_apply_league_config
-        ).pack(side="left", padx=(0, 10))
+        ).pack(side="left", padx=(0, 4))
 
         self.btn_start = ctk.CTkButton(
             right_box,
-            text="▶ 啟動 iPhone 刷關",
-            width=120,
-            height=36,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
+            text="▶ 啟動",
+            width=76,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
             fg_color=COLOR_BTN_START,
             hover_color=COLOR_BTN_START_HOVER,
             state="disabled",
             command=self.on_start_bot
         )
-        self.btn_start.pack(side="left", padx=(0, 6))
+        self.btn_start.pack(side="left", padx=(0, 3))
 
         self.btn_stop = ctk.CTkButton(
             right_box,
-            text="⏹ 停止刷關",
-            width=100,
-            height=36,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
+            text="⏹ 停止",
+            width=58,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
             fg_color=COLOR_BTN_STOP,
             hover_color=COLOR_BTN_STOP_HOVER,
             state="disabled",
@@ -368,12 +286,94 @@ class IPhoneMirrorTab:
         )
         self.btn_stop.pack(side="left")
 
+        # 左側：狀態指示燈 + iPhone 視窗鎖定控制器 (彈性延展)
+        left_box = ctk.CTkFrame(inner, fg_color="transparent")
+        left_box.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        row1 = ctk.CTkFrame(left_box, fg_color="transparent")
+        row1.pack(anchor="w", fill="x")
+
+        self.indicator_light = ctk.CTkLabel(row1, text="●", font=ctk.CTkFont(size=18, weight="bold"), text_color=COLOR_STOPPED)
+        self.indicator_light.pack(side="left", padx=(0, 4))
+
+        self.lbl_status = ctk.CTkLabel(row1, textvariable=self.var_status_text, font=ctk.CTkFont(family="Arial", size=12, weight="bold"), text_color=COLOR_STOPPED)
+        self.lbl_status.pack(side="left", padx=(0, 10))
+
+        ctk.CTkLabel(row1, text="📱 視窗:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 3))
+
+        self.combo_windows = ctk.CTkComboBox(
+            row1,
+            variable=self.var_window_name,
+            values=["iPhone Mirroring", "iPhone鏡像輸出", "QuickTime Player"],
+            width=130,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11)
+        )
+        self.combo_windows.pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            row1,
+            text="🔍 鎖定",
+            width=68,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COLOR_BTN_PRIMARY,
+            hover_color=COLOR_BTN_PRIMARY_HOVER,
+            command=self.on_lock_window
+        ).pack(side="left", padx=(0, 3))
+
+        ctk.CTkButton(
+            row1,
+            text="🔄 刷新",
+            width=58,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self.on_refresh_windows
+        ).pack(side="left", padx=(0, 6))
+
+        # 視窗資訊顯示與滑鼠點擊設定
+        row2 = ctk.CTkFrame(left_box, fg_color="transparent")
+        row2.pack(anchor="w", fill="x", pady=(3, 0))
+
+        self.lbl_win_info = ctk.CTkLabel(
+            row2,
+            text="視窗資訊: 尚未鎖定視窗",
+            font=ctk.CTkFont(family="Menlo", size=10),
+            text_color="#60A5FA"
+        )
+        self.lbl_win_info.pack(side="left", padx=(0, 10))
+
+        ctk.CTkCheckBox(
+            row2,
+            text="⚡ 前景置頂",
+            variable=self.var_auto_activate,
+            font=ctk.CTkFont(size=11),
+            width=90,
+            checkbox_width=16,
+            checkbox_height=16
+        ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkCheckBox(
+            row2,
+            text="🎯 游標歸位",
+            variable=self.var_restore_cursor,
+            font=ctk.CTkFont(size=11),
+            width=90,
+            checkbox_width=16,
+            checkbox_height=16
+        ).pack(side="left")
+
     # ==========================================================================
     # 📋 步驟管理面板 (步驟清單 + 優先動作)
     # ==========================================================================
     def _build_steps_panel(self, parent: ctk.CTkFrame):
         card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        card.pack(fill="both", expand=True, pady=(0, 8))
+        card.pack(side="top", fill="both", expand=True, pady=(0, 4))
 
         tools = ctk.CTkFrame(card, fg_color="transparent")
         tools.pack(fill="x", padx=12, pady=(10, 8))
@@ -462,48 +462,94 @@ class IPhoneMirrorTab:
         self.lbl_no_steps.pack(pady=6)
 
     # ==========================================================================
-    # ⚙️ 進階參數面板
+    # ⚙️ 進階參數面板 (置底錨定，可展開/收合)
     # ==========================================================================
     def _build_advanced_panel(self, parent: ctk.CTkFrame):
         card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        card.pack(fill="x", pady=(0, 4))
+        card.pack(side="bottom", fill="x", pady=(4, 0))
+        self.adv_card = card
+
+        # 展開/收合開關按鈕列
+        toggle_bar = ctk.CTkFrame(card, fg_color="transparent")
+        toggle_bar.pack(fill="x", padx=12, pady=6)
+
+        self._adv_open = False
+        self.btn_adv = ctk.CTkButton(
+            toggle_bar,
+            text="⚙️ 進階參數設定 ▸",
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            corner_radius=6,
+            height=28,
+            command=self._toggle_advanced
+        )
+        self.btn_adv.pack(side="left")
 
         inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=12, pady=10)
+        self.adv_content = inner
 
         # 標題行
         r_title = ctk.CTkFrame(inner, fg_color="transparent")
-        r_title.pack(fill="x", pady=(0, 6))
+        r_title.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
             r_title, text="⚙️ 運行頻率與進階設定",
-            font=ctk.CTkFont(family="Arial", size=13, weight="bold"), text_color=COLOR_TEXT_PRIMARY
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"), text_color=COLOR_TEXT_PRIMARY
         ).pack(side="left")
 
-        # 參數控制格
+        # 參數控制格 (自適應雙欄佈局，徹底消除窄屏裁切)
         grid = ctk.CTkFrame(inner, fg_color="transparent")
         grid.pack(fill="x")
+        grid.grid_columnconfigure(0, weight=0, minsize=90)
+        grid.grid_columnconfigure(1, weight=1)
 
         # 巡檢間隔
         ctk.CTkLabel(grid, text="巡檢週期:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_MUTED).grid(row=0, column=0, sticky="w", pady=3)
-        self.slider_sp = ctk.CTkSlider(grid, from_=0.5, to=5.0, number_of_steps=45, variable=self.var_interval, width=130, height=16, command=lambda v: self.lbl_sp_val.configure(text=f"{v:.1f}s"))
-        self.slider_sp.grid(row=0, column=1, sticky="w", padx=6, pady=3)
-        self.lbl_sp_val = ctk.CTkLabel(grid, text=f"{self.var_interval.get():.1f}s", font=ctk.CTkFont(family="Menlo", size=11, weight="bold"), text_color="#FBBF24", width=36)
-        self.lbl_sp_val.grid(row=0, column=2, sticky="w", pady=3)
+        row_sp = ctk.CTkFrame(grid, fg_color="transparent")
+        row_sp.grid(row=0, column=1, sticky="ew", padx=(6, 4), pady=3)
+        self.slider_sp = ctk.CTkSlider(row_sp, from_=0.5, to=5.0, number_of_steps=45, variable=self.var_interval, width=120, height=16, command=lambda v: self.lbl_sp_val.configure(text=f"{v:.1f}s"))
+        self.slider_sp.pack(side="left", fill="x", expand=True)
+        self.lbl_sp_val = ctk.CTkLabel(row_sp, text=f"{self.var_interval.get():.1f}s", font=ctk.CTkFont(family="Menlo", size=11, weight="bold"), text_color="#FBBF24", width=36)
+        self.lbl_sp_val.pack(side="left", padx=2)
 
         # 辨識信心度
-        ctk.CTkLabel(grid, text="信心度門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_MUTED).grid(row=0, column=3, sticky="w", padx=(12, 0), pady=3)
-        self.slider_cf = ctk.CTkSlider(grid, from_=0.40, to=0.95, number_of_steps=55, variable=self.var_confidence, width=130, height=16, command=lambda v: self.lbl_cf_val.configure(text=f"{v:.2f}"))
-        self.slider_cf.grid(row=0, column=4, sticky="w", padx=6, pady=3)
-        self.lbl_cf_val = ctk.CTkLabel(grid, text=f"{self.var_confidence.get():.2f}", font=ctk.CTkFont(family="Menlo", size=11, weight="bold"), text_color="#10B981", width=36)
-        self.lbl_cf_val.grid(row=0, column=5, sticky="w", pady=3)
+        ctk.CTkLabel(grid, text="信心度門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_MUTED).grid(row=1, column=0, sticky="w", pady=3)
+        row_cf = ctk.CTkFrame(grid, fg_color="transparent")
+        row_cf.grid(row=1, column=1, sticky="ew", padx=(6, 4), pady=3)
+        self.slider_cf = ctk.CTkSlider(row_cf, from_=0.40, to=0.95, number_of_steps=55, variable=self.var_confidence, width=120, height=16, command=lambda v: self.lbl_cf_val.configure(text=f"{v:.2f}"))
+        self.slider_cf.pack(side="left", fill="x", expand=True)
+        self.lbl_cf_val = ctk.CTkLabel(row_cf, text=f"{self.var_confidence.get():.2f}", font=ctk.CTkFont(family="Menlo", size=11, weight="bold"), text_color="#10B981", width=36)
+        self.lbl_cf_val.pack(side="left", padx=2)
 
         # 語言設定
         r_lang = ctk.CTkFrame(inner, fg_color="transparent")
-        r_lang.pack(fill="x", pady=(6, 2))
-        ctk.CTkLabel(r_lang, text="OCR 辨識語言:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 8))
-        ctk.CTkCheckBox(r_lang, text="繁體中文", variable=self.var_lang_tc, font=ctk.CTkFont(size=11), width=76, checkbox_width=16, checkbox_height=16).pack(side="left", padx=3)
-        ctk.CTkCheckBox(r_lang, text="英文 (English)", variable=self.var_lang_en, font=ctk.CTkFont(size=11), width=96, checkbox_width=16, checkbox_height=16).pack(side="left", padx=3)
-        ctk.CTkCheckBox(r_lang, text="簡體中文 (過濾誤判)", variable=self.var_lang_sc, font=ctk.CTkFont(size=11), width=120, checkbox_width=16, checkbox_height=16).pack(side="left", padx=3)
+        r_lang.pack(fill="x", pady=(4, 2))
+        ctk.CTkLabel(r_lang, text="OCR 語言:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 6))
+        ctk.CTkCheckBox(r_lang, text="繁中", variable=self.var_lang_tc, font=ctk.CTkFont(size=11), width=54, checkbox_width=16, checkbox_height=16).pack(side="left", padx=2)
+        ctk.CTkCheckBox(r_lang, text="英文", variable=self.var_lang_en, font=ctk.CTkFont(size=11), width=54, checkbox_width=16, checkbox_height=16).pack(side="left", padx=2)
+        ctk.CTkCheckBox(r_lang, text="簡中 (過濾)", variable=self.var_lang_sc, font=ctk.CTkFont(size=11), width=90, checkbox_width=16, checkbox_height=16).pack(side="left", padx=2)
+
+    def _toggle_advanced(self):
+        self._adv_open = not getattr(self, "_adv_open", False)
+        if self._adv_open:
+            self.adv_content.pack(fill="x", padx=12, pady=(0, 8))
+            self.btn_adv.configure(text="⚙️ 進階參數設定 ▾")
+        else:
+            self.adv_content.pack_forget()
+            self.btn_adv.configure(text="⚙️ 進階參數設定 ▸")
+
+    def _toggle_preview_canvas(self):
+        self._preview_open = not getattr(self, "_preview_open", True)
+        if self._preview_open:
+            if hasattr(self, "preview_holder"):
+                self.preview_holder.pack(padx=12, pady=(0, 10))
+            if hasattr(self, "btn_fold_preview"):
+                self.btn_fold_preview.configure(text="畫布 ▾")
+        else:
+            if hasattr(self, "preview_holder"):
+                self.preview_holder.pack_forget()
+            if hasattr(self, "btn_fold_preview"):
+                self.btn_fold_preview.configure(text="畫布 ▸")
 
     # ==========================================================================
     # 📸 即時畫面預覽卡片
@@ -511,9 +557,17 @@ class IPhoneMirrorTab:
     def _build_preview_panel(self, parent: ctk.CTkFrame):
         card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
         card.pack(fill="x", pady=(0, 6))
+        self._preview_open = True
 
         tools = ctk.CTkFrame(card, fg_color="transparent")
         tools.pack(fill="x", padx=12, pady=(10, 6))
+
+        self.btn_fold_preview = ctk.CTkButton(
+            tools, text="畫布 ▾", width=54, height=28, corner_radius=6,
+            font=ctk.CTkFont(size=11), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
+            command=self._toggle_preview_canvas
+        )
+        self.btn_fold_preview.pack(side="left", padx=(0, 6))
 
         self.btn_capture = ctk.CTkButton(
             tools, text="📸 立即截取", width=84, height=28, corner_radius=6,
@@ -546,6 +600,7 @@ class IPhoneMirrorTab:
         c_frame = ctk.CTkFrame(card, fg_color="#11111B", corner_radius=8, width=PREVIEW_CANVAS_W, height=PREVIEW_CANVAS_H)
         c_frame.pack(padx=12, pady=(0, 10))
         c_frame.pack_propagate(False)
+        self.preview_holder = c_frame
 
         self.preview_canvas = tk.Canvas(
             c_frame, bg="#11111B", highlightthickness=0,

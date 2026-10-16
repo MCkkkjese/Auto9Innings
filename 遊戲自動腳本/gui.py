@@ -520,8 +520,15 @@ class BaseballBotGUI:
 
         title_suffix = f" (視窗 #{instance_id})" if instance_id > 1 else ""
         self.root.title(f"⚾ Auto9Innings 自動刷關控制中心{title_suffix}")
-        self.root.geometry("1440x920")
-        self.root.minsize(1260, 780)
+        try:
+            scr_w = self.root.winfo_screenwidth()
+            scr_h = self.root.winfo_screenheight()
+            init_w = min(1440, max(1150, scr_w - 60))
+            init_h = min(920, max(620, scr_h - 90))
+            self.root.geometry(f"{init_w}x{init_h}")
+        except Exception:
+            self.root.geometry("1440x920")
+        self.root.minsize(1150, 620)
         self.root.configure(fg_color=COLOR_BG)
 
         self.config_dir = os.path.dirname(os.path.abspath(__file__))
@@ -530,6 +537,9 @@ class BaseballBotGUI:
         self.bot = BaseballBot(log_callback=self.log_message, on_frame_callback=self.on_bot_frame_update)
         self.worker_thread = None
         self.is_running = False
+        self.btn_start = None
+        self.btn_stop = None
+        self.nav_buttons = {}
 
         # 獨立存檔與圖片資料夾初始化 (持久化讀取，預設 ~/Documents/Auto9Innings_Data，完全獨立於 git 倉庫)
         self.league_presets: Dict[str, Dict[str, Any]] = {}
@@ -672,9 +682,9 @@ class BaseballBotGUI:
     # ==========================================================================
     def _build_ui(self):
         """建構主容器：頂部狀態導覽卡片 + 主內容 Tabview 分頁"""
-        # 主外層容器 (Padding 14)
+        # 主外層容器 (Padding 12)
         main_box = ctk.CTkFrame(self.root, fg_color="transparent")
-        main_box.pack(fill="both", expand=True, padx=14, pady=12)
+        main_box.pack(fill="both", expand=True, padx=12, pady=6)
 
         # 1. 頂部狀態與控制卡片
         self._build_topbar(main_box)
@@ -689,7 +699,7 @@ class BaseballBotGUI:
             segmented_button_selected_hover_color=COLOR_BTN_PRIMARY_HOVER,
             command=self._on_tab_changed
         )
-        self.tabview.pack(fill="both", expand=True, pady=(10, 0))
+        self.tabview.pack(fill="both", expand=True, pady=(4, 0))
 
         # 頁籤 1: 🏆 聯賽自動刷
         tab_league = self.tabview.add("🏆 聯賽自動刷")
@@ -710,12 +720,51 @@ class BaseballBotGUI:
         )
         self.bot.set_task_flow_handler(self._execute_task_flow_for_event)
 
-        # 頁籤 3: ⚡ 即時打擊輔助 (放到最後，點擊跳出警告並覆蓋灰色遮罩完全停用)
+        # 頁籤 4: ⚡ 即時打擊輔助 (放到最後，點擊跳出警告並覆蓋灰色遮罩完全停用)
         tab_batting = self.tabview.add("⚡ 即時打擊輔助")
         self._build_disabled_batting_tab(tab_batting)
 
+        # 徹底消除 CTkTabview 原生 segmented_button 留下的空白，讓分頁內容 100% 置頂貼齊
+        self.tabview.grid_rowconfigure(0, weight=1, minsize=0)
+        self.tabview.grid_rowconfigure(1, weight=0, minsize=0)
+        self.tabview.grid_rowconfigure(2, weight=0, minsize=0)
+        self.tabview.grid_rowconfigure(3, weight=0, minsize=0)
+        try:
+            self.tabview._canvas.grid_remove()
+            self.tabview._segmented_button.grid_remove()
+        except Exception:
+            pass
+
+        def _zero_margin_set_grid_current_tab():
+            curr = getattr(self.tabview, "_current_name", "")
+            if curr in self.tabview._tab_dict:
+                self.tabview._tab_dict[curr].grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+
+        self.tabview._set_grid_current_tab = _zero_margin_set_grid_current_tab
+        self.tabview._set_grid_current_tab()
+        self._update_tab_nav_highlights("league")
+
+    def switch_top_tab(self, active_key: str, full_tab_name: str):
+        """頂部導航按鈕切換分頁"""
+        if hasattr(self, "tabview"):
+            self.tabview.set(full_tab_name)
+        self._update_tab_nav_highlights(active_key)
+        self._on_tab_changed()
+
+    def _update_tab_nav_highlights(self, active_key_or_name: str = ""):
+        """更新頂部導航按鈕高亮狀態 (選中的分頁高亮，其餘淡出)"""
+        if not hasattr(self, "nav_buttons") or not hasattr(self, "tabview"):
+            return
+        curr_name = self.tabview.get()
+        for key, (btn, full_name) in self.nav_buttons.items():
+            if key == active_key_or_name or full_name == active_key_or_name or (not active_key_or_name and full_name == curr_name):
+                btn.configure(fg_color=COLOR_BTN_PRIMARY, text_color="#FFFFFF")
+            else:
+                btn.configure(fg_color=COLOR_BTN_DARK, text_color=COLOR_TEXT_MUTED)
+
     def _on_tab_changed(self):
-        """切換頁籤事件回呼：當點擊進入打擊輔助時先跳出警告"""
+        """切換頁籤事件回呼：當點擊進入打擊輔助時先跳出警告，並同步頂部按鈕高亮"""
+        self._update_tab_nav_highlights()
         selected_tab = self.tabview.get()
         if "即時打擊輔助" in selected_tab:
             messagebox.showwarning("警告", "正在開發，功能不完全")
@@ -993,59 +1042,59 @@ class BaseballBotGUI:
 
         self.lbl_metrics_inline = ctk.CTkLabel(
             status_text_box,
-            text="⏱ 運行: 00:00:00   |   🔄 輪次: 0 次   |   🎯 命中: 0 次",
-            font=ctk.CTkFont(family="Menlo", size=11),
+            text="⏱ 00:00:00 | 🔄 0次 | 🎯 0次",
+            font=ctk.CTkFont(family="Menlo", size=10),
             text_color=COLOR_TEXT_MUTED
         )
         self.lbl_metrics_inline.pack(anchor="w")
 
         # 右側：裝置選取、連線與主操作大按鈕
         right_box = ctk.CTkFrame(bar, fg_color="transparent")
-        right_box.pack(side="right", padx=14, pady=8)
+        right_box.pack(side="right", padx=10, pady=6)
 
         # 裝置選取 Combobox
         self.combo_devices = ctk.CTkComboBox(
             right_box,
             variable=self.var_device,
-            width=175,
-            height=34,
+            width=125,
+            height=28,
             corner_radius=8,
             fg_color=COLOR_INPUT_BG,
             border_color=COLOR_INPUT_BORDER,
             state="readonly"
         )
-        self.combo_devices.pack(side="left", padx=(0, 6))
+        self.combo_devices.pack(side="left", padx=(0, 4))
 
         self.btn_refresh = ctk.CTkButton(
             right_box,
             text="🔍 搜尋",
-            width=68,
-            height=34,
+            width=52,
+            height=28,
             corner_radius=8,
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER,
             command=self.on_refresh_devices
         )
-        self.btn_refresh.pack(side="left", padx=(0, 6))
+        self.btn_refresh.pack(side="left", padx=(0, 4))
 
         self.btn_connect = ctk.CTkButton(
             right_box,
             text="⚡ 連線",
-            width=68,
-            height=34,
+            width=52,
+            height=28,
             corner_radius=8,
             fg_color=COLOR_BTN_PRIMARY,
             hover_color=COLOR_BTN_PRIMARY_HOVER,
             command=self.on_connect_device
         )
-        self.btn_connect.pack(side="left", padx=(0, 10))
+        self.btn_connect.pack(side="left", padx=(0, 4))
 
         # 開新視窗
         self.btn_new_win = ctk.CTkButton(
             right_box,
-            text="＋ 開新視窗",
-            width=85,
-            height=34,
+            text="＋ 視窗",
+            width=54,
+            height=28,
             corner_radius=8,
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER,
@@ -1053,49 +1102,27 @@ class BaseballBotGUI:
         )
         self.btn_new_win.pack(side="left", padx=(0, 6))
 
-        # 儲存設定與自訂存檔位置
-        self.btn_top_save = ctk.CTkButton(
-            right_box,
-            text="💾 儲存設定",
-            width=85,
-            height=34,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
-            fg_color="#10B981",
-            hover_color="#059669",
-            command=self.on_open_save_dialog
-        )
-        self.btn_top_save.pack(side="left", padx=(0, 10))
-
-        # 主控制大按鈕：啟動 (Start)
-        self.btn_start = ctk.CTkButton(
-            right_box,
-            text="▶ 啟動刷關",
-            width=100,
-            height=38,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
-            fg_color=COLOR_BTN_START,
-            hover_color=COLOR_BTN_START_HOVER,
-            state="disabled",
-            command=self.on_start_bot
-        )
-        self.btn_start.pack(side="left", padx=(0, 6))
-
-        # 主控制大按鈕：停止 (Stop)
-        self.btn_stop = ctk.CTkButton(
-            right_box,
-            text="⏹ 停止刷關",
-            width=100,
-            height=38,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
-            fg_color=COLOR_BTN_STOP,
-            hover_color=COLOR_BTN_STOP_HOVER,
-            state="disabled",
-            command=self.on_stop_bot
-        )
-        self.btn_stop.pack(side="left")
+        # 頂部四大主要功能分頁切換按鈕 (取代原本頂部啟動/停止刷關按鈕)
+        self.nav_tabs = [
+            ("league", "🏆 聯賽自動刷", "🏆 聯賽自動刷"),
+            ("iphone", "📱 iPhone 鏡像", "📱 iPhone 鏡像自動刷"),
+            ("tasks", "📋 任務清單", "📋 任務清單 (Scratch 積木)"),
+            ("batting", "⚡ 打擊輔助", "⚡ 即時打擊輔助")
+        ]
+        self.nav_buttons = {}
+        for tab_key, label_text, full_tab_name in self.nav_tabs:
+            btn = ctk.CTkButton(
+                right_box,
+                text=label_text,
+                height=28,
+                corner_radius=8,
+                font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
+                fg_color=COLOR_BTN_PRIMARY if tab_key == "league" else COLOR_BTN_DARK,
+                hover_color=COLOR_BTN_PRIMARY_HOVER,
+                command=lambda name=full_tab_name, k=tab_key: self.switch_top_tab(k, name)
+            )
+            btn.pack(side="left", padx=(0, 3))
+            self.nav_buttons[tab_key] = (btn, full_tab_name)
 
     # --------------------------------------------------------------------------
     # 聯賽自動刷頁籤 (左右雙欄佈局)
@@ -1110,8 +1137,8 @@ class BaseballBotGUI:
         # 左欄：步驟與優先動作卡片列表 + 進階參數格 (寬度隨視窗彈性展開)
         left_pane = ctk.CTkFrame(container, fg_color="transparent")
         left_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
-        self._build_steps_panel(left_pane)
         self._build_advanced_panel(left_pane)
+        self._build_steps_panel(left_pane)
 
         # 右欄：即時截圖預覽卡片 + 等寬日誌終端 (鎖死固定寬度 824px，高度日誌彈性)
         right_pane = ctk.CTkFrame(container, fg_color="transparent", width=824)
@@ -1128,45 +1155,82 @@ class BaseballBotGUI:
     # --------------------------------------------------------------------------
     def _build_steps_panel(self, parent: ctk.CTkFrame):
         card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        card.pack(fill="both", expand=True, pady=(0, 8))
+        card.pack(side="top", fill="both", expand=True, pady=(0, 4))
 
-        # 頂部工具列 (彈性雙行佈局，徹底解決按鈕擠壓遮蔽)
+        # 頂部工具列 (清晰三行自適應佈局，徹底解決按鈕擠壓遮蔽)
         tools = ctk.CTkFrame(card, fg_color="transparent")
-        tools.pack(fill="x", padx=12, pady=(10, 8))
+        tools.pack(fill="x", padx=12, pady=(8, 6))
 
-        # 第一行：標題 + 全域辨識模式切換開關 (圖片特徵 vs 文字OCR)
+        # 第一行：標題 + 啟動/停止控制大按鈕
         tools_row1 = ctk.CTkFrame(tools, fg_color="transparent")
-        tools_row1.pack(fill="x", pady=(0, 6))
+        tools_row1.pack(fill="x", pady=(0, 4))
 
         lbl_title = ctk.CTkLabel(
             tools_row1,
             text="📋 步驟與優先動作",
-            font=ctk.CTkFont(family="Arial", size=14, weight="bold"),
+            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
             text_color=COLOR_TEXT_PRIMARY
         )
         lbl_title.pack(side="left")
 
-        self.seg_mode = ctk.CTkSegmentedButton(
+        # 聯賽專屬獨立控制按鈕：停止與啟動 (鎖定右側)
+        init_start_state = "normal" if (getattr(self.bot, "is_connected", False) and not self.is_running) else "disabled"
+        init_stop_state = "normal" if self.is_running else "disabled"
+
+        self.btn_stop = ctk.CTkButton(
             tools_row1,
+            text="⏹ 停止",
+            width=58,
+            height=26,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
+            fg_color=COLOR_BTN_STOP,
+            hover_color=COLOR_BTN_STOP_HOVER,
+            state=init_stop_state,
+            command=self.on_stop_bot
+        )
+        self.btn_stop.pack(side="right")
+
+        self.btn_start = ctk.CTkButton(
+            tools_row1,
+            text="▶ 啟動聯賽",
+            width=80,
+            height=26,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
+            fg_color=COLOR_BTN_START,
+            hover_color=COLOR_BTN_START_HOVER,
+            state=init_start_state,
+            command=self.on_start_bot
+        )
+        self.btn_start.pack(side="right", padx=(0, 4))
+
+        # 第二行：全寬辨識模式切換開關 (圖片特徵 vs 文字OCR，自適應拉伸絕不擠壓)
+        tools_row2 = ctk.CTkFrame(tools, fg_color="transparent")
+        tools_row2.pack(fill="x", pady=(0, 4))
+
+        self.seg_mode = ctk.CTkSegmentedButton(
+            tools_row2,
             values=RECOGNITION_MODES,
             variable=self.var_recognition_mode,
             command=self._on_recognition_mode_changed,
             font=ctk.CTkFont(size=11, weight="bold"),
-            height=28,
+            height=26,
             selected_color=COLOR_BTN_PRIMARY,
             selected_hover_color=COLOR_BTN_PRIMARY_HOVER
         )
-        self.seg_mode.pack(side="right")
+        self.seg_mode.pack(fill="x", expand=True)
 
-        # 第二行：步驟增刪與設定存檔按鈕群 (整齊平鋪排開)
-        tools_row2 = ctk.CTkFrame(tools, fg_color="transparent")
-        tools_row2.pack(fill="x")
+        # 第三行：步驟增刪與設定存檔按鈕群 (整齊平鋪排開，左右分組自適應)
+        tools_row3 = ctk.CTkFrame(tools, fg_color="transparent")
+        tools_row3.pack(fill="x")
 
-        ctk.CTkButton(tools_row2, text="＋ 優先動作", width=80, height=28, corner_radius=6, command=self.on_add_priority_step, fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=(0, 4))
-        ctk.CTkButton(tools_row2, text="⚡ 事件跳轉", width=80, height=28, corner_radius=6, command=self.on_add_task_trigger_step, fg_color="#8B5CF6", hover_color="#7C3AED", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
-        ctk.CTkButton(tools_row2, text="＋ 一般步驟", width=80, height=28, corner_radius=6, command=self.on_add_empty_step, fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
-        ctk.CTkButton(tools_row2, text="💾 儲存設定", width=84, height=28, corner_radius=6, command=self.on_open_save_dialog, fg_color="#10B981", hover_color="#059669", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=4)
-        ctk.CTkButton(tools_row2, text="📂 載入設定", width=84, height=28, corner_radius=6, command=self.on_load_config_manual, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=3)
+        ctk.CTkButton(tools_row3, text="＋ 優先", width=66, height=26, corner_radius=6, command=self.on_add_priority_step, fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=(0, 3))
+        ctk.CTkButton(tools_row3, text="⚡ 跳轉", width=66, height=26, corner_radius=6, command=self.on_add_task_trigger_step, fg_color="#8B5CF6", hover_color="#7C3AED", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=2)
+        ctk.CTkButton(tools_row3, text="＋ 步驟", width=66, height=26, corner_radius=6, command=self.on_add_empty_step, fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=2)
+
+        ctk.CTkButton(tools_row3, text="📂 載入", width=58, height=26, corner_radius=6, command=self.on_load_config_manual, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11, weight="bold")).pack(side="right")
+        ctk.CTkButton(tools_row3, text="💾 存檔", width=58, height=26, corner_radius=6, command=self.on_open_save_dialog, fg_color="#10B981", hover_color="#059669", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=(0, 4))
 
         # 滾動步驟區域 (CTkScrollableFrame)
         self.step_scroll = ctk.CTkScrollableFrame(card, fg_color="transparent", corner_radius=8)
@@ -1213,7 +1277,7 @@ class BaseballBotGUI:
     # --------------------------------------------------------------------------
     def _build_advanced_panel(self, parent: ctk.CTkFrame):
         self.adv_card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
-        self.adv_card.pack(fill="x", pady=(0, 0))
+        self.adv_card.pack(side="bottom", fill="x", pady=(4, 0))
 
         # 展開/收合開關按鈕列
         toggle_bar = ctk.CTkFrame(self.adv_card, fg_color="transparent")
@@ -1231,54 +1295,54 @@ class BaseballBotGUI:
         )
         self.btn_adv.pack(side="left")
 
-        # 內部設定網格 (預設隱藏)
+        # 內部設定網格 (預設隱藏，自適應雙欄佈局，徹底消除窄屏裁切)
         self.adv_content = ctk.CTkFrame(self.adv_card, fg_color="transparent")
 
         grid = ctk.CTkFrame(self.adv_content, fg_color="transparent")
         grid.pack(fill="x", padx=12, pady=(0, 10))
-        grid.grid_columnconfigure((0, 2), weight=0, minsize=100)
-        grid.grid_columnconfigure((1, 3), weight=1)
+        grid.grid_columnconfigure(0, weight=0, minsize=100)
+        grid.grid_columnconfigure(1, weight=1)
 
         # 1. 掃描間隔秒數
-        ctk.CTkLabel(grid, text="⏱ 掃描間隔 (秒):", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=0, column=0, sticky="w", pady=4)
+        ctk.CTkLabel(grid, text="⏱ 掃描間隔:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=0, column=0, sticky="w", pady=3)
         row_speed = ctk.CTkFrame(grid, fg_color="transparent")
-        row_speed.grid(row=0, column=1, sticky="ew", padx=(6, 12), pady=4)
-        self.lbl_sp_val = ctk.CTkLabel(row_speed, text=f"{self.var_interval.get():.1f}s", width=42, font=ctk.CTkFont(family="Menlo", size=11))
-        slider_sp = ctk.CTkSlider(row_speed, from_=0.5, to=8.0, number_of_steps=75, variable=self.var_interval, height=16)
+        row_speed.grid(row=0, column=1, sticky="ew", padx=(6, 4), pady=3)
+        self.lbl_sp_val = ctk.CTkLabel(row_speed, text=f"{self.var_interval.get():.1f}s", width=38, font=ctk.CTkFont(family="Menlo", size=11))
+        slider_sp = ctk.CTkSlider(row_speed, from_=0.5, to=8.0, number_of_steps=75, variable=self.var_interval, width=120, height=16)
         slider_sp.pack(side="left", fill="x", expand=True)
-        self.lbl_sp_val.pack(side="left", padx=4)
+        self.lbl_sp_val.pack(side="left", padx=2)
         slider_sp.configure(command=lambda v: [self.lbl_sp_val.configure(text=f"{v:.1f}s"), self.auto_save_current_config()])
 
         # 2. 文字辨識信心門檻 (專屬 OCR，不影響圖片)
-        ctk.CTkLabel(grid, text="🎯 文字門檻 (OCR):", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=0, column=2, sticky="w", pady=4)
+        ctk.CTkLabel(grid, text="🎯 文字門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=1, column=0, sticky="w", pady=3)
         row_conf = ctk.CTkFrame(grid, fg_color="transparent")
-        row_conf.grid(row=0, column=3, sticky="ew", padx=(6, 0), pady=4)
-        self.lbl_cf_val = ctk.CTkLabel(row_conf, text=f"{self.var_confidence.get():.2f}", width=40, font=ctk.CTkFont(family="Menlo", size=11))
-        slider_cf = ctk.CTkSlider(row_conf, from_=0.4, to=0.95, number_of_steps=55, variable=self.var_confidence, height=16)
+        row_conf.grid(row=1, column=1, sticky="ew", padx=(6, 4), pady=3)
+        self.lbl_cf_val = ctk.CTkLabel(row_conf, text=f"{self.var_confidence.get():.2f}", width=38, font=ctk.CTkFont(family="Menlo", size=11))
+        slider_cf = ctk.CTkSlider(row_conf, from_=0.4, to=0.95, number_of_steps=55, variable=self.var_confidence, width=120, height=16)
         slider_cf.pack(side="left", fill="x", expand=True)
-        self.lbl_cf_val.pack(side="left", padx=4)
+        self.lbl_cf_val.pack(side="left", padx=2)
         slider_cf.configure(command=lambda v: [self.lbl_cf_val.configure(text=f"{v:.2f}"), setattr(self.bot, "confidence_threshold", float(v)), self.auto_save_current_config()])
 
         # 3. 語言辨識過濾 Checkboxes
-        ctk.CTkLabel(grid, text="🔤 語言過濾:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=1, column=0, sticky="w", pady=4)
+        ctk.CTkLabel(grid, text="🔤 語言過濾:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=2, column=0, sticky="w", pady=3)
         lang_box = ctk.CTkFrame(grid, fg_color="transparent")
-        lang_box.grid(row=1, column=1, sticky="w", padx=(6, 12), pady=4)
+        lang_box.grid(row=2, column=1, sticky="w", padx=(6, 4), pady=3)
         ctk.CTkCheckBox(lang_box, text="繁中", variable=self.var_lang_tc, corner_radius=4, height=18, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
         ctk.CTkCheckBox(lang_box, text="英文", variable=self.var_lang_en, corner_radius=4, height=18, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
         ctk.CTkCheckBox(lang_box, text="簡中 (過濾)", variable=self.var_lang_sc, corner_radius=4, height=18, font=ctk.CTkFont(size=11)).pack(side="left")
 
         # 4. 看門狗防卡死
-        ctk.CTkLabel(grid, text="🐕 看門狗守護:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=1, column=2, sticky="w", pady=4)
+        ctk.CTkLabel(grid, text="🐕 看門狗守護:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=3, column=0, sticky="w", pady=3)
         wd_box = ctk.CTkFrame(grid, fg_color="transparent")
-        wd_box.grid(row=1, column=3, sticky="w", padx=(6, 0), pady=4)
+        wd_box.grid(row=3, column=1, sticky="w", padx=(6, 4), pady=3)
         ctk.CTkCheckBox(wd_box, text="超時重啟", variable=self.var_watchdog_enabled, corner_radius=4, height=18, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
-        ctk.CTkEntry(wd_box, textvariable=self.var_watchdog_seconds, width=46, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=11)).pack(side="left")
+        ctk.CTkEntry(wd_box, textvariable=self.var_watchdog_seconds, width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=11)).pack(side="left")
         ctk.CTkLabel(wd_box, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=2)
 
         # 5. 找不到目標時策略
-        ctk.CTkLabel(grid, text="💤 找不到目標時:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=2, column=0, sticky="w", pady=4)
+        ctk.CTkLabel(grid, text="💤 找不到目標:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=4, column=0, sticky="w", pady=3)
         row_idle = ctk.CTkFrame(grid, fg_color="transparent")
-        row_idle.grid(row=2, column=1, sticky="w", padx=(6, 12), pady=4)
+        row_idle.grid(row=4, column=1, sticky="w", padx=(6, 4), pady=3)
         ctk.CTkOptionMenu(
             row_idle,
             variable=self.var_idle_strategy,
@@ -1290,15 +1354,15 @@ class BaseballBotGUI:
         ).pack(side="left")
 
         # 6. 等待時背景連點
-        ctk.CTkLabel(grid, text="⚡ 等待時連點:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=2, column=2, sticky="w", pady=4)
+        ctk.CTkLabel(grid, text="⚡ 等待時連點:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=5, column=0, sticky="w", pady=3)
         tap_box = ctk.CTkFrame(grid, fg_color="transparent")
-        tap_box.grid(row=2, column=3, sticky="w", padx=(6, 0), pady=4)
+        tap_box.grid(row=5, column=1, sticky="w", padx=(6, 4), pady=3)
         ctk.CTkCheckBox(tap_box, text="連點", variable=self.var_idle_tap_enabled, corner_radius=4, height=18, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 4))
         ctk.CTkOptionMenu(
             tap_box,
             variable=self.var_idle_tap_area,
             values=["右下角區域", "中央區域", "右上角 (Skip)", "右半側中央"],
-            width=100,
+            width=96,
             height=24,
             corner_radius=4,
             font=ctk.CTkFont(size=10)
@@ -1307,14 +1371,14 @@ class BaseballBotGUI:
         ctk.CTkLabel(tap_box, text="次", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=2)
 
         # 7. Telegram 通知設定
-        ctk.CTkLabel(grid, text="📱 Telegram:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#38BDF8").grid(row=3, column=0, sticky="w", pady=4)
+        ctk.CTkLabel(grid, text="📱 Telegram:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#38BDF8").grid(row=6, column=0, sticky="w", pady=3)
         tg_box = ctk.CTkFrame(grid, fg_color="transparent")
-        tg_box.grid(row=3, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=4)
+        tg_box.grid(row=6, column=1, sticky="w", padx=(6, 4), pady=3)
         ctk.CTkLabel(tg_box, text="Token:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
-        ctk.CTkEntry(tg_box, textvariable=self.var_tg_token, width=150, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(tg_box, text="Chat ID:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
-        ctk.CTkEntry(tg_box, textvariable=self.var_tg_chat_id, width=110, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(tg_box, text="測試發送", width=68, height=24, corner_radius=4, command=self.on_test_telegram_message, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=10)).pack(side="left")
+        ctk.CTkEntry(tg_box, textvariable=self.var_tg_token, width=95, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(tg_box, text="ID:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
+        ctk.CTkEntry(tg_box, textvariable=self.var_tg_chat_id, width=65, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(tg_box, text="測試發送", width=58, height=24, corner_radius=4, command=self.on_test_telegram_message, fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=10)).pack(side="left")
 
     def _toggle_advanced(self):
         """展開或收合進階參數設定"""
@@ -1326,16 +1390,42 @@ class BaseballBotGUI:
             self.adv_content.pack_forget()
             self.btn_adv.configure(text="⚙️ 進階參數設定 ▸")
 
+    def _toggle_preview_canvas(self):
+        """展開或收合即時截圖預覽畫布 (小螢幕下收合畫布可讓日誌終端全展開)"""
+        self._preview_open = not getattr(self, "_preview_open", True)
+        if self._preview_open:
+            self.preview_holder.pack(padx=12, pady=(0, 10))
+            if hasattr(self, "btn_fold_preview"):
+                self.btn_fold_preview.configure(text="畫布 ▾")
+        else:
+            self.preview_holder.pack_forget()
+            if hasattr(self, "btn_fold_preview"):
+                self.btn_fold_preview.configure(text="畫布 ▸")
+
     # --------------------------------------------------------------------------
     # 即時截圖預覽卡片 (右側上半部)
     # --------------------------------------------------------------------------
     def _build_preview_panel(self, parent: ctk.CTkFrame):
         card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER, width=824)
         card.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
+        self._preview_open = True
 
         # 頂部控制列
         tools = ctk.CTkFrame(card, fg_color="transparent")
         tools.pack(fill="x", padx=12, pady=(10, 6))
+
+        self.btn_fold_preview = ctk.CTkButton(
+            tools,
+            text="畫布 ▾",
+            width=54,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self._toggle_preview_canvas
+        )
+        self.btn_fold_preview.pack(side="left", padx=(0, 6))
 
         self.btn_capture = ctk.CTkButton(
             tools,
@@ -1759,7 +1849,7 @@ class BaseballBotGUI:
         lbl_num.pack(side="left")
         p["lbl_num"] = lbl_num
 
-        ctk.CTkEntry(head, textvariable=p["name"], width=80, height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(head, textvariable=p["name"], width=70, height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 4))
 
         btn_toggle = ctk.CTkButton(head, text="▸", width=26, height=26, corner_radius=4, command=lambda: p["expanded"].set(not p["expanded"].get()), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER)
         btn_toggle.pack(side="right", padx=2)
@@ -1771,15 +1861,15 @@ class BaseballBotGUI:
         def _add_p_sym(tag):
             k = p["keywords"].get().strip()
             p["keywords"].set(f"{k}, {tag}" if k else tag)
-        ctk.CTkButton(box_text_target, text="✕", width=26, height=26, corner_radius=4, command=lambda: _add_p_sym("[叉叉]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
-        ctk.CTkButton(box_text_target, text="✓", width=26, height=26, corner_radius=4, command=lambda: _add_p_sym("[打勾]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
+        ctk.CTkButton(box_text_target, text="✕", width=24, height=26, corner_radius=4, command=lambda: _add_p_sym("[叉叉]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
+        ctk.CTkButton(box_text_target, text="✓", width=24, height=26, corner_radius=4, command=lambda: _add_p_sym("[打勾]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
         ctk.CTkEntry(box_text_target, textvariable=p["keywords"], placeholder_text="關鍵字 (以逗號分隔)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True)
 
         # 圖片模板模式容器 (檔名 + 帶入截圖 + 截圖 + 選擇)
         box_image_target = ctk.CTkFrame(head, fg_color="transparent")
-        ctk.CTkButton(box_image_target, text="📥 帶入", width=54, height=26, corner_radius=5, command=lambda: self.on_apply_last_snippet(p), fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
-        ctk.CTkButton(box_image_target, text="✂️ 截圖", width=48, height=26, corner_radius=5, command=lambda: self.on_snip_template_dialog(p), fg_color="#0284C7", hover_color="#0369A1", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
-        ctk.CTkButton(box_image_target, text="📂 瀏覽", width=48, height=26, corner_radius=5, command=lambda: self.on_browse_template_dialog(p), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="📥 帶入", width=44, height=26, corner_radius=5, command=lambda: self.on_apply_last_snippet(p), fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=10, weight="bold")).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="✂️ 截圖", width=44, height=26, corner_radius=5, command=lambda: self.on_snip_template_dialog(p), fg_color="#0284C7", hover_color="#0369A1", font=ctk.CTkFont(size=10, weight="bold")).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="📂 瀏覽", width=44, height=26, corner_radius=5, command=lambda: self.on_browse_template_dialog(p), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=10)).pack(side="right", padx=1)
         ctk.CTkEntry(box_image_target, textvariable=p["template_image"], placeholder_text="模板圖檔 (如: 開始比賽.png)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True, padx=(0, 2))
 
         # 展開設定內容
@@ -1932,18 +2022,18 @@ class BaseballBotGUI:
         row_id1.pack(fill="x", padx=8, pady=(4, 2))
 
         lbl_thumb = tk.Label(row_id1, bg="#11111B", fg=COLOR_TEXT_DIM, font=("Arial", 10), text="（未選圖）", width=8, height=2)
-        lbl_thumb.pack(side="left", padx=(0, 8))
+        lbl_thumb.pack(side="left", padx=(0, 6))
 
         ctk.CTkLabel(row_id1, text="門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 2))
-        lbl_thresh_val = ctk.CTkLabel(row_id1, text=f"{p['image_threshold'].get():.2f}", width=34, font=ctk.CTkFont(family="Menlo", size=11))
-        slider_thresh = ctk.CTkSlider(row_id1, from_=0.50, to=0.98, number_of_steps=48, variable=p["image_threshold"], width=110, height=16)
+        lbl_thresh_val = ctk.CTkLabel(row_id1, text=f"{p['image_threshold'].get():.2f}", width=32, font=ctk.CTkFont(family="Menlo", size=11))
+        slider_thresh = ctk.CTkSlider(row_id1, from_=0.50, to=0.98, number_of_steps=48, variable=p["image_threshold"], width=85, height=16)
         slider_thresh.pack(side="left", padx=(2, 2))
-        lbl_thresh_val.pack(side="left", padx=(0, 6))
+        lbl_thresh_val.pack(side="left", padx=(0, 4))
         slider_thresh.configure(command=lambda v: [lbl_thresh_val.configure(text=f"{float(v):.2f}"), self.auto_save_current_config()])
 
         ctk.CTkCheckBox(
             row_id1,
-            text="多尺度容錯 (0.95x~1.05x)",
+            text="多尺度容錯 (±5%)",
             variable=p["image_multiscale"],
             font=ctk.CTkFont(size=11),
             text_color=COLOR_TEXT_PRIMARY,
@@ -1952,61 +2042,61 @@ class BaseballBotGUI:
             checkbox_width=16,
             checkbox_height=16,
             corner_radius=4
-        ).pack(side="left", padx=(4, 0))
+        ).pack(side="left", padx=(2, 0))
 
         # 圖片行 2: 模板快捷動作按鈕列 (平鋪排開，絕不互相覆蓋)
         row_id2 = ctk.CTkFrame(box_image_detail, fg_color="transparent")
         row_id2.pack(fill="x", padx=8, pady=(2, 5))
 
-        ctk.CTkLabel(row_id2, text="📷 模板操作:", font=ctk.CTkFont(size=10, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(row_id2, text="📷 模板操作:", font=ctk.CTkFont(size=10, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
             row_id2,
             text="✂️ 截圖",
-            width=54,
+            width=48,
             height=24,
             corner_radius=4,
             command=lambda: self.on_snip_template_dialog(p),
             font=ctk.CTkFont(size=10, weight="bold"),
             fg_color="#0284C7",
             hover_color="#0369A1"
-        ).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 3))
 
         ctk.CTkButton(
             row_id2,
             text="📂 瀏覽",
-            width=54,
+            width=48,
             height=24,
             corner_radius=4,
             command=lambda: self.on_browse_template_dialog(p),
             font=ctk.CTkFont(size=10),
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER
-        ).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 3))
 
         ctk.CTkButton(
             row_id2,
-            text="📥 帶入最新截圖",
-            width=96,
+            text="📥 帶入最新",
+            width=70,
             height=24,
             corner_radius=4,
             command=lambda: self.on_apply_last_snippet(p),
             font=ctk.CTkFont(size=10, weight="bold"),
             fg_color="#F59E0B",
             hover_color="#D97706"
-        ).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 3))
 
         ctk.CTkButton(
             row_id2,
-            text="📁 開啟資料夾",
-            width=76,
+            text="📁 資料夾",
+            width=58,
             height=24,
             corner_radius=4,
             command=self.on_open_templates_folder,
             font=ctk.CTkFont(size=10),
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER
-        ).pack(side="left", padx=2)
+        ).pack(side="left")
 
         def _update_p_thumb(*_):
             img_name = p["template_image"].get().strip()
@@ -2485,7 +2575,7 @@ class BaseballBotGUI:
         lbl_num.pack(side="left")
         s["lbl_num"] = lbl_num
 
-        ctk.CTkEntry(head, textvariable=s["name"], width=80, height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(head, textvariable=s["name"], width=70, height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 4))
 
         btn_toggle = ctk.CTkButton(head, text="▸", width=26, height=26, corner_radius=4, command=lambda: s["expanded"].set(not s["expanded"].get()), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER)
         btn_toggle.pack(side="right", padx=2)
@@ -2497,15 +2587,15 @@ class BaseballBotGUI:
         def _add_s_sym(tag):
             k = s["keywords"].get().strip()
             s["keywords"].set(f"{k}, {tag}" if k else tag)
-        ctk.CTkButton(box_text_target, text="✕", width=26, height=26, corner_radius=4, command=lambda: _add_s_sym("[叉叉]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
-        ctk.CTkButton(box_text_target, text="✓", width=26, height=26, corner_radius=4, command=lambda: _add_s_sym("[打勾]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
+        ctk.CTkButton(box_text_target, text="✕", width=24, height=26, corner_radius=4, command=lambda: _add_s_sym("[叉叉]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
+        ctk.CTkButton(box_text_target, text="✓", width=24, height=26, corner_radius=4, command=lambda: _add_s_sym("[打勾]"), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER).pack(side="right", padx=1)
         ctk.CTkEntry(box_text_target, textvariable=s["keywords"], placeholder_text="關鍵字 (以逗號分隔)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True)
 
         # 圖片模板模式容器 (檔名 + 帶入截圖 + 截圖 + 選擇)
         box_image_target = ctk.CTkFrame(head, fg_color="transparent")
-        ctk.CTkButton(box_image_target, text="📥 帶入", width=54, height=26, corner_radius=5, command=lambda: self.on_apply_last_snippet(s), fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
-        ctk.CTkButton(box_image_target, text="✂️ 截圖", width=48, height=26, corner_radius=5, command=lambda: self.on_snip_template_dialog(s), fg_color="#0284C7", hover_color="#0369A1", font=ctk.CTkFont(size=11, weight="bold")).pack(side="right", padx=1)
-        ctk.CTkButton(box_image_target, text="📂 瀏覽", width=48, height=26, corner_radius=5, command=lambda: self.on_browse_template_dialog(s), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=11)).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="📥 帶入", width=44, height=26, corner_radius=5, command=lambda: self.on_apply_last_snippet(s), fg_color="#F59E0B", hover_color="#D97706", font=ctk.CTkFont(size=10, weight="bold")).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="✂️ 截圖", width=44, height=26, corner_radius=5, command=lambda: self.on_snip_template_dialog(s), fg_color="#0284C7", hover_color="#0369A1", font=ctk.CTkFont(size=10, weight="bold")).pack(side="right", padx=1)
+        ctk.CTkButton(box_image_target, text="📂 瀏覽", width=44, height=26, corner_radius=5, command=lambda: self.on_browse_template_dialog(s), fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER, font=ctk.CTkFont(size=10)).pack(side="right", padx=1)
         ctk.CTkEntry(box_image_target, textvariable=s["template_image"], placeholder_text="模板圖檔 (如: 開始比賽.png)", height=26, corner_radius=6, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=11)).pack(side="left", fill="x", expand=True, padx=(0, 2))
 
         # 展開設定內容
@@ -2658,18 +2748,18 @@ class BaseballBotGUI:
         row_id1.pack(fill="x", padx=8, pady=(4, 2))
 
         lbl_thumb = tk.Label(row_id1, bg="#11111B", fg=COLOR_TEXT_DIM, font=("Arial", 10), text="（未選圖）", width=8, height=2)
-        lbl_thumb.pack(side="left", padx=(0, 8))
+        lbl_thumb.pack(side="left", padx=(0, 6))
 
         ctk.CTkLabel(row_id1, text="門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 2))
-        lbl_thresh_val = ctk.CTkLabel(row_id1, text=f"{s['image_threshold'].get():.2f}", width=34, font=ctk.CTkFont(family="Menlo", size=11))
-        slider_thresh = ctk.CTkSlider(row_id1, from_=0.50, to=0.98, number_of_steps=48, variable=s["image_threshold"], width=110, height=16)
+        lbl_thresh_val = ctk.CTkLabel(row_id1, text=f"{s['image_threshold'].get():.2f}", width=32, font=ctk.CTkFont(family="Menlo", size=11))
+        slider_thresh = ctk.CTkSlider(row_id1, from_=0.50, to=0.98, number_of_steps=48, variable=s["image_threshold"], width=85, height=16)
         slider_thresh.pack(side="left", padx=(2, 2))
-        lbl_thresh_val.pack(side="left", padx=(0, 6))
+        lbl_thresh_val.pack(side="left", padx=(0, 4))
         slider_thresh.configure(command=lambda v: [lbl_thresh_val.configure(text=f"{float(v):.2f}"), self.auto_save_current_config()])
 
         ctk.CTkCheckBox(
             row_id1,
-            text="多尺度容錯 (0.95x~1.05x)",
+            text="多尺度容錯 (±5%)",
             variable=s["image_multiscale"],
             font=ctk.CTkFont(size=11),
             text_color=COLOR_TEXT_PRIMARY,
@@ -2678,61 +2768,61 @@ class BaseballBotGUI:
             checkbox_width=16,
             checkbox_height=16,
             corner_radius=4
-        ).pack(side="left", padx=(4, 0))
+        ).pack(side="left", padx=(2, 0))
 
         # 圖片行 2: 模板快捷動作按鈕列 (平鋪排開，絕不互相覆蓋)
         row_id2 = ctk.CTkFrame(box_image_detail, fg_color="transparent")
         row_id2.pack(fill="x", padx=8, pady=(2, 5))
 
-        ctk.CTkLabel(row_id2, text="📷 模板操作:", font=ctk.CTkFont(size=10, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(row_id2, text="📷 模板操作:", font=ctk.CTkFont(size=10, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
             row_id2,
             text="✂️ 截圖",
-            width=54,
+            width=48,
             height=24,
             corner_radius=4,
             command=lambda: self.on_snip_template_dialog(s),
             font=ctk.CTkFont(size=10, weight="bold"),
             fg_color="#0284C7",
             hover_color="#0369A1"
-        ).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 3))
 
         ctk.CTkButton(
             row_id2,
             text="📂 瀏覽",
-            width=54,
+            width=48,
             height=24,
             corner_radius=4,
             command=lambda: self.on_browse_template_dialog(s),
             font=ctk.CTkFont(size=10),
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER
-        ).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 3))
 
         ctk.CTkButton(
             row_id2,
-            text="📥 帶入最新截圖",
-            width=96,
+            text="📥 帶入最新",
+            width=70,
             height=24,
             corner_radius=4,
             command=lambda: self.on_apply_last_snippet(s),
             font=ctk.CTkFont(size=10, weight="bold"),
             fg_color="#F59E0B",
             hover_color="#D97706"
-        ).pack(side="left", padx=(0, 4))
+        ).pack(side="left", padx=(0, 3))
 
         ctk.CTkButton(
             row_id2,
-            text="📁 開啟資料夾",
-            width=76,
+            text="📁 資料夾",
+            width=58,
             height=24,
             corner_radius=4,
             command=self.on_open_templates_folder,
             font=ctk.CTkFont(size=10),
             fg_color=COLOR_BTN_DARK,
             hover_color=COLOR_BTN_DARK_HOVER
-        ).pack(side="left", padx=2)
+        ).pack(side="left")
 
         def _update_s_thumb(*_):
             img_name = s["template_image"].get().strip()
@@ -4566,7 +4656,7 @@ class BaseballBotGUI:
             uptime_str = f"{hrs:02d}:{mins:02d}:{secs:02d}"
             if hasattr(self, "lbl_metrics_inline"):
                 self.lbl_metrics_inline.configure(
-                    text=f"⏱ 運行: {uptime_str}   |   🔄 輪次: {self.loop_count} 次   |   🎯 命中: {self.hit_count} 次"
+                    text=f"⏱ {uptime_str} | 🔄 {self.loop_count}次 | 🎯 {self.hit_count}次"
                 )
         self.root.after(1000, self._update_uptime_timer)
 

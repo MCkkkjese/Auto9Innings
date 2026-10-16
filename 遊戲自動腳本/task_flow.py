@@ -13,6 +13,7 @@
 import os
 import sys
 import time
+import datetime
 import json
 import random
 import threading
@@ -305,9 +306,13 @@ class TaskEngine:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
+        self.priority_blocks: List[Dict[str, Any]] = []
+        self.on_priority_hit: Optional[Callable[[int], None]] = None
+
         self.current_block_idx = -1
         self.current_cycle = 0
         self.total_cycles = 1
+        self.active_candidates: List[Dict[str, Any]] = []
 
     def _get_scan_interval(self) -> float:
         """取得掃描/刷新間隔 (秒)，吃到聯賽自動刷的快速刷設定 (0=極速無延遲)"""
@@ -324,19 +329,46 @@ class TaskEngine:
         if self.log_callback:
             self.log_callback(f"[任務清單] {msg}")
 
+    @staticmethod
+    def parse_template_images_list(val: Any) -> List[str]:
+        """
+        將設定值解析為圖片路徑/檔名列表，支援字串逗號/分號/換行分隔或原本就為 list
+        例: "img1.png, img2.png" -> ["img1.png", "img2.png"]
+        """
+        if not val:
+            return []
+        if isinstance(val, (list, tuple)):
+            res = []
+            for item in val:
+                s = str(item).strip()
+                if s:
+                    res.append(s)
+            return res
+        s_val = str(val).strip()
+        if not s_val:
+            return []
+        normalized = s_val.replace("，", ",").replace(";", ",").replace("；", ",").replace("\n", ",")
+        parts = [p.strip() for p in normalized.split(",") if p.strip()]
+        return parts
+
     def start(
         self,
         blocks_data: List[Dict[str, Any]],
+        priority_blocks_data: Optional[List[Dict[str, Any]]] = None,
         loop_count: int = 1,
         on_step_change: Optional[Callable[[int, int, int], None]] = None,
         on_finish: Optional[Callable[[bool, str], None]] = None,
-        global_settings: Optional[Dict[str, Any]] = None
+        global_settings: Optional[Dict[str, Any]] = None,
+        on_priority_hit: Optional[Callable[[int], None]] = None
     ):
         if self.is_running:
             return
 
         if global_settings:
             self.global_settings.update(global_settings)
+
+        self.priority_blocks = [b for b in (priority_blocks_data or []) if b.get("enabled", True)]
+        self.on_priority_hit = on_priority_hit
 
         # 套用語言過濾設定至 bot
         if self.bot and hasattr(self.bot, "set_allowed_languages"):
@@ -372,6 +404,17 @@ class TaskEngine:
                         if not block.get("enabled", True):
                             continue
 
+                        # ⭐ 優先辨識檢查：比照聯賽自動刷，在執行此步驟前，先檢查是否有優先動作需要攔截執行
+                        prio_hits = 0
+                        while self._check_and_exec_priority(f"步驟 #{idx + 1} 前"):
+                            prio_hits += 1
+                            if self._stop_event.is_set() or prio_hits >= 10:
+                                break
+                            time.sleep(0.3)
+
+                        if self._stop_event.is_set():
+                            break
+
                         self.current_block_idx = idx
                         if on_step_change:
                             on_step_change(idx, cycle, self.total_cycles)
@@ -380,8 +423,16 @@ class TaskEngine:
                         b_type = block.get("type", "tap_coord")
                         params = block.get("params", {})
 
+                        next_candidates = self._build_next_candidates(
+                            current_idx=idx,
+                            blocks=blocks_data,
+                            is_loop=False,
+                            cycle=cycle,
+                            total_cycles=self.total_cycles
+                        )
+
                         self._log(f"👉 步驟 #{idx + 1} [{b_name}] ({BLOCK_TYPES.get(b_type, {}).get('title', b_type)})")
-                        step_ok = self.execute_block(b_type, params)
+                        step_ok = self.execute_block(b_type, params, next_candidates=next_candidates)
 
                         if not step_ok and params.get("on_timeout") == "stop":
                             self._log(f"⚠️ 步驟 #{idx + 1} 觸發超時終止設定，任務停止。")
@@ -424,15 +475,20 @@ class TaskEngine:
     def run_sync(
         self,
         blocks_data: List[Dict[str, Any]],
+        priority_blocks_data: Optional[List[Dict[str, Any]]] = None,
         loop_count: int = 1,
         on_step_change: Optional[Callable[[int, int, int], None]] = None,
-        global_settings: Optional[Dict[str, Any]] = None
+        global_settings: Optional[Dict[str, Any]] = None,
+        on_priority_hit: Optional[Callable[[int], None]] = None
     ) -> bool:
         """
         同步執行任務清單 (專供聯賽事件跳轉或單步呼叫使用，執行完成後回傳)
         """
         if global_settings:
             self.global_settings.update(global_settings)
+
+        self.priority_blocks = [b for b in (priority_blocks_data or []) if b.get("enabled", True)]
+        self.on_priority_hit = on_priority_hit
 
         if self.bot and hasattr(self.bot, "set_allowed_languages"):
             self.bot.set_allowed_languages(
@@ -463,6 +519,17 @@ class TaskEngine:
                     if not block.get("enabled", True):
                         continue
 
+                    # ⭐ 優先動作檢查
+                    prio_hits = 0
+                    while self._check_and_exec_priority(f"步驟 #{idx + 1} 前"):
+                        prio_hits += 1
+                        if self._stop_event.is_set() or prio_hits >= 10:
+                            break
+                        time.sleep(0.3)
+
+                    if self._stop_event.is_set():
+                        break
+
                     self.current_block_idx = idx
                     if on_step_change:
                         on_step_change(idx, cycle, total)
@@ -471,8 +538,16 @@ class TaskEngine:
                     b_type = block.get("type", "tap_coord")
                     params = block.get("params", {})
 
+                    next_candidates = self._build_next_candidates(
+                        current_idx=idx,
+                        blocks=blocks_data,
+                        is_loop=False,
+                        cycle=cycle,
+                        total_cycles=total
+                    )
+
                     self._log(f"👉 步驟 #{idx + 1} [{b_name}] ({BLOCK_TYPES.get(b_type, {}).get('title', b_type)})")
-                    step_ok = self.execute_block(b_type, params)
+                    step_ok = self.execute_block(b_type, params, next_candidates=next_candidates)
 
                     if not step_ok and params.get("on_timeout") == "stop":
                         self._log(f"⚠️ 步驟 #{idx + 1} 觸發超時終止設定，任務停止。")
@@ -496,20 +571,491 @@ class TaskEngine:
 
         return success
 
-    def execute_block(self, b_type: str, params: Dict[str, Any]) -> bool:
+    def _check_and_exec_priority(self, context_desc: str = "") -> bool:
+        """
+        優先辨識檢查：比照聯賽自動刷，優先級嚴格大於一般流程的每一個步驟。
+        遍歷 priority_blocks，若有任何優先積木命中 (圖片模板、符號、或文字 OCR)，
+        立即插隊執行對應點擊或連點跳過過場，並記錄日誌。
+        回傳 True 代表有優先動作命中並已執行。
+        """
+        if not self.priority_blocks or self._stop_event.is_set():
+            return False
+
+        if not self.bot or not hasattr(self.bot, "capture_screen"):
+            return False
+
+        screen = None
+        try:
+            screen = self.bot.capture_screen()
+        except Exception:
+            return False
+
+        if screen is None:
+            return False
+
+        img_h, img_w = screen.shape[:2]
+        screen_gray = None
+        det_results = None
+
+        for p_idx, p_block in enumerate(self.priority_blocks):
+            if self._stop_event.is_set():
+                return False
+            if not p_block.get("enabled", True):
+                continue
+
+            b_name = p_block.get("name", f"優先步驟 #{p_idx + 1}")
+            b_type = p_block.get("type", "detect_click")
+            p = p_block.get("params", {})
+
+            # 判斷辨識目標類型與全域 OCR 限制
+            tpl_img = p.get("template_image", "").strip()
+            target_type = str(p.get("target_type", "📝 僅文字"))
+            disable_ocr = bool(self.global_settings.get("disable_ocr", False))
+
+            is_pure_img = ("圖片" in target_type or "image" in target_type.lower() or "模板" in target_type) and ("文字" not in target_type)
+            is_hybrid = ("文字或圖案" in target_type or "hybrid" in target_type.lower())
+            is_check = ("打勾" in target_type or "check" in target_type.lower())
+            is_cross = ("叉叉" in target_type or "cross" in target_type.lower() or "關閉" in target_type)
+
+            tpl_list = self.parse_template_images_list(tpl_img)
+
+            # 1. 純圖片特徵比對模式 (STRICT PURE IMAGE MATCHING)
+            # 只要是圖片模式，只進行圖片模板比對，未命中直接跳過，絕對禁止 fall through 執行文字 OCR！
+            if is_pure_img or (not is_check and not is_cross and not is_hybrid and bool(tpl_list)):
+                if not tpl_list:
+                    continue
+                if screen_gray is None:
+                    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                img_thresh = _safe_float(p.get("image_threshold", 0.80), 0.80)
+                img_multi = bool(p.get("image_multiscale", False))
+                if hasattr(self.bot, "match_template"):
+                    matched_item = None
+                    for single_tpl in tpl_list:
+                        m_res = self.bot.match_template(screen_gray, single_tpl, threshold=img_thresh, multi_scale=img_multi)
+                        if m_res is not None:
+                            matched_item = (single_tpl, m_res)
+                            break
+                    if matched_item is not None:
+                        matched_tpl, m_res = matched_item
+                        tx, ty, score_val, bbox = m_res
+                        fname = os.path.basename(matched_tpl)
+                        ctx_info = f" [{context_desc}]" if context_desc else ""
+                        self._log(f"⭐ [優先辨識: {b_name}] 命中圖片「{fname}」(相似度 {score_val:.2f}){ctx_info} → 優先執行動作！")
+                        if self.on_priority_hit:
+                            try:
+                                self.on_priority_hit(p_idx)
+                            except Exception:
+                                pass
+                        self._handle_detect_hit(
+                            hit_name=f"優先圖片「{fname}」",
+                            hit_center=(tx, ty),
+                            p=p,
+                            img_shape=(img_h, img_w),
+                            is_image=True,
+                            template_img=matched_tpl,
+                            img_thresh=img_thresh,
+                            img_multiscale=img_multi,
+                            next_candidates=self.active_candidates
+                        )
+                        if self.on_priority_hit:
+                            try:
+                                self.on_priority_hit(-1)
+                            except Exception:
+                                pass
+                        return True
+                # 純圖片模式未命中圖片時，直接檢查下一個優先積木，徹底杜絕任何文字 OCR 誤判！
+                continue
+
+            # 若全域開關已停用文字辨識 (0-OCR / 純圖片模式)：跳過任何文字與符號辨識
+            if disable_ocr and not (is_hybrid and tpl_list):
+                continue
+
+            # 2. 雙重模式 (🔀 文字或圖案) 之圖片優先判定
+            if is_hybrid and tpl_list:
+                if screen_gray is None:
+                    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                img_thresh = _safe_float(p.get("image_threshold", 0.80), 0.80)
+                img_multi = bool(p.get("image_multiscale", False))
+                if hasattr(self.bot, "match_template"):
+                    matched_item = None
+                    for single_tpl in tpl_list:
+                        m_res = self.bot.match_template(screen_gray, single_tpl, threshold=img_thresh, multi_scale=img_multi)
+                        if m_res is not None:
+                            matched_item = (single_tpl, m_res)
+                            break
+                    if matched_item is not None:
+                        matched_tpl, m_res = matched_item
+                        tx, ty, score_val, bbox = m_res
+                        fname = os.path.basename(matched_tpl)
+                        ctx_info = f" [{context_desc}]" if context_desc else ""
+                        self._log(f"⭐ [優先辨識: {b_name}] 命中圖案「{fname}」(相似度 {score_val:.2f}){ctx_info} → 優先執行動作！")
+                        if self.on_priority_hit:
+                            try:
+                                self.on_priority_hit(p_idx)
+                            except Exception:
+                                pass
+                        self._handle_detect_hit(
+                            hit_name=f"優先圖案「{fname}」",
+                            hit_center=(tx, ty),
+                            p=p,
+                            img_shape=(img_h, img_w),
+                            is_image=True,
+                            template_img=matched_tpl,
+                            img_thresh=img_thresh,
+                            img_multiscale=img_multi,
+                            next_candidates=self.active_candidates
+                        )
+                        if self.on_priority_hit:
+                            try:
+                                self.on_priority_hit(-1)
+                            except Exception:
+                                pass
+                        return True
+                # 若雙重模式未中圖片且全域停用 OCR，跳過下方的文字比對
+                if disable_ocr:
+                    continue
+
+            # 3. 特殊符號 (打勾/叉叉) 或 文字 OCR 比對 (僅限非純圖片模式且全域未禁用 OCR 時)
+            raw_kws = p.get("keywords", "")
+            kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
+
+            if (is_check or is_cross or kws) and not disable_ocr:
+                if det_results is None:
+                    det_results = self.bot.scan_text(screen)
+
+                # 特殊符號
+                if is_check or is_cross:
+                    for item in det_results:
+                        sym = item.get("symbol")
+                        txt = item.get("text", "")
+                        if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
+                            ctx_info = f" [{context_desc}]" if context_desc else ""
+                            self._log(f"⭐ [優先辨識: {b_name}] 命中打勾符號 [{txt}]{ctx_info} → 優先執行動作！")
+                            if self.on_priority_hit:
+                                try:
+                                    self.on_priority_hit(p_idx)
+                                except Exception:
+                                    pass
+                            self._handle_detect_hit(
+                                hit_name=f"打勾符號 [{txt}]",
+                                hit_center=item["center"],
+                                p=p,
+                                img_shape=(img_h, img_w),
+                                raw_kws=raw_kws,
+                                is_check=True,
+                                next_candidates=self.active_candidates
+                            )
+                            if self.on_priority_hit:
+                                try:
+                                    self.on_priority_hit(-1)
+                                    pass
+                                except Exception:
+                                    pass
+                            return True
+                        if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
+                            ctx_info = f" [{context_desc}]" if context_desc else ""
+                            self._log(f"⭐ [優先辨識: {b_name}] 命中叉叉符號 [{txt}]{ctx_info} → 優先執行動作！")
+                            if self.on_priority_hit:
+                                try:
+                                    self.on_priority_hit(p_idx)
+                                except Exception:
+                                    pass
+                            self._handle_detect_hit(
+                                hit_name=f"叉叉符號 [{txt}]",
+                                hit_center=item["center"],
+                                p=p,
+                                img_shape=(img_h, img_w),
+                                raw_kws=raw_kws,
+                                is_cross=True,
+                                next_candidates=self.active_candidates
+                            )
+                            if self.on_priority_hit:
+                                try:
+                                    self.on_priority_hit(-1)
+                                except Exception:
+                                    pass
+                            return True
+
+                # 文字關鍵字
+                if kws and not disable_ocr:
+                    conf_thresh = self._get_confidence()
+                    for kw in kws:
+                        for item in det_results:
+                            matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
+                            if matched and ratio >= conf_thresh:
+                                ctx_info = f" [{context_desc}]" if context_desc else ""
+                                self._log(f"⭐ [優先辨識: {b_name}] 命中文字「{item.get('text')}」(匹配「{kw}」){ctx_info} → 優先執行動作！")
+                                if self.on_priority_hit:
+                                    try:
+                                        self.on_priority_hit(p_idx)
+                                    except Exception:
+                                        pass
+                                self._handle_detect_hit(
+                                    hit_name=f"優先文字「{item.get('text')}」",
+                                    hit_center=item["center"],
+                                    p=p,
+                                    img_shape=(img_h, img_w),
+                                    raw_kws=raw_kws,
+                                    next_candidates=self.active_candidates
+                                )
+                                if self.on_priority_hit:
+                                    try:
+                                        self.on_priority_hit(-1)
+                                    except Exception:
+                                        pass
+                                return True
+
+            # 3. 條件分支 (branch_if) 若被設為優先步驟
+            if b_type == "branch_if":
+                branches = p.get("branches", [])
+                if branches:
+                    if screen_gray is None:
+                        screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                    for b_idx, branch in enumerate(branches):
+                        b_tpl = branch.get("template_image", "").strip()
+                        b_tpl_list = self.parse_template_images_list(b_tpl)
+                        if b_tpl_list and hasattr(self.bot, "match_template"):
+                            br_thresh = _safe_float(branch.get("threshold", 0.80), 0.80)
+                            br_multi = bool(branch.get("multiscale", False))
+                            matched_b_res = None
+                            for single_b_tpl in b_tpl_list:
+                                m_res = self.bot.match_template(screen_gray, single_b_tpl, threshold=br_thresh, multi_scale=br_multi)
+                                if m_res is not None:
+                                    matched_b_res = (single_b_tpl, m_res)
+                                    break
+                            if matched_b_res is not None:
+                                hit_b_tpl, m_res = matched_b_res
+                                bx = _safe_int(branch.get("x", 960))
+                                by = _safe_int(branch.get("y", 540))
+                                self._log(f"⭐ [優先辨識: {b_name}] 命中分支圖片「{os.path.basename(hit_b_tpl)}」→ 點擊 ({bx}, {by})")
+                                if self.on_priority_hit:
+                                    try:
+                                        self.on_priority_hit(p_idx)
+                                    except Exception:
+                                        pass
+                                self.bot.tap(bx, by)
+                                if self.on_priority_hit:
+                                    try:
+                                        self.on_priority_hit(-1)
+                                    except Exception:
+                                        pass
+                                self._sleep_interruptible(1.0, check_priority=False)
+                                return True
+
+        return False
+
+    def _build_next_candidates(
+        self,
+        current_idx: int,
+        blocks: List[Dict[str, Any]],
+        is_loop: bool = False,
+        cycle: int = 1,
+        total_cycles: int = 1,
+        outer_candidates: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        構建當前步驟之後的候選步驟清單 (供命中後連點精確判斷何時結束過場跳過)
+        """
+        candidates: List[Dict[str, Any]] = []
+
+        def _flatten_block(b: Dict[str, Any]) -> List[Dict[str, Any]]:
+            """展開積木，若為迴圈積木則提取內部有效子步驟"""
+            if not b.get("enabled", True):
+                return []
+            b_type = b.get("type", "")
+            if b_type == "loop":
+                in_blocks = b.get("params", {}).get("inner_blocks", [])
+                res = []
+                for ib in in_blocks:
+                    if ib.get("enabled", True):
+                        res.extend(_flatten_block(ib))
+                return res
+            return [b]
+
+        # 1. 當前清單中後續的步驟 (idx + 1 到結尾)
+        for i in range(current_idx + 1, len(blocks)):
+            candidates.extend(_flatten_block(blocks[i]))
+
+        # 2. 如果是迴圈內部 (is_loop)
+        if is_loop:
+            # 若迴圈還會進行下一輪 (無限次 0，或 cycle < total_cycles)
+            if total_cycles == 0 or cycle < total_cycles:
+                # 迴圈下一輪會回到迴圈開頭 (從 0 到 current_idx)
+                for i in range(0, min(current_idx + 1, len(blocks))):
+                    candidates.extend(_flatten_block(blocks[i]))
+            else:
+                # 迴圈已經是最後一輪，若有外部後續步驟，加入外部候選
+                if outer_candidates:
+                    for ob in outer_candidates:
+                        candidates.extend(_flatten_block(ob))
+        else:
+            # 3. 主流程如果多輪 (total_cycles == 0 或 cycle < total_cycles)
+            if total_cycles == 0 or cycle < total_cycles:
+                for i in range(0, min(current_idx + 1, len(blocks))):
+                    candidates.extend(_flatten_block(blocks[i]))
+
+        # 過濾重複對象並保持順序
+        seen_ids = set()
+        unique_cands = []
+        for c in candidates:
+            c_id = id(c)
+            if c_id not in seen_ids:
+                seen_ids.add(c_id)
+                unique_cands.append(c)
+
+        return unique_cands
+
+    def _is_block_target_present(
+        self,
+        screen: np.ndarray,
+        block: Dict[str, Any],
+        screen_gray: Optional[np.ndarray] = None,
+        det_results: Optional[List[Dict[str, Any]]] = None
+    ) -> Tuple[bool, str, Optional[np.ndarray], Optional[List[Dict[str, Any]]]]:
+        """
+        快速檢測候選積木的目標 (圖片、符號、關鍵字) 是否出現在畫面上
+        回傳: (is_present, match_desc, updated_gray, updated_det_results)
+        """
+        if not block or not block.get("enabled", True):
+            return False, "", screen_gray, det_results
+
+        b_type = block.get("type", "")
+        p = block.get("params", {})
+        disable_ocr = bool(self.global_settings.get("disable_ocr", False))
+
+        # 1. 偵測點擊 (detect_click) 或 等待條件 (wait_condition)
+        if b_type in ("detect_click", "wait_condition"):
+            cond_mode = str(p.get("cond_mode", "出現 (Wait Appear)"))
+            is_wait_disappear = ("消失" in cond_mode or "disappear" in cond_mode.lower())
+
+            target_type = str(p.get("target_type", "📝 僅文字"))
+            template_img = str(p.get("template_image", "")).strip()
+            raw_kws = str(p.get("keywords", ""))
+            img_thresh = _safe_float(p.get("image_threshold", 0.80), 0.80)
+            img_multi = bool(p.get("image_multiscale", False))
+
+            is_image = ("圖片" in target_type or "image" in target_type.lower() or "模板" in target_type) and ("文字" not in target_type)
+            is_hybrid = ("文字或圖案" in target_type or "hybrid" in target_type.lower())
+            is_check = ("打勾" in target_type or "check" in target_type.lower())
+            is_cross = ("叉叉" in target_type or "cross" in target_type.lower() or "關閉" in target_type)
+
+            present = False
+            match_desc = ""
+
+            # 1.1 圖片比對 (優先且嚴格)
+            tpl_list = self.parse_template_images_list(template_img)
+            if (is_image or is_hybrid or tpl_list) and tpl_list:
+                if screen_gray is None:
+                    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                if hasattr(self.bot, "match_template"):
+                    for single_tpl in tpl_list:
+                        m_res = self.bot.match_template(screen_gray, single_tpl, threshold=img_thresh, multi_scale=img_multi)
+                        if m_res is not None:
+                            present = True
+                            match_desc = f"圖片「{os.path.basename(single_tpl)}」(相似度 {m_res[2]:.2f})"
+                            break
+
+            # 1.2 符號與文字比對 (僅在未關閉 OCR 且非純圖片時)
+            if not present and not is_image and not disable_ocr:
+                kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
+                if is_check or is_cross or kws:
+                    if det_results is None and hasattr(self.bot, "scan_text"):
+                        det_results = self.bot.scan_text(screen)
+
+                    if det_results:
+                        if is_check or is_cross:
+                            for item in det_results:
+                                sym = item.get("symbol")
+                                txt = item.get("text", "")
+                                if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
+                                    present = True
+                                    match_desc = f"打勾圖案 [{txt}]"
+                                    break
+                                if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
+                                    present = True
+                                    match_desc = f"叉叉圖案 [{txt}]"
+                                    break
+
+                        if not present and kws:
+                            conf_thresh = self._get_confidence()
+                            for kw in kws:
+                                for item in det_results:
+                                    matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
+                                    if matched and ratio >= conf_thresh:
+                                        present = True
+                                        match_desc = f"文字「{item.get('text')}」(匹配「{kw}」)"
+                                        break
+                                if present:
+                                    break
+
+            if is_wait_disappear:
+                # 若等待的是消失，只要畫面中不存在該目標即視為達成
+                if not present:
+                    return True, "目標已消失", screen_gray, det_results
+                return False, "", screen_gray, det_results
+            else:
+                if present:
+                    return True, match_desc, screen_gray, det_results
+                return False, "", screen_gray, det_results
+
+        # 2. 條件分支 (branch_if)
+        elif b_type == "branch_if":
+            branches = p.get("branches", [])
+            for br in branches:
+                b_tpl = str(br.get("template_image", "")).strip()
+                b_kws = str(br.get("keywords", ""))
+                b_thresh = _safe_float(br.get("threshold", 0.80), 0.80)
+                b_multi = bool(br.get("multiscale", False))
+
+                b_tpl_list = self.parse_template_images_list(b_tpl)
+                if b_tpl_list and hasattr(self.bot, "match_template"):
+                    if screen_gray is None:
+                        screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                    for single_b_tpl in b_tpl_list:
+                        m = self.bot.match_template(screen_gray, single_b_tpl, threshold=b_thresh, multi_scale=b_multi)
+                        if m is not None:
+                            return True, f"分支[{br.get('name')}] 圖片「{os.path.basename(single_b_tpl)}」", screen_gray, det_results
+
+                if b_kws and not disable_ocr:
+                    if det_results is None and hasattr(self.bot, "scan_text"):
+                        det_results = self.bot.scan_text(screen)
+                    if det_results:
+                        conf_thresh = self._get_confidence()
+                        for kw in [k.strip() for k in b_kws.replace("，", ",").split(",") if k.strip()]:
+                            for item in det_results:
+                                matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
+                                if matched and ratio >= conf_thresh:
+                                    return True, f"分支[{br.get('name')}] 文字「{item.get('text')}」", screen_gray, det_results
+
+        # 3. 迴圈容器 (loop) - 檢查其第一個有效子步驟
+        elif b_type == "loop":
+            inner_blocks = p.get("inner_blocks", [])
+            for ib in inner_blocks:
+                if ib.get("enabled", True):
+                    return self._is_block_target_present(screen, ib, screen_gray=screen_gray, det_results=det_results)
+
+        return False, "", screen_gray, det_results
+
+    def execute_block(
+        self,
+        b_type: str,
+        params: Dict[str, Any],
+        next_candidates: Optional[List[Dict[str, Any]]] = None
+    ) -> bool:
         """執行單個積木動作"""
+        self.active_candidates = next_candidates or []
         if b_type == "tap_coord":
             return self._exec_tap_coord(params)
         elif b_type == "multi_tap":
             return self._exec_multi_tap(params)
         elif b_type == "detect_click":
-            return self._exec_detect_click(params)
+            return self._exec_detect_click(params, next_candidates=next_candidates)
         elif b_type == "branch_if":
             return self._exec_branch_if(params)
         elif b_type == "loop":
-            return self._exec_loop(params)
+            return self._exec_loop(params, outer_candidates=next_candidates)
         elif b_type == "wait_condition":
-            return self._exec_wait_condition(params)
+            return self._exec_wait_condition(params, next_candidates=next_candidates)
         elif b_type == "wait_sec":
             return self._exec_wait_sec(params)
         elif b_type == "swipe":
@@ -522,12 +1068,18 @@ class TaskEngine:
             return self._exec_send_telegram(params)
         return True
 
-    def _sleep_interruptible(self, seconds: float) -> bool:
-        """可被停止中斷的睡眠"""
+    def _sleep_interruptible(self, seconds: float, check_priority: bool = True) -> bool:
+        """可被停止中斷的睡眠，支援在等待睡眠期間插隊檢查優先辨識"""
         end_time = time.time() + seconds
+        last_prio_check = 0.0
         while time.time() < end_time:
             if self._stop_event.is_set():
                 return False
+            now = time.time()
+            if check_priority and self.priority_blocks and (now - last_prio_check >= 0.8):
+                last_prio_check = now
+                if self._check_and_exec_priority("延遲等待中"):
+                    pass
             time.sleep(0.08)
         return True
 
@@ -564,8 +1116,9 @@ class TaskEngine:
         is_disappear = ("消失" in stop_mode or "disappear" in stop_mode.lower())
         is_check = ("打勾" in stop_mode or "check" in stop_mode.lower())
         is_cross = ("叉叉" in stop_mode or "cross" in stop_mode.lower())
-        is_image = ("圖片" in stop_mode or "image" in stop_mode.lower() or "模板" in stop_mode or bool(template_image))
+        is_image = ("圖片" in stop_mode or "image" in stop_mode.lower() or "模板" in stop_mode)
         is_appear = (not is_disappear)
+        disable_ocr = bool(self.global_settings.get("disable_ocr", False))
 
         screen = None
         try:
@@ -576,28 +1129,39 @@ class TaskEngine:
         if screen is None:
             return False, ""
 
-        # 圖片模板比對條件
-        if is_image and template_image:
+        # 1. 圖片模板比對條件 (若設定為圖片模式，純粹進行模板比對，未命中直接返回，絕不跑文字 OCR)
+        if is_image:
+            tpl_list = self.parse_template_images_list(template_image)
+            if not tpl_list:
+                return False, ""
             screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
             matched = False
+            matched_fname = ""
             score_val = 0.0
-            match_res = None
-            if hasattr(self.bot, "match_template"):
-                match_res = self.bot.match_template(
-                    screen_gray,
-                    template_image,
-                    threshold=threshold,
-                    multi_scale=multiscale
-                )
-            if match_res is not None:
-                cx, cy, score_val, _ = match_res
-                matched = True
 
-            img_fname = os.path.basename(template_image)
+            if hasattr(self.bot, "match_template"):
+                for single_tpl in tpl_list:
+                    match_res = self.bot.match_template(
+                        screen_gray,
+                        single_tpl,
+                        threshold=threshold,
+                        multi_scale=multiscale
+                    )
+                    if match_res is not None:
+                        cx, cy, score_val, _ = match_res
+                        matched = True
+                        matched_fname = os.path.basename(single_tpl)
+                        break
+
+            all_fnames = ", ".join([os.path.basename(x) for x in tpl_list])
             if is_appear and matched:
-                return True, f"偵測到圖片「{img_fname}」出現 (相似度 {score_val:.2f})"
+                return True, f"偵測到圖片「{matched_fname}」出現 (相似度 {score_val:.2f})"
             elif is_disappear and not matched:
-                return True, f"圖片「{img_fname}」已消失"
+                return True, f"圖片「{all_fnames}」已消失"
+            return False, ""
+
+        # 若全域關閉文字辨識 (純圖片模式 / 0-OCR)，跳過文字與符號檢查
+        if disable_ocr:
             return False, ""
 
         # 符號比對
@@ -698,12 +1262,13 @@ class TaskEngine:
         img_multiscale: bool = False,
         raw_kws: str = "",
         is_check: bool = False,
-        is_cross: bool = False
+        is_cross: bool = False,
+        next_candidates: Optional[List[Dict[str, Any]]] = None
     ) -> bool:
         """
         處理偵測命中後的動作執行：
         1. 依動作模式計算點擊位置 (目標中心、自訂座標、自訂特定區塊、無動作僅等待)
-        2. ⚡ 命中後連點 (跟隨目標、自訂座標、右下角、中央、右上Skip、右半中央；支援指定次數或持續連點直到目標消失)
+        2. ⚡ 命中後連點 (跟隨目標、自訂座標、右下角、中央、右上Skip、右半中央；比照聯賽自動刷，持續連點跳過過場直到下一步驟出現)
         3. 執行結束延遲
         """
         img_h, img_w = img_shape
@@ -789,68 +1354,125 @@ class TaskEngine:
                     ry = base_y + random.randint(-8, 8)
                     self.bot.tap(rx, ry, delay_range=(min_spd, max_spd))
             else:
-                # 持續連點直到畫面變動 / 目標消失
-                self._log(f"  ⚡ [命中後連點] 正在持續連點「{rep_area}」({base_x}, {base_y}) 跳過過場 (直到目標消失)...")
+                # ⚡ 持續連點跳過過場 (直到下一步驟出現或觸發優先動作)
+                valid_cands = []
+                if next_candidates:
+                    for cand in next_candidates:
+                        c_type = cand.get("type", "")
+                        if c_type in ("detect_click", "wait_condition", "branch_if", "loop"):
+                            valid_cands.append(cand)
+
+                cands_desc = ""
+                if valid_cands:
+                    cand_names = [f"[{c.get('name', '未命名')}]" for c in valid_cands[:3]]
+                    cands_desc = f" (持續連點直到下一步驟 {' / '.join(cand_names)} 出現)"
+
+                self._log(f"  ⚡ [命中後連點] 正在持續連點「{rep_area}」({base_x}, {base_y}) 跳過過場{cands_desc}...")
                 tap_cnt = 0
-                max_continuous_taps = 60  # 防卡死安全上限
+                max_continuous_taps = 1200  # 安全防卡死上限 (約 4~5 分鐘)
+                orig_disappeared = False     # 追蹤原目標是否已消失 (防止單步驟循環時被剛點擊未消失的原目標早退)
+                initial_tap_grace = 4        # 前 4 次點擊為寬限期，不判定同名目標
+
                 while tap_cnt < max_continuous_taps:
                     if self._stop_event.is_set():
                         return False
+
                     rx = base_x + random.randint(-8, 8)
                     ry = base_y + random.randint(-8, 8)
                     self.bot.tap(rx, ry, delay_range=(min_spd, max_spd))
                     tap_cnt += 1
 
+                    # 每隔 3 次點擊檢測一次畫面 (反應極速且節省 CPU)
                     if tap_cnt % 3 == 0:
+                        # 1. ⭐ 優先動作插隊檢查
+                        if self.priority_blocks and self._check_and_exec_priority("連點中途"):
+                            self._log(f"  ⭐ 連點中途觸發其他優先動作，結束當前連點切換！")
+                            break
+
                         chk_screen = self.bot.capture_screen()
                         if chk_screen is not None:
-                            still_there = False
-                            if is_image and template_img:
-                                chk_gray = cv2.cvtColor(chk_screen, cv2.COLOR_BGR2GRAY)
-                                if hasattr(self.bot, "match_template"):
-                                    m = self.bot.match_template(
-                                        chk_gray, template_img,
-                                        threshold=img_thresh,
-                                        multi_scale=img_multiscale
-                                    )
-                                    if m:
-                                        still_there = True
-                            else:
-                                chk_det = self.bot.scan_text(chk_screen)
-                                if is_check or is_cross:
-                                    for it in chk_det:
-                                        s = it.get("symbol")
-                                        t = it.get("text", "")
-                                        if is_check and (s == "check" or t in ("[打勾]", "✓", "✔", "√") or (len(t) == 1 and t.upper() == "V")):
-                                            still_there = True
-                                            break
-                                        if is_cross and (s == "cross" or t in ("[叉叉]", "✕", "✖", "×", "X", "x")):
-                                            still_there = True
-                                            break
-                                if not still_there and raw_kws:
-                                    conf_thresh = self._get_confidence()
-                                    kws_chk = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
-                                    for kw in kws_chk:
-                                        for it in chk_det:
-                                            matched, ratio = self.bot._is_text_matched(kw, it.get("text", ""), similarity_threshold=conf_thresh)
-                                            if matched and ratio >= conf_thresh:
+                            chk_gray = None
+                            chk_det = None
+                            hit_next = False
+
+                            # 追蹤原目標是否還在畫面上
+                            if not orig_disappeared:
+                                still_there = False
+                                if is_image and template_img:
+                                    chk_gray = cv2.cvtColor(chk_screen, cv2.COLOR_BGR2GRAY)
+                                    if hasattr(self.bot, "match_template"):
+                                        chk_tpl_list = self.parse_template_images_list(template_img)
+                                        for single_tpl in chk_tpl_list:
+                                            m = self.bot.match_template(chk_gray, single_tpl, threshold=img_thresh, multi_scale=img_multiscale)
+                                            if m:
                                                 still_there = True
                                                 break
-                                        if still_there:
-                                            break
+                                else:
+                                    chk_det = self.bot.scan_text(chk_screen)
+                                    if is_check or is_cross:
+                                        for it in chk_det:
+                                            s = it.get("symbol"); t = it.get("text", "")
+                                            if is_check and (s == "check" or t in ("[打勾]", "✓", "✔", "√") or (len(t) == 1 and t.upper() == "V")):
+                                                still_there = True; break
+                                            if is_cross and (s == "cross" or t in ("[叉叉]", "✕", "✖", "×", "X", "x")):
+                                                still_there = True; break
+                                    if not still_there and raw_kws:
+                                        conf_thresh = self._get_confidence()
+                                        for kw in [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]:
+                                            for it in chk_det:
+                                                matched, ratio = self.bot._is_text_matched(kw, it.get("text", ""), similarity_threshold=conf_thresh)
+                                                if matched and ratio >= conf_thresh:
+                                                    still_there = True; break
+                                            if still_there: break
+                                if not still_there:
+                                    orig_disappeared = True
 
-                            if not still_there:
-                                self._log(f"  ✨ [命中後連點] 原目標已消失，過場跳過完成！(共連點 {tap_cnt} 次)")
-                                break
+                            # 檢測候選下一步驟
+                            if valid_cands:
+                                for cand in valid_cands:
+                                    cand_p = cand.get("params", {})
+                                    cand_tpl = cand_p.get("template_image", "").strip()
+                                    cand_kws = cand_p.get("keywords", "")
+
+                                    # 如果候選步驟的目標和原目標相同 (例如單步驟循環)，且原目標尚未消失或仍在寬限期內，則略過此輪比對
+                                    curr_tpl_set = set(self.parse_template_images_list(template_img))
+                                    cand_tpl_set = set(self.parse_template_images_list(cand_tpl))
+                                    is_same_target = (is_image and bool(curr_tpl_set & cand_tpl_set)) or (raw_kws and cand_kws and raw_kws == cand_kws)
+                                    if is_same_target and (not orig_disappeared or tap_cnt <= initial_tap_grace):
+                                        continue
+
+                                    pres, desc_m, chk_gray, chk_det = self._is_block_target_present(
+                                        chk_screen, cand, screen_gray=chk_gray, det_results=chk_det
+                                    )
+                                    if pres:
+                                        c_name = cand.get("name", "下一步驟")
+                                        self._log(f"  ✨ [命中後連點] 偵測到下一步驟 [{c_name}]（{desc_m}）已出現，過場跳過完成！(共連點 {tap_cnt} 次)")
+                                        hit_next = True
+                                        break
+
+                                if hit_next:
+                                    break
+                            else:
+                                # 若完全沒有下一步驟 (例如獨立單步執行且無後續)，則在原目標消失後多連點數次確認過場完成後退出
+                                if orig_disappeared and tap_cnt >= 12:
+                                    self._log(f"  ✨ [命中後連點] 原目標已消失且無後續步驟，過場跳過完成！(共連點 {tap_cnt} 次)")
+                                    break
+
+                if tap_cnt >= max_continuous_taps:
+                    self._log(f"  ⚠️ [命中後連點] 已達安全連點上限 ({tap_cnt} 次)，停止連點以防卡死。")
 
         # 4. 執行結束延遲
         delay = max(0.0, _safe_float(p.get("delay", 1.5)))
         if delay > 0:
-            self._sleep_interruptible(delay)
+            self._sleep_interruptible(delay, check_priority=False)
 
         return True
 
-    def _exec_detect_click(self, p: Dict[str, Any]) -> bool:
+    def _exec_detect_click(
+        self,
+        p: Dict[str, Any],
+        next_candidates: Optional[List[Dict[str, Any]]] = None
+    ) -> bool:
         target_type = p.get("target_type", "📝 僅文字")
         raw_kws = p.get("keywords", "")
         template_img = p.get("template_image", "").strip()
@@ -858,50 +1480,68 @@ class TaskEngine:
         img_multiscale = bool(p.get("image_multiscale", False))
         timeout = max(1, _safe_int(p.get("timeout", 10)))
 
-        is_image_mode = ("圖片" in target_type or "image" in target_type.lower() or "模板" in target_type)
+        disable_ocr = bool(self.global_settings.get("disable_ocr", False))
+        is_image_mode = ("圖片" in target_type or "image" in target_type.lower() or "模板" in target_type) and ("文字" not in target_type)
         is_check = ("打勾" in target_type or "check" in target_type.lower())
         is_cross = ("叉叉" in target_type or "cross" in target_type.lower() or "關閉" in target_type)
 
+        tpl_list = self.parse_template_images_list(template_img)
         kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
         scan_delay = self._get_scan_interval()
         deadline = time.time() + timeout
 
-        desc_target = f"圖片「{os.path.basename(template_img)}」" if is_image_mode else (f"文字/符號「{raw_kws}」" if raw_kws else target_type)
+        desc_target = (
+            f"圖片「{', '.join([os.path.basename(x) for x in tpl_list])}」"
+            if is_image_mode and tpl_list
+            else (f"文字/符號「{raw_kws}」" if raw_kws else target_type)
+        )
+
+        if not is_image_mode and disable_ocr:
+            self._log(f"  ⚠️ 全域已關閉文字辨識 (純圖片模式 / 0-OCR)，跳過文字目標【{desc_target}】。")
+            return False
+
         self._log(f"  🔍 等待目標【{desc_target}】出現 (限時 {timeout}s, 刷新速度 {scan_delay:.2f}s)...")
 
         while time.time() < deadline:
             if self._stop_event.is_set():
                 return False
 
+            # ⭐ 優先動作插隊檢查
+            if self.priority_blocks and self._check_and_exec_priority("等待目標出現中"):
+                time.sleep(0.1)
+                continue
+
             screen = self.bot.capture_screen()
             if screen is not None:
                 img_h, img_w = screen.shape[:2]
                 # 1. 圖片模板模式
                 if is_image_mode:
-                    if not template_img:
+                    if not tpl_list:
                         self._log("  ⚠️ 未指定模板圖檔，無法進行圖片比對！")
                         return False
                     screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
                     if hasattr(self.bot, "match_template"):
-                        res = self.bot.match_template(
-                            screen_gray,
-                            template_img,
-                            threshold=img_thresh,
-                            multi_scale=img_multiscale
-                        )
-                        if res is not None:
-                            tx, ty, score_val, bbox = res
-                            img_name = os.path.basename(template_img)
-                            return self._handle_detect_hit(
-                                hit_name=f"圖片模板「{img_name}」(相似度 {score_val:.2f})",
-                                hit_center=(tx, ty),
-                                p=p,
-                                img_shape=(img_h, img_w),
-                                is_image=True,
-                                template_img=template_img,
-                                img_thresh=img_thresh,
-                                img_multiscale=img_multiscale
+                        for single_tpl in tpl_list:
+                            res = self.bot.match_template(
+                                screen_gray,
+                                single_tpl,
+                                threshold=img_thresh,
+                                multi_scale=img_multiscale
                             )
+                            if res is not None:
+                                tx, ty, score_val, bbox = res
+                                img_name = os.path.basename(single_tpl)
+                                return self._handle_detect_hit(
+                                    hit_name=f"圖片模板「{img_name}」(相似度 {score_val:.2f})",
+                                    hit_center=(tx, ty),
+                                    p=p,
+                                    img_shape=(img_h, img_w),
+                                    is_image=True,
+                                    template_img=single_tpl,
+                                    img_thresh=img_thresh,
+                                    img_multiscale=img_multiscale,
+                                    next_candidates=next_candidates
+                                )
                 else:
                     # 2. 文字/符號 OCR 模式
                     det_results = self.bot.scan_text(screen)
@@ -918,7 +1558,8 @@ class TaskEngine:
                                     p=p,
                                     img_shape=(img_h, img_w),
                                     raw_kws=raw_kws,
-                                    is_check=True
+                                    is_check=True,
+                                    next_candidates=next_candidates
                                 )
                             if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
                                 return self._handle_detect_hit(
@@ -927,7 +1568,8 @@ class TaskEngine:
                                     p=p,
                                     img_shape=(img_h, img_w),
                                     raw_kws=raw_kws,
-                                    is_cross=True
+                                    is_cross=True,
+                                    next_candidates=next_candidates
                                 )
 
                     # 比對關鍵字
@@ -941,7 +1583,8 @@ class TaskEngine:
                                     hit_center=item["center"],
                                     p=p,
                                     img_shape=(img_h, img_w),
-                                    raw_kws=raw_kws
+                                    raw_kws=raw_kws,
+                                    next_candidates=next_candidates
                                 )
 
             time.sleep(scan_delay)
@@ -984,6 +1627,7 @@ class TaskEngine:
 
         scan_delay = self._get_scan_interval()
         conf_thresh = self._get_confidence()
+        disable_ocr = bool(self.global_settings.get("disable_ocr", False))
         deadline = time.time() + timeout
         self._log(f"  🔀 正在判斷多分支條件 (共有 {len(branches)} 個分支, 限時 {timeout}s, 刷新速度 {scan_delay:.2f}s)...")
 
@@ -1006,20 +1650,27 @@ class TaskEngine:
                     by = _safe_int(branch.get("y", 540))
 
                     # 1. 優先判斷分支圖片模板
-                    if tpl_img and hasattr(self.bot, "match_template"):
+                    b_tpl_list = self.parse_template_images_list(tpl_img)
+                    if b_tpl_list and hasattr(self.bot, "match_template"):
                         if screen_gray is None:
                             screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
                         br_thresh = _safe_float(branch.get("threshold", 0.80), 0.80)
                         br_multi = bool(branch.get("multiscale", False))
-                        m_res = self.bot.match_template(screen_gray, tpl_img, threshold=br_thresh, multi_scale=br_multi)
-                        if m_res is not None:
-                            self._log(f"  🎯 命中分支 [{b_tag}] 圖片「{os.path.basename(tpl_img)}」(相似度 {m_res[2]:.2f}) ➜ 點擊座標 ({bx}, {by})")
+                        matched_b_res = None
+                        for single_b_tpl in b_tpl_list:
+                            m_res = self.bot.match_template(screen_gray, single_b_tpl, threshold=br_thresh, multi_scale=br_multi)
+                            if m_res is not None:
+                                matched_b_res = (single_b_tpl, m_res)
+                                break
+                        if matched_b_res is not None:
+                            hit_b_tpl, m_res = matched_b_res
+                            self._log(f"  🎯 命中分支 [{b_tag}] 圖片「{os.path.basename(hit_b_tpl)}」(相似度 {m_res[2]:.2f}) ➜ 點擊座標 ({bx}, {by})")
                             self.bot.tap(bx, by)
                             self._sleep_interruptible(delay)
                             return True
 
-                    # 2. 判斷分支關鍵字 (OCR)
-                    if kws:
+                    # 2. 判斷分支關鍵字 (OCR，僅在未關閉文字辨識時執行)
+                    if kws and not disable_ocr:
                         if det_results is None:
                             det_results = self.bot.scan_text(screen)
                         for kw in kws:
@@ -1042,7 +1693,7 @@ class TaskEngine:
             self._log("  ⏩ 所有分支皆未命中，跳過此條件區塊。")
         return True
 
-    def _exec_loop(self, p: Dict[str, Any]) -> bool:
+    def _exec_loop(self, p: Dict[str, Any], outer_candidates: Optional[List[Dict[str, Any]]] = None) -> bool:
         """迴圈容器：重複執行內部包含的積木步驟 (支援 While 條件與指定次數)"""
         stop_mode = p.get("stop_mode", "依指定次數")
         raw_kws = p.get("keywords", p.get("stop_keywords", ""))
@@ -1098,7 +1749,17 @@ class TaskEngine:
                 sb_name = sb.get("name", f"子步驟 #{s_idx + 1}")
                 sb_params = sb.get("params", {})
                 self._log(f"      👉 [{sb_name}] ({BLOCK_TYPES.get(sb_type, {}).get('title', sb_type)})")
-                ok = self.execute_block(sb_type, sb_params)
+
+                # 計算此子步驟之後的候選步驟 (供持續連點精準判斷何時跳過動畫)
+                sub_candidates = self._build_next_candidates(
+                    current_idx=s_idx,
+                    blocks=inner_blocks,
+                    is_loop=True,
+                    cycle=cycle,
+                    total_cycles=count,
+                    outer_candidates=outer_candidates
+                )
+                ok = self.execute_block(sb_type, sb_params, next_candidates=sub_candidates)
                 if not ok and sb_params.get("on_timeout") == "stop":
                     self._log(f"      ⚠️ 子步驟觸發超時終止，中斷迴圈。")
                     return False
@@ -1142,7 +1803,11 @@ class TaskEngine:
             self._sleep_interruptible(delay_after)
         return True
 
-    def _exec_wait_condition(self, p: Dict[str, Any]) -> bool:
+    def _exec_wait_condition(
+        self,
+        p: Dict[str, Any],
+        next_candidates: Optional[List[Dict[str, Any]]] = None
+    ) -> bool:
         """等待指定條件達成 (畫面出現或消失特定文字/圖片/符號)，期間依設定的頻率 (秒) 循環檢測"""
         cond_mode = p.get("cond_mode", "出現 (Wait Appear)")
         is_wait_disappear = ("消失" in cond_mode or "disappear" in cond_mode.lower())
@@ -1150,10 +1815,12 @@ class TaskEngine:
         target_type = p.get("target_type", "📝 僅文字")
         raw_kws = p.get("keywords", "")
         template_img = p.get("template_image", "").strip()
+        tpl_list = self.parse_template_images_list(template_img)
         img_thresh = _safe_float(p.get("image_threshold", 0.80), 0.80)
         img_multiscale = bool(p.get("image_multiscale", False))
+        disable_ocr = bool(self.global_settings.get("disable_ocr", False))
 
-        is_image_mode = ("圖片" in target_type or "image" in target_type.lower() or "模板" in target_type)
+        is_image_mode = ("圖片" in target_type or "image" in target_type.lower() or "模板" in target_type) and ("文字" not in target_type)
         is_check = ("打勾" in target_type or "check" in target_type.lower())
         is_cross = ("叉叉" in target_type or "cross" in target_type.lower() or "關閉" in target_type)
 
@@ -1167,10 +1834,15 @@ class TaskEngine:
 
         mode_str = "出現" if is_wait_appear else "消失"
         if is_image_mode:
-            desc = f"圖片「{os.path.basename(template_img)}」"
+            fnames = ", ".join([os.path.basename(x) for x in tpl_list])
+            desc = f"圖片「{fnames}」" if fnames else "未指定圖片模板"
         else:
             kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
             desc = f"{target_type} [{raw_kws}]" if kws else target_type
+
+        if not is_image_mode and disable_ocr:
+            self._log(f"  ⚠️ 全域已關閉文字辨識 (純圖片模式 / 0-OCR)，跳過文字條件等待【{desc}】。")
+            return False
 
         self._log(f"  ⏳ 等待「{desc}」{mode_str} (每 {interval:.2f}s 偵測一次，限時 {timeout}s)...")
 
@@ -1181,25 +1853,34 @@ class TaskEngine:
             if self._stop_event.is_set():
                 return False
 
+            # ⭐ 優先動作插隊檢查
+            if self.priority_blocks and self._check_and_exec_priority("等待條件達成中"):
+                time.sleep(0.1)
+                continue
+
             screen = self.bot.capture_screen()
             present = False
             matched_desc = ""
+            matched_tpl = ""
             hit_coord = (_safe_int(p.get("custom_x", 960)), _safe_int(p.get("custom_y", 540)))
 
             if screen is not None:
                 if is_image_mode:
-                    if template_img and hasattr(self.bot, "match_template"):
+                    if tpl_list and hasattr(self.bot, "match_template"):
                         screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-                        m_res = self.bot.match_template(
-                            screen_gray,
-                            template_img,
-                            threshold=img_thresh,
-                            multi_scale=img_multiscale
-                        )
-                        if m_res is not None:
-                            present = True
-                            hit_coord = (int(m_res[0]), int(m_res[1]))
-                            matched_desc = f"圖片「{os.path.basename(template_img)}」(相似度 {m_res[2]:.2f})"
+                        for single_tpl in tpl_list:
+                            m_res = self.bot.match_template(
+                                screen_gray,
+                                single_tpl,
+                                threshold=img_thresh,
+                                multi_scale=img_multiscale
+                            )
+                            if m_res is not None:
+                                present = True
+                                hit_coord = (int(m_res[0]), int(m_res[1]))
+                                matched_desc = f"圖片「{os.path.basename(single_tpl)}」(相似度 {m_res[2]:.2f})"
+                                matched_tpl = single_tpl
+                                break
                 else:
                     det_results = self.bot.scan_text(screen)
 
@@ -1242,12 +1923,13 @@ class TaskEngine:
                     p=p,
                     img_shape=(screen.shape[0], screen.shape[1]),
                     is_image=is_image_mode,
-                    template_img=template_img,
+                    template_img=matched_tpl if is_image_mode and matched_tpl else template_img,
                     img_thresh=img_thresh,
                     img_multiscale=img_multiscale,
                     raw_kws=raw_kws,
                     is_check=is_check,
-                    is_cross=is_cross
+                    is_cross=is_cross,
+                    next_candidates=next_candidates
                 )
             elif not is_wait_appear and not present:
                 self._log(f"  ✅ 條件達成！目標「{desc}」已消失 (耗時 {elapsed:.1f}s)")
@@ -1259,7 +1941,8 @@ class TaskEngine:
                         hit_center=(p.get("custom_x", 960), p.get("custom_y", 540)),
                         p=p,
                         img_shape=(screen.shape[0], screen.shape[1]) if screen is not None else (1080, 1920),
-                        is_image=False
+                        is_image=False,
+                        next_candidates=next_candidates
                     )
                 if delay_after > 0:
                     self._sleep_interruptible(delay_after)
@@ -1440,11 +2123,29 @@ class TaskFlowTab:
             self.var_watchdog_enabled = tk.BooleanVar(value=False)
             self.var_watchdog_seconds = tk.IntVar(value=60)
 
+        # 全域文字辨識停用開關 (純圖片 0-OCR 模式)
+        init_disable_ocr = True
+        if self.gui and hasattr(self.gui, "var_recognition_mode"):
+            init_disable_ocr = ("圖片" in self.gui.var_recognition_mode.get())
+        self.var_disable_ocr = tk.BooleanVar(value=init_disable_ocr)
+
         self._adv_open = False
         self.engine = TaskEngine(bot_instance=self.bot, log_callback=self._log, global_settings=self.get_global_settings())
         self.blocks_list: List[Dict[str, Any]] = []
+        self.priority_blocks_list: List[Dict[str, Any]] = []
         self.selected_block_idx: int = -1
         self.selected_block_target: Optional[Dict[str, Any]] = None
+        self._all_folded: bool = False
+        self._priority_folded: bool = False
+        self.frame_priority_section: Optional[ctk.CTkFrame] = None
+        self.frame_priority_container: Optional[ctk.CTkFrame] = None
+        self.frame_normal_section: Optional[ctk.CTkFrame] = None
+        self.frame_normal_container: Optional[ctk.CTkFrame] = None
+        self.lbl_prio_count = None
+        self.lbl_prio_empty = None
+        self.lbl_normal_count = None
+        self.btn_prio_fold = None
+        self.btn_all_fold = None
 
         def _on_lang_changed(*_):
             if self.bot and hasattr(self.bot, "set_allowed_languages"):
@@ -1463,6 +2164,27 @@ class TaskFlowTab:
         self.var_tg_token.trace_add("write", lambda *_: self.auto_save_config())
         self.var_tg_chat_id.trace_add("write", lambda *_: self.auto_save_config())
 
+        def _on_disable_ocr_changed(*_):
+            is_dis = bool(self.var_disable_ocr.get())
+            if hasattr(self, "engine") and self.engine:
+                self.engine.global_settings["disable_ocr"] = is_dis
+                self.engine.global_settings["recognition_mode"] = "image" if is_dis else "ocr"
+            if self.gui and hasattr(self.gui, "var_recognition_mode"):
+                mode_target = "🖼️ 圖片特徵比對模式" if is_dis else "📝 文字辨識模式"
+                if self.gui.var_recognition_mode.get() != mode_target:
+                    self.gui.var_recognition_mode.set(mode_target)
+            self._update_ocr_mode_ui()
+            self.auto_save_config()
+
+        self.var_disable_ocr.trace_add("write", _on_disable_ocr_changed)
+
+        if self.gui and hasattr(self.gui, "var_recognition_mode"):
+            def _on_gui_rec_mode_changed(*_):
+                is_img = ("圖片" in self.gui.var_recognition_mode.get())
+                if self.var_disable_ocr.get() != is_img:
+                    self.var_disable_ocr.set(is_img)
+            self.gui.var_recognition_mode.trace_add("write", _on_gui_rec_mode_changed)
+
         self.var_loop_count = tk.IntVar(value=1)
         self.var_status_text = tk.StringVar(value="🟢 閒置中")
         self.var_auto_preview = tk.BooleanVar(value=False)
@@ -1476,8 +2198,9 @@ class TaskFlowTab:
         self.raw_screen_w: int = 1920
         self.raw_screen_h: int = 1080
         self.canvas_w: int = 340
-        self.canvas_h: int = 240
+        self.canvas_h: int = 200
         self.preview_image_tk = None
+        self.log_textbox: Optional[ctk.CTkTextbox] = None
         self._resize_job = None
         self._auto_preview_job = None
         self._capturing: bool = False
@@ -1582,7 +2305,22 @@ class TaskFlowTab:
             if self.gui and hasattr(self.gui, "last_snipped_template"):
                 self.gui.last_snipped_template = saved_path
             if "template_image" in target_vp:
-                target_vp["template_image"].set(saved_path)
+                existing = target_vp["template_image"].get().strip() if hasattr(target_vp["template_image"], "get") else ""
+                if existing:
+                    should_append = messagebox.askyesno(
+                        "追加或替換",
+                        f"目前已設定模板圖片：\n{existing}\n\n是否將新裁切截圖【追加】為多圖複選？\n\n點擊「是」：追加為多圖複選\n點擊「否」：替換現有圖片",
+                        parent=self.parent
+                    )
+                    if should_append:
+                        ex_list = TaskEngine.parse_template_images_list(existing)
+                        if saved_path not in ex_list:
+                            ex_list.append(saved_path)
+                        target_vp["template_image"].set(", ".join(ex_list))
+                    else:
+                        target_vp["template_image"].set(saved_path)
+                else:
+                    target_vp["template_image"].set(saved_path)
             self.auto_save_config()
             self._log(f"✂️ 已框選並儲存模板圖片: {saved_path}")
 
@@ -1599,28 +2337,51 @@ class TaskFlowTab:
             messagebox.showerror("錯誤", f"開啟框選工具失敗: {e}", parent=self.parent)
 
     def on_browse_template_dialog(self, target_vp: Dict[str, Any]):
-        """開啟檔案選擇器選擇本機圖片"""
+        """開啟檔案選擇器選擇本機圖片 (支援單選與多圖複選)"""
         init_dir = self.presets_dir
         if self.gui and hasattr(self.gui, "storage_dir") and self.gui.storage_dir:
             init_dir = self.gui.storage_dir
-        f = filedialog.askopenfilename(
+        selected = filedialog.askopenfilenames(
             parent=self.parent,
-            title="選擇圖片模板",
+            title="選擇圖片模板 (可按住 Cmd/Shift 複選多張圖片)",
             initialdir=init_dir,
             filetypes=[("圖片檔案", "*.png *.jpg *.jpeg *.bmp"), ("所有檔案", "*.*")]
         )
-        if f:
-            abs_f = os.path.abspath(f)
-            self.last_snipped_template = abs_f
-            if self.gui and hasattr(self.gui, "last_snipped_template"):
-                self.gui.last_snipped_template = abs_f
-            if "template_image" in target_vp:
-                target_vp["template_image"].set(abs_f)
-            self.auto_save_config()
-            self._log(f"📂 已選取圖片模板: {abs_f}")
+        if not selected:
+            return
+
+        abs_files = [os.path.abspath(f) for f in selected]
+        if not abs_files:
+            return
+
+        self.last_snipped_template = abs_files[-1]
+        if self.gui and hasattr(self.gui, "last_snipped_template"):
+            self.gui.last_snipped_template = abs_files[-1]
+
+        if "template_image" in target_vp:
+            existing = target_vp["template_image"].get().strip() if hasattr(target_vp["template_image"], "get") else ""
+            if existing:
+                should_append = messagebox.askyesno(
+                    "選擇模式",
+                    f"目前已設定模板圖片：\n{existing}\n\n是否將新選取的 {len(abs_files)} 張圖片【追加】為多圖複選？\n\n點擊「是」：追加為多圖複選\n點擊「否」：替換現有圖片",
+                    parent=self.parent
+                )
+                if should_append:
+                    ex_list = TaskEngine.parse_template_images_list(existing)
+                    for f in abs_files:
+                        if f not in ex_list:
+                            ex_list.append(f)
+                    target_vp["template_image"].set(", ".join(ex_list))
+                else:
+                    target_vp["template_image"].set(", ".join(abs_files))
+            else:
+                target_vp["template_image"].set(", ".join(abs_files))
+
+        self.auto_save_config()
+        self._log(f"📂 已選取圖片模板: {', '.join([os.path.basename(f) for f in abs_files])}")
 
     def on_apply_last_snippet(self, target_vp: Dict[str, Any]):
-        """帶入最新裁切的截圖"""
+        """帶入最新裁切的截圖 (支援追加複選)"""
         target = self.last_snipped_template
         if not target and self.gui and getattr(self.gui, "last_snipped_template", ""):
             target = self.gui.last_snipped_template
@@ -1652,7 +2413,24 @@ class TaskFlowTab:
 
         self.last_snipped_template = target
         if "template_image" in target_vp:
-            target_vp["template_image"].set(target)
+            existing = target_vp["template_image"].get().strip() if hasattr(target_vp["template_image"], "get") else ""
+            if existing:
+                ex_list = TaskEngine.parse_template_images_list(existing)
+                if target not in ex_list:
+                    should_append = messagebox.askyesno(
+                        "追加或替換",
+                        f"目前已設定模板圖片：\n{existing}\n\n是否將最新截圖【追加】為多圖複選？\n\n點擊「是」：追加為多圖複選\n點擊「否」：替換現有圖片",
+                        parent=self.parent
+                    )
+                    if should_append:
+                        ex_list.append(target)
+                        target_vp["template_image"].set(", ".join(ex_list))
+                    else:
+                        target_vp["template_image"].set(target)
+                else:
+                    pass
+            else:
+                target_vp["template_image"].set(target)
         self.auto_save_config()
         self._log(f"📥 已成功帶入最新截圖: {target}")
 
@@ -1660,12 +2438,15 @@ class TaskFlowTab:
         """建立圖片特徵比對專用控制面板 (縮圖、路徑、截圖、瀏覽、帶入、門檻、多尺度)"""
         box = ctk.CTkFrame(parent_frame, fg_color="#181825", corner_radius=6, border_width=1, border_color="#334155")
 
-        # 行 1: 縮圖 + 門檻值滑桿 + 多尺度容錯
+        # 行 1: 縮圖 + 多圖計數標籤 + 門檻值滑桿 + 多尺度容錯
         row1 = ctk.CTkFrame(box, fg_color="transparent")
         row1.pack(fill="x", padx=8, pady=(4, 2))
 
         lbl_thumb = tk.Label(row1, bg="#11111B", fg=COLOR_TEXT_DIM, font=("Arial", 10), text="（未選圖）", width=8, height=2)
-        lbl_thumb.pack(side="left", padx=(0, 8))
+        lbl_thumb.pack(side="left", padx=(0, 4))
+
+        lbl_count = ctk.CTkLabel(row1, text="", font=ctk.CTkFont(family="Arial", size=10, weight="bold"), text_color="#38BDF8")
+        lbl_count.pack(side="left", padx=(0, 6))
 
         ctk.CTkLabel(row1, text="門檻:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0, 2))
         lbl_thresh_val = ctk.CTkLabel(row1, text=f"{_safe_float(vp['image_threshold'].get(), 0.80):.2f}", width=34, font=ctk.CTkFont(family="Menlo", size=11))
@@ -1698,8 +2479,17 @@ class TaskFlowTab:
         row2 = ctk.CTkFrame(box, fg_color="transparent")
         row2.pack(fill="x", padx=8, pady=(2, 5))
 
-        ctk.CTkLabel(row2, text="圖檔:", font=ctk.CTkFont(size=10, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
-        ent_img = ctk.CTkEntry(row2, textvariable=vp["template_image"], height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(size=10))
+        ctk.CTkLabel(row2, text="圖檔 (支援複選):", font=ctk.CTkFont(size=10, weight="bold"), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 4))
+        ent_img = ctk.CTkEntry(
+            row2,
+            textvariable=vp["template_image"],
+            placeholder_text="可複選多張，以逗號分隔",
+            height=24,
+            corner_radius=4,
+            fg_color=COLOR_INPUT_BG,
+            border_color=COLOR_INPUT_BORDER,
+            font=ctk.CTkFont(size=10)
+        )
         ent_img.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         init_name = block_dict["name"].get() if (block_dict and "name" in block_dict and hasattr(block_dict["name"], "get")) else "btn_task"
@@ -1748,12 +2538,20 @@ class TaskFlowTab:
             if not img_val:
                 lbl_thumb.configure(image="", text="（未選圖）", fg=COLOR_TEXT_DIM, width=8, height=2)
                 lbl_thumb.image = None
+                lbl_count.configure(text="")
                 vp.pop("_thumb_img", None)
                 return
-            full_p = self.resolve_image_path(img_val)
-            if full_p and os.path.exists(full_p):
+
+            img_list = TaskEngine.parse_template_images_list(img_val)
+            if len(img_list) > 1:
+                lbl_count.configure(text=f"[{len(img_list)}張複選]")
+            else:
+                lbl_count.configure(text="")
+
+            first_p = self.resolve_image_path(img_list[0]) if img_list else None
+            if first_p and os.path.exists(first_p):
                 try:
-                    bgr = imread_unicode(full_p)
+                    bgr = imread_unicode(first_p)
                     if bgr is not None:
                         th_h, th_w = bgr.shape[:2]
                         max_dim = 36
@@ -1769,7 +2567,7 @@ class TaskFlowTab:
                         return
                 except Exception:
                     pass
-            lbl_thumb.configure(image="", text="⚠️ 缺檔", fg="#EF4444", width=8, height=2)
+            lbl_thumb.configure(image="", text=f"⚠️ {len(img_list)}張" if len(img_list) > 1 else "⚠️ 缺檔", fg="#EF4444", width=8, height=2)
             lbl_thumb.image = None
             vp.pop("_thumb_img", None)
 
@@ -1780,6 +2578,7 @@ class TaskFlowTab:
         return box
 
     def get_global_settings(self) -> Dict[str, Any]:
+        dis_ocr = bool(self.var_disable_ocr.get()) if hasattr(self, "var_disable_ocr") else True
         return {
             "interval": _safe_float(self.var_interval.get(), 2.5),
             "confidence": _safe_float(self.var_confidence.get(), 0.65),
@@ -1791,11 +2590,61 @@ class TaskFlowTab:
             "tg_chat_id": self.var_tg_chat_id.get().strip(),
             "watchdog_enabled": bool(self.var_watchdog_enabled.get()),
             "watchdog_seconds": _safe_int(self.var_watchdog_seconds.get(), 60),
+            "disable_ocr": dis_ocr,
+            "recognition_mode": "image" if dis_ocr else "ocr",
         }
 
+    def toggle_ocr_mode(self):
+        new_val = not self.var_disable_ocr.get()
+        self.var_disable_ocr.set(new_val)
+        mode_str = "🖼️ 純圖片模式 (0-OCR / 極致節能 / 杜絕文字誤判)" if new_val else "🔤 文字 OCR 辨識模式"
+        self._log(f"🔄 辨識模式已切換為：{mode_str}")
+
+    def _update_ocr_mode_ui(self):
+        is_dis = bool(self.var_disable_ocr.get()) if hasattr(self, "var_disable_ocr") else True
+        if hasattr(self, "btn_ocr_mode") and self.btn_ocr_mode:
+            if is_dis:
+                self.btn_ocr_mode.configure(
+                    text="🖼️ 純圖片 (0-OCR)",
+                    fg_color="#059669",
+                    hover_color="#047857"
+                )
+            else:
+                self.btn_ocr_mode.configure(
+                    text="🔤 文字 OCR",
+                    fg_color="#3B82F6",
+                    hover_color="#2563EB"
+                )
+        if hasattr(self, "lbl_lang_warning") and self.lbl_lang_warning:
+            if is_dis:
+                self.lbl_lang_warning.configure(text="（已啟用純圖片 0-OCR 模式，完全跳過文字辨識與語言掃描）", text_color="#10B981")
+            else:
+                self.lbl_lang_warning.configure(text="", text_color=COLOR_TEXT_DIM)
+
     def _log(self, msg: str):
+        now_str = datetime.datetime.now().strftime("%H:%M:%S")
+        log_line = f"[{now_str}] {msg}"
+        if hasattr(self, "log_textbox") and self.log_textbox:
+            def _append():
+                try:
+                    self.log_textbox.configure(state="normal")
+                    self.log_textbox.insert("end", log_line + "\n")
+                    self.log_textbox.see("end")
+                    self.log_textbox.configure(state="disabled")
+                except Exception:
+                    pass
+            if threading.current_thread() is threading.main_thread():
+                _append()
+            elif hasattr(self, "parent") and self.parent:
+                try:
+                    self.parent.after(0, _append)
+                except Exception:
+                    pass
         if self.log_callback:
-            self.log_callback(msg)
+            try:
+                self.log_callback(msg)
+            except Exception:
+                pass
 
     def _build_ui(self):
         container = ctk.CTkFrame(self.parent, fg_color="transparent")
@@ -1822,13 +2671,18 @@ class TaskFlowTab:
         card_palette = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
         card_palette.pack(fill="x", pady=(0, 8))
 
+        hdr_box = ctk.CTkFrame(card_palette, fg_color="transparent")
+        hdr_box.pack(fill="x", padx=12, pady=(10, 2))
+
         lbl_hdr = ctk.CTkLabel(
-            card_palette,
+            hdr_box,
             text="🧩 積木工具庫",
             font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
             text_color=COLOR_TEXT_PRIMARY
         )
-        lbl_hdr.pack(anchor="w", padx=12, pady=(10, 2))
+        lbl_hdr.pack(side="left")
+
+        self._palette_open = True
 
         lbl_tip = ctk.CTkLabel(
             card_palette,
@@ -1838,8 +2692,45 @@ class TaskFlowTab:
         )
         lbl_tip.pack(anchor="w", padx=12, pady=(0, 6))
 
-        box_blocks = ctk.CTkFrame(card_palette, fg_color="transparent")
-        box_blocks.pack(fill="x", padx=10, pady=(0, 10))
+        box_blocks = ctk.CTkScrollableFrame(card_palette, fg_color="transparent", height=190)
+        box_blocks.pack(fill="x", padx=8, pady=(0, 8))
+
+        def _toggle_palette():
+            self._palette_open = not self._palette_open
+            if self._palette_open:
+                lbl_tip.pack(anchor="w", padx=12, pady=(0, 6))
+                box_blocks.pack(fill="x", padx=8, pady=(0, 8))
+                btn_fold.configure(text="▾")
+            else:
+                lbl_tip.pack_forget()
+                box_blocks.pack_forget()
+                btn_fold.configure(text="▸")
+
+        btn_fold = ctk.CTkButton(
+            hdr_box,
+            text="▾",
+            width=26,
+            height=20,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=_toggle_palette
+        )
+        btn_fold.pack(side="right")
+
+        btn_prio_fast = ctk.CTkButton(
+            box_blocks,
+            text="⭐ [優先] 優先辨識步驟 ＋",
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
+            fg_color="#D97706",
+            hover_color="#B45309",
+            height=30,
+            corner_radius=6,
+            anchor="w",
+            command=self.on_add_priority_block
+        )
+        btn_prio_fast.pack(fill="x", pady=(0, 4))
 
         for b_type, info in BLOCK_TYPES.items():
             btn = ctk.CTkButton(
@@ -1863,8 +2754,8 @@ class TaskFlowTab:
 
         lbl_pre = ctk.CTkLabel(
             tool_pre,
-            text="💾 任務存檔管理",
-            font=ctk.CTkFont(family="Arial", size=13, weight="bold"),
+            text="💾 任務存檔",
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
             text_color=COLOR_TEXT_PRIMARY
         )
         lbl_pre.pack(side="left")
@@ -1872,21 +2763,21 @@ class TaskFlowTab:
         btn_new_pre = ctk.CTkButton(
             tool_pre,
             text="💾 存檔",
-            width=54,
-            height=26,
+            width=48,
+            height=24,
             corner_radius=6,
             font=ctk.CTkFont(size=11, weight="bold"),
             fg_color=COLOR_BTN_PRIMARY,
             hover_color=COLOR_BTN_PRIMARY_HOVER,
             command=self.on_save_config_dialog
         )
-        btn_new_pre.pack(side="right", padx=(4, 0))
+        btn_new_pre.pack(side="right", padx=(3, 0))
 
         btn_load = ctk.CTkButton(
             tool_pre,
             text="📂 載入",
-            width=54,
-            height=26,
+            width=48,
+            height=24,
             corner_radius=6,
             font=ctk.CTkFont(size=11),
             fg_color=COLOR_BTN_DARK,
@@ -2010,16 +2901,20 @@ class TaskFlowTab:
         card.pack(fill="both", expand=True)
 
         tb = ctk.CTkFrame(card, fg_color="transparent")
-        tb.pack(fill="x", padx=10, pady=(10, 6))
+        tb.pack(fill="x", padx=10, pady=(8, 4))
         self.bar_tb = tb
 
+        # 第一行：主要執行控制 (啟動、單步、停止、循環、進階設定、OCR開關)
+        tb_row1 = ctk.CTkFrame(tb, fg_color="transparent")
+        tb_row1.pack(fill="x", pady=(0, 4))
+
         self.btn_run = ctk.CTkButton(
-            tb,
-            text="▶ 全部執行",
+            tb_row1,
+            text="▶ 啟動任務",
             width=88,
-            height=32,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
             fg_color=COLOR_BTN_START,
             hover_color=COLOR_BTN_START_HOVER,
             command=self.on_run_tasks
@@ -2027,12 +2922,12 @@ class TaskFlowTab:
         self.btn_run.pack(side="left", padx=(0, 4))
 
         self.btn_step = ctk.CTkButton(
-            tb,
+            tb_row1,
             text="👣 單步",
-            width=62,
-            height=32,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            width=58,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
             fg_color=COLOR_BTN_PRIMARY,
             hover_color=COLOR_BTN_PRIMARY_HOVER,
             command=self.on_step_task
@@ -2040,28 +2935,28 @@ class TaskFlowTab:
         self.btn_step.pack(side="left", padx=(0, 4))
 
         self.btn_stop = ctk.CTkButton(
-            tb,
+            tb_row1,
             text="⏹ 停止",
             width=62,
-            height=32,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
             fg_color=COLOR_BTN_STOP,
             hover_color=COLOR_BTN_STOP_HOVER,
             state="disabled",
             command=self.on_stop_tasks
         )
-        self.btn_stop.pack(side="left", padx=(0, 8))
+        self.btn_stop.pack(side="left", padx=(0, 6))
 
-        ctk.CTkLabel(tb, text="循環:", font=ctk.CTkFont(size=12), text_color=COLOR_TEXT_PRIMARY).pack(side="left")
-        ent_loop = ctk.CTkEntry(tb, textvariable=self.var_loop_count, width=44, height=28, corner_radius=6, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
-        ent_loop.pack(side="left", padx=(4, 2))
-        ctk.CTkLabel(tb, text="次(0=無限)", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(tb_row1, text="循環:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_PRIMARY).pack(side="left")
+        ent_loop = ctk.CTkEntry(tb_row1, textvariable=self.var_loop_count, width=38, height=26, corner_radius=5, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(family="Menlo", size=11))
+        ent_loop.pack(side="left", padx=(3, 2))
+        ctk.CTkLabel(tb_row1, text="次", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
 
         self.btn_adv = ctk.CTkButton(
-            tb,
-            text="進階設定 ▸",
-            width=82,
+            tb_row1,
+            text="⚙️ 進階 ▸",
+            width=68,
             height=28,
             corner_radius=6,
             font=ctk.CTkFont(size=11),
@@ -2069,13 +2964,58 @@ class TaskFlowTab:
             hover_color=COLOR_BTN_DARK_HOVER,
             command=self._toggle_advanced
         )
-        self.btn_adv.pack(side="left", padx=(2, 0))
+        self.btn_adv.pack(side="left", padx=(0, 4))
+
+        # 辨識模式一鍵切換開關 (純圖片 0-OCR vs 文字 OCR)
+        self.btn_ocr_mode = ctk.CTkButton(
+            tb_row1,
+            text="🖼️ 純圖片 (0-OCR)" if self.var_disable_ocr.get() else "🔤 文字 OCR",
+            width=96,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#059669" if self.var_disable_ocr.get() else "#3B82F6",
+            hover_color="#047857" if self.var_disable_ocr.get() else "#2563EB",
+            command=self.toggle_ocr_mode
+        )
+        self.btn_ocr_mode.pack(side="right")
+
+        # 第二行：步驟與存檔操作 (＋優先辨識、全部收合、存檔、載入、清空)
+        tb_row2 = ctk.CTkFrame(tb, fg_color="transparent")
+        tb_row2.pack(fill="x")
+
+        self.btn_add_prio = ctk.CTkButton(
+            tb_row2,
+            text="⚡ ＋優先辨識",
+            width=92,
+            height=26,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#D97706",
+            hover_color="#B45309",
+            text_color="#FFFFFF",
+            command=self.on_add_priority_block
+        )
+        self.btn_add_prio.pack(side="left", padx=(0, 4))
+
+        self.btn_all_fold = ctk.CTkButton(
+            tb_row2,
+            text="📁 全部收合",
+            width=76,
+            height=26,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self.toggle_all_fold
+        )
+        self.btn_all_fold.pack(side="left", padx=(0, 6))
 
         btn_clear = ctk.CTkButton(
-            tb,
-            text="清空",
-            width=46,
-            height=28,
+            tb_row2,
+            text="🗑️ 清空",
+            width=52,
+            height=26,
             corner_radius=6,
             font=ctk.CTkFont(size=11),
             fg_color="#EF4444",
@@ -2085,10 +3025,10 @@ class TaskFlowTab:
         btn_clear.pack(side="right")
 
         btn_load = ctk.CTkButton(
-            tb,
-            text="載入",
-            width=46,
-            height=28,
+            tb_row2,
+            text="📂 載入",
+            width=52,
+            height=26,
             corner_radius=6,
             font=ctk.CTkFont(size=11),
             fg_color=COLOR_BTN_DARK,
@@ -2098,10 +3038,10 @@ class TaskFlowTab:
         btn_load.pack(side="right", padx=(4, 4))
 
         btn_save = ctk.CTkButton(
-            tb,
-            text="存檔",
-            width=46,
-            height=28,
+            tb_row2,
+            text="💾 存檔",
+            width=52,
+            height=26,
             corner_radius=6,
             font=ctk.CTkFont(size=11),
             fg_color=COLOR_BTN_DARK,
@@ -2134,7 +3074,143 @@ class TaskFlowTab:
         self.scroll_blocks = ctk.CTkScrollableFrame(card, fg_color=COLOR_INPUT_BG, corner_radius=8)
         self.scroll_blocks.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        self.inner_blocks = self.scroll_blocks
+        # 極速滑順滾動優化 (Mac/Windows 滾輪加速與 O(1) 座標檢測，杜絕卡頓)
+        def _fast_check_if_valid_scroll(widget):
+            try:
+                if widget in (self.scroll_blocks, getattr(self.scroll_blocks, "_parent_canvas", None), getattr(self.scroll_blocks, "_parent_frame", None)):
+                    return True
+                rx = self.scroll_blocks.winfo_rootx()
+                ry = self.scroll_blocks.winfo_rooty()
+                rw = self.scroll_blocks.winfo_width()
+                rh = self.scroll_blocks.winfo_height()
+                px = self.scroll_blocks.winfo_pointerx()
+                py = self.scroll_blocks.winfo_pointery()
+                return (rx <= px <= rx + rw) and (ry <= py <= ry + rh)
+            except Exception:
+                return True
+
+        def _fast_mouse_wheel_all(event):
+            if not _fast_check_if_valid_scroll(event.widget):
+                return
+            canvas = getattr(self.scroll_blocks, "_parent_canvas", None)
+            if not canvas:
+                return
+            try:
+                if sys.platform.startswith("darwin"):
+                    delta = event.delta
+                    raw_step = -delta * 4.5
+                    step = int(raw_step)
+                    if step == 0 and delta != 0:
+                        step = -1 if delta > 0 else 1
+                    if step != 0:
+                        canvas.yview_scroll(step, "units")
+                elif sys.platform.startswith("win"):
+                    step = -int(event.delta / 120 * 4)
+                    canvas.yview_scroll(step, "units")
+                else:
+                    if event.num == 4:
+                        canvas.yview_scroll(-3, "units")
+                    elif event.num == 5:
+                        canvas.yview_scroll(3, "units")
+            except Exception:
+                pass
+
+        self.scroll_blocks._check_if_valid_scroll = _fast_check_if_valid_scroll
+        self.scroll_blocks._mouse_wheel_all = _fast_mouse_wheel_all
+
+        # --- 1. ⭐ 優先辨識區塊 (Priority Section) ---
+        self.frame_priority_section = ctk.CTkFrame(
+            self.scroll_blocks,
+            fg_color="#211d13",
+            corner_radius=8,
+            border_width=1,
+            border_color="#F59E0B"
+        )
+        self.frame_priority_section.pack(fill="x", padx=4, pady=(2, 6))
+
+        hdr_prio = ctk.CTkFrame(self.frame_priority_section, fg_color="#382907", corner_radius=6, height=32)
+        hdr_prio.pack(fill="x", padx=4, pady=4)
+
+        ctk.CTkLabel(
+            hdr_prio,
+            text="⭐ 優先辨識區塊 (優先級大於下方所有步驟)",
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            text_color="#FBBF24"
+        ).pack(side="left", padx=(8, 4))
+
+        self.lbl_prio_count = ctk.CTkLabel(
+            hdr_prio,
+            text="(0 個優先步驟)",
+            font=ctk.CTkFont(family="Arial", size=11),
+            text_color="#FDE68A"
+        )
+        self.lbl_prio_count.pack(side="left", padx=2)
+
+        self.btn_prio_fold = ctk.CTkButton(
+            hdr_prio,
+            text="▼",
+            width=24,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10),
+            fg_color="#D97706",
+            hover_color="#B45309",
+            command=self.toggle_priority_section_fold
+        )
+        self.btn_prio_fold.pack(side="right", padx=(2, 4))
+
+        btn_add_prio_inner = ctk.CTkButton(
+            hdr_prio,
+            text="⚡ ＋新增優先步驟",
+            width=100,
+            height=22,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#F59E0B",
+            hover_color="#D97706",
+            text_color="#000000",
+            command=self.on_add_priority_block
+        )
+        btn_add_prio_inner.pack(side="right", padx=(2, 4))
+
+        self.frame_priority_container = ctk.CTkFrame(self.frame_priority_section, fg_color="transparent")
+        self.frame_priority_container.pack(fill="x", padx=4, pady=(0, 4))
+
+        self.lbl_prio_empty = ctk.CTkLabel(
+            self.frame_priority_container,
+            text="尚無優先辨識步驟。\n點擊上方「⚡ ＋新增優先步驟」或將下方積木「⭐ 設為優先」，\n在此區塊中的步驟將在每一步驟執行前、連點跳過中途及等待期間優先辨識並執行！",
+            font=ctk.CTkFont(size=11),
+            text_color="#A6ADC8",
+            justify="center"
+        )
+        self.lbl_prio_empty.pack(fill="x", padx=12, pady=8)
+
+        # --- 2. 🔄 一般流程步驟區塊 (Normal Section) ---
+        self.frame_normal_section = ctk.CTkFrame(self.scroll_blocks, fg_color="transparent")
+        self.frame_normal_section.pack(fill="both", expand=True, padx=0, pady=(2, 4))
+
+        hdr_norm = ctk.CTkFrame(self.frame_normal_section, fg_color="#181825", corner_radius=6, height=28)
+        hdr_norm.pack(fill="x", padx=4, pady=(2, 4))
+
+        ctk.CTkLabel(
+            hdr_norm,
+            text="🔄 一般流程步驟 (依序循環執行)",
+            font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+            text_color="#93C5FD"
+        ).pack(side="left", padx=(8, 4))
+
+        self.lbl_normal_count = ctk.CTkLabel(
+            hdr_norm,
+            text="(0 個步驟)",
+            font=ctk.CTkFont(family="Arial", size=11),
+            text_color="#94A3B8"
+        )
+        self.lbl_normal_count.pack(side="left", padx=2)
+
+        self.frame_normal_container = ctk.CTkFrame(self.frame_normal_section, fg_color="transparent")
+        self.frame_normal_container.pack(fill="both", expand=True, padx=0, pady=0)
+
+        self.inner_blocks = self.frame_normal_container
         self.canvas_blocks = getattr(self.scroll_blocks, "_parent_canvas", self.scroll_blocks)
 
     def _build_advanced_panel(self, parent):
@@ -2192,16 +3268,33 @@ class TaskFlowTab:
         )
         cbo_idle.grid(row=3, column=1, sticky="w", padx=6, pady=3)
 
-        ctk.CTkLabel(inner, text="語言辨識:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).grid(row=4, column=0, sticky="w", pady=3)
+        ctk.CTkLabel(inner, text="辨識模式:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).grid(row=4, column=0, sticky="w", pady=3)
+        row_ocr_mode = ctk.CTkFrame(inner, fg_color="transparent")
+        row_ocr_mode.grid(row=4, column=1, sticky="w", padx=6, pady=3)
+        ctk.CTkCheckBox(
+            row_ocr_mode,
+            text="🚫 純圖片 0-OCR 模式 (關閉文字辨識 / 杜絕誤判)",
+            variable=self.var_disable_ocr,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#10B981",
+            checkbox_width=16,
+            checkbox_height=16
+        ).pack(side="left")
+
+        ctk.CTkLabel(inner, text="語言辨識:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).grid(row=5, column=0, sticky="w", pady=3)
         row_lang = ctk.CTkFrame(inner, fg_color="transparent")
-        row_lang.grid(row=4, column=1, sticky="w", padx=6, pady=3)
+        row_lang.grid(row=5, column=1, sticky="w", padx=6, pady=3)
         ctk.CTkCheckBox(row_lang, text="繁中", variable=self.var_lang_tc, font=ctk.CTkFont(size=11), width=56, checkbox_width=16, checkbox_height=16).pack(side="left", padx=(0, 6))
         ctk.CTkCheckBox(row_lang, text="簡中", variable=self.var_lang_sc, font=ctk.CTkFont(size=11), width=56, checkbox_width=16, checkbox_height=16).pack(side="left", padx=(0, 6))
         ctk.CTkCheckBox(row_lang, text="英文/數字", variable=self.var_lang_en, font=ctk.CTkFont(size=11), width=80, checkbox_width=16, checkbox_height=16).pack(side="left")
 
-        ctk.CTkLabel(inner, text="Telegram:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).grid(row=5, column=0, sticky="w", pady=3)
+        self.lbl_lang_warning = ctk.CTkLabel(row_lang, text="", font=ctk.CTkFont(size=10), text_color="#10B981")
+        self.lbl_lang_warning.pack(side="left", padx=(8, 0))
+        self._update_ocr_mode_ui()
+
+        ctk.CTkLabel(inner, text="Telegram:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).grid(row=6, column=0, sticky="w", pady=3)
         row_tg = ctk.CTkFrame(inner, fg_color="transparent")
-        row_tg.grid(row=5, column=1, sticky="w", padx=6, pady=3)
+        row_tg.grid(row=6, column=1, sticky="w", padx=6, pady=3)
 
         ctk.CTkLabel(row_tg, text="Token:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
         ctk.CTkEntry(row_tg, textvariable=self.var_tg_token, width=120, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
@@ -2253,18 +3346,50 @@ class TaskFlowTab:
         if success:
             self._log("✅ 測試請求已送出，請檢查 Telegram 聊天室！")
 
+    def _toggle_preview_canvas(self):
+        """展開或收合預覽畫布 (小螢幕下收合畫布可讓日誌終端全展開)"""
+        self._preview_open = not getattr(self, "_preview_open", True)
+        if self._preview_open:
+            if hasattr(self, "preview_holder"):
+                self.preview_holder.pack(fill="x", expand=False, padx=10, pady=(4, 4), before=self.coord_box)
+            if hasattr(self, "coord_box"):
+                self.coord_box.pack(fill="x", padx=10, pady=(0, 4), before=self.card_log)
+            if hasattr(self, "btn_fold_preview"):
+                self.btn_fold_preview.configure(text="畫布 ▾")
+        else:
+            if hasattr(self, "preview_holder"):
+                self.preview_holder.pack_forget()
+            if hasattr(self, "coord_box"):
+                self.coord_box.pack_forget()
+            if hasattr(self, "btn_fold_preview"):
+                self.btn_fold_preview.configure(text="畫布 ▸")
+
     def _build_picker_panel(self, parent):
         card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
         card.pack(fill="both", expand=True)
+        self._preview_open = True
 
         tools = ctk.CTkFrame(card, fg_color="transparent")
         tools.pack(fill="x", padx=10, pady=(10, 6))
 
+        self.btn_fold_preview = ctk.CTkButton(
+            tools,
+            text="畫布 ▾",
+            width=52,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=self._toggle_preview_canvas
+        )
+        self.btn_fold_preview.pack(side="left", padx=(0, 4))
+
         self.btn_capture = ctk.CTkButton(
             tools,
             text="📸 截圖",
-            width=76,
-            height=30,
+            width=68,
+            height=28,
             corner_radius=6,
             font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
             fg_color=COLOR_BTN_PRIMARY,
@@ -2275,13 +3400,13 @@ class TaskFlowTab:
 
         sw_auto = ctk.CTkSwitch(
             tools,
-            text="自動刷新",
+            text="自動",
             variable=self.var_auto_preview,
             font=ctk.CTkFont(size=11),
             command=self.on_toggle_auto_refresh,
-            width=80
+            width=65
         )
-        sw_auto.pack(side="left", padx=8)
+        sw_auto.pack(side="left", padx=6)
 
         self.lbl_coord_rt = ctk.CTkLabel(
             tools,
@@ -2291,9 +3416,9 @@ class TaskFlowTab:
         )
         self.lbl_coord_rt.pack(side="right")
 
-        self.preview_holder = tk.Frame(card, width=340, height=240, bg="#181825")
+        self.preview_holder = tk.Frame(card, width=340, height=200, bg="#181825")
         self.preview_holder.pack_propagate(False)
-        self.preview_holder.pack(fill="both", expand=True, padx=10, pady=(4, 6))
+        self.preview_holder.pack(fill="x", expand=False, padx=10, pady=(4, 4))
         self.preview_holder.bind("<Configure>", self._on_preview_resize)
 
         self.lbl_canvas = tk.Label(
@@ -2311,24 +3436,25 @@ class TaskFlowTab:
         self.lbl_canvas.bind("<Button-1>", self._on_preview_click)
 
         coord_box = ctk.CTkFrame(card, fg_color="transparent")
-        coord_box.pack(fill="x", padx=10, pady=(0, 10))
+        coord_box.pack(fill="x", padx=10, pady=(0, 4))
+        self.coord_box = coord_box
 
         lbl_c = ctk.CTkLabel(
             coord_box,
             textvariable=self.var_picked_coord,
-            font=ctk.CTkFont(family="Menlo", size=12, weight="bold"),
+            font=ctk.CTkFont(family="Menlo", size=11, weight="bold"),
             text_color="#38BDF8"
         )
-        lbl_c.pack(anchor="w", pady=(0, 4))
+        lbl_c.pack(anchor="w", pady=(0, 2))
 
         row_fill = ctk.CTkFrame(coord_box, fg_color="transparent")
-        row_fill.pack(fill="x", pady=2)
+        row_fill.pack(fill="x", pady=0)
 
         btn_fill_sel = ctk.CTkButton(
             row_fill,
             text="填入選取的積木",
             font=ctk.CTkFont(size=11, weight="bold"),
-            height=28,
+            height=26,
             corner_radius=6,
             fg_color=COLOR_BTN_PRIMARY,
             hover_color=COLOR_BTN_PRIMARY_HOVER,
@@ -2340,7 +3466,7 @@ class TaskFlowTab:
             row_fill,
             text="複製",
             width=50,
-            height=28,
+            height=26,
             corner_radius=6,
             font=ctk.CTkFont(size=11),
             fg_color=COLOR_BTN_DARK,
@@ -2349,45 +3475,53 @@ class TaskFlowTab:
         )
         btn_copy.pack(side="right")
 
-        row_cond = ctk.CTkFrame(coord_box, fg_color="transparent")
-        row_cond.pack(fill="x", pady=2)
+        # 📜 即時執行日誌面板
+        card_log = ctk.CTkFrame(card, fg_color=COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color="#313244")
+        card_log.pack(fill="both", expand=True, padx=10, pady=(2, 8))
+        self.card_log = card_log
 
-        btn_if = ctk.CTkButton(
-            row_cond,
-            text="填入 If",
-            font=ctk.CTkFont(size=11),
-            height=26,
-            corner_radius=6,
-            fg_color="#D97706",
-            hover_color="#B45309",
-            command=lambda: self.on_fill_branch_coord(0)
-        )
-        btn_if.pack(side="left", fill="x", expand=True, padx=(0, 2))
+        log_header = ctk.CTkFrame(card_log, fg_color="transparent")
+        log_header.pack(fill="x", padx=8, pady=(6, 4))
 
-        btn_elif = ctk.CTkButton(
-            row_cond,
-            text="填入 Else If 1",
-            font=ctk.CTkFont(size=11),
-            height=26,
-            corner_radius=6,
-            fg_color="#2563EB",
-            hover_color="#1D4ED8",
-            command=lambda: self.on_fill_branch_coord(1)
-        )
-        btn_elif.pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ctk.CTkLabel(
+            log_header,
+            text="📜 執行日誌 (Task Log)",
+            font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
+            text_color="#FBBF24"
+        ).pack(side="left")
 
-        btn_else = ctk.CTkButton(
-            row_cond,
-            text="填入 Else",
-            width=68,
-            height=26,
-            corner_radius=6,
-            font=ctk.CTkFont(size=11),
-            fg_color="#475569",
-            hover_color="#334155",
-            command=lambda: self.on_fill_branch_coord("else")
+        def _clear_log():
+            try:
+                self.log_textbox.configure(state="normal")
+                self.log_textbox.delete("1.0", "end")
+                self.log_textbox.configure(state="disabled")
+            except Exception:
+                pass
+
+        btn_clear_log = ctk.CTkButton(
+            log_header,
+            text="清除",
+            width=42,
+            height=20,
+            corner_radius=4,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLOR_BTN_DARK,
+            hover_color=COLOR_BTN_DARK_HOVER,
+            command=_clear_log
         )
-        btn_else.pack(side="right")
+        btn_clear_log.pack(side="right")
+
+        self.log_textbox = ctk.CTkTextbox(
+            card_log,
+            fg_color="#11111b",
+            text_color="#CDD6F4",
+            font=ctk.CTkFont(family="Menlo", size=10),
+            corner_radius=6,
+            border_width=0,
+            wrap="word"
+        )
+        self.log_textbox.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.log_textbox.configure(state="disabled")
 
     def add_block(
         self,
@@ -2395,16 +3529,26 @@ class TaskFlowTab:
         params: Optional[Dict[str, Any]] = None,
         name: str = "",
         enabled: bool = True,
-        parent_loop: Optional[Dict[str, Any]] = None
+        parent_loop: Optional[Dict[str, Any]] = None,
+        is_priority: bool = False,
+        expanded: Optional[bool] = None
     ) -> Dict[str, Any]:
         info = BLOCK_TYPES.get(b_type, BLOCK_TYPES["tap_coord"])
         if params is None:
             params = dict(info["default_params"])
         if not name:
-            if parent_loop:
+            if is_priority:
+                name = f"優先{info['default_name']} #{len(self.priority_blocks_list) + 1}"
+            elif parent_loop:
                 name = f"{info['default_name']} #{len(parent_loop.get('inner_blocks_list', [])) + 1}"
             else:
                 name = f"{info['default_name']} #{len(self.blocks_list) + 1}"
+
+        init_exp = True
+        if expanded is not None:
+            init_exp = bool(expanded)
+        elif isinstance(params, dict) and "expanded" in params:
+            init_exp = bool(params.get("expanded"))
 
         block_item = {
             "type": b_type,
@@ -2413,14 +3557,17 @@ class TaskFlowTab:
             "params": params,
             "var_params": {},
             "frame": None,
-            "expanded": tk.BooleanVar(value=True),
+            "expanded": tk.BooleanVar(value=init_exp),
             "parent_loop": parent_loop,
             "inner_blocks_list": [],
+            "is_priority": is_priority
         }
 
-        self._render_block_widget(block_item, parent_loop=parent_loop)
+        self._render_block_widget(block_item, parent_loop=parent_loop, is_priority=is_priority)
 
-        if parent_loop:
+        if is_priority:
+            self.priority_blocks_list.append(block_item)
+        elif parent_loop:
             parent_loop.setdefault("inner_blocks_list", []).append(block_item)
         else:
             self.blocks_list.append(block_item)
@@ -2438,10 +3585,103 @@ class TaskFlowTab:
         self._renumber_blocks()
         self.auto_save_config()
 
-        if parent_loop is None:
+        if parent_loop is None and not is_priority:
             self.parent.after(50, lambda: getattr(self.canvas_blocks, "yview_moveto", lambda *_: None)(1.0))
 
         return block_item
+
+    def on_add_priority_block(self):
+        """快捷加入優先辨識步驟"""
+        return self.add_block(
+            b_type="detect_click",
+            name=f"優先辨識 #{len(self.priority_blocks_list) + 1}",
+            is_priority=True
+        )
+
+    def promote_to_priority(self, block_item: Dict[str, Any]):
+        """將一般步驟提升為優先辨識步驟"""
+        if block_item not in self.blocks_list:
+            return
+        self.blocks_list.remove(block_item)
+        self.priority_blocks_list.append(block_item)
+        block_item["is_priority"] = True
+        if block_item.get("frame"):
+            block_item["frame"].destroy()
+        self._render_block_widget(block_item, is_priority=True)
+        self._renumber_blocks()
+        self.auto_save_config()
+        self._log(f"⭐ 已將步驟 [{block_item['name'].get()}] 升級為【優先辨識】步驟！")
+
+    def demote_to_normal(self, block_item: Dict[str, Any]):
+        """將優先辨識步驟降級為一般流程步驟"""
+        if block_item not in self.priority_blocks_list:
+            return
+        self.priority_blocks_list.remove(block_item)
+        self.blocks_list.append(block_item)
+        block_item["is_priority"] = False
+        if block_item.get("frame"):
+            block_item["frame"].destroy()
+        self._render_block_widget(block_item, is_priority=False)
+        self._renumber_blocks()
+        self.auto_save_config()
+        self._log(f"⬇ 已將步驟 [{block_item['name'].get()}] 移回【一般流程步驟】。")
+
+    def toggle_block_fold(self, block_item: Dict[str, Any]):
+        """單一積木收合/展開切換"""
+        body = block_item.get("body_frame")
+        btn_fold = block_item.get("btn_fold")
+        if not body:
+            return
+        is_now_expanded = bool(block_item["expanded"].get())
+        new_expanded = not is_now_expanded
+        block_item["expanded"].set(new_expanded)
+        if new_expanded:
+            body.pack(fill="x", padx=6, pady=(2, 6))
+            if btn_fold:
+                btn_fold.configure(text="▼")
+        else:
+            body.pack_forget()
+            if btn_fold:
+                btn_fold.configure(text="▶")
+
+    def _set_block_fold(self, block_item: Dict[str, Any], is_expanded: bool):
+        block_item["expanded"].set(is_expanded)
+        body = block_item.get("body_frame")
+        btn_fold = block_item.get("btn_fold")
+        if body:
+            if is_expanded:
+                body.pack(fill="x", padx=6, pady=(2, 6))
+                if btn_fold:
+                    btn_fold.configure(text="▼")
+            else:
+                body.pack_forget()
+                if btn_fold:
+                    btn_fold.configure(text="▶")
+
+    def toggle_all_fold(self):
+        """全部積木收合/展開切換，解決多積木時滑動卡頓"""
+        self._all_folded = not getattr(self, "_all_folded", False)
+        new_state = not self._all_folded
+        if hasattr(self, "btn_all_fold") and self.btn_all_fold:
+            self.btn_all_fold.configure(text="📂 全部展開" if self._all_folded else "📁 全部收合")
+        for b in self.priority_blocks_list:
+            self._set_block_fold(b, new_state)
+        for b in self.blocks_list:
+            self._set_block_fold(b, new_state)
+            for cb in b.get("inner_blocks_list", []):
+                self._set_block_fold(cb, new_state)
+
+    def toggle_priority_section_fold(self):
+        """收合/展開優先辨識區塊"""
+        self._priority_folded = not getattr(self, "_priority_folded", False)
+        if self._priority_folded:
+            self.frame_priority_container.pack_forget()
+            if self.btn_prio_fold:
+                self.btn_prio_fold.configure(text="▶")
+        else:
+            self.frame_priority_container.pack(fill="x", padx=4, pady=(0, 4))
+            if self.btn_prio_fold:
+                self.btn_prio_fold.configure(text="▼")
 
     def add_inner_block(self, loop_item: Dict[str, Any], b_type: str, params: Optional[Dict[str, Any]] = None, name: str = ""):
         return self.add_block(b_type=b_type, params=params, name=name, parent_loop=loop_item)
@@ -2478,23 +3718,44 @@ class TaskFlowTab:
             self.auto_save_config()
             self._log(f"已將積木 [{child_block['name'].get()}] 移出迴圈至主列表")
 
-    def _render_block_widget(self, block_item: Dict[str, Any], parent_loop: Optional[Dict[str, Any]] = None):
+    def _render_block_widget(
+        self,
+        block_item: Dict[str, Any],
+        parent_loop: Optional[Dict[str, Any]] = None,
+        is_priority: bool = False
+    ):
         b_type = block_item["type"]
         info = BLOCK_TYPES.get(b_type, BLOCK_TYPES["tap_coord"])
 
-        target_parent = parent_loop["inner_container"] if (parent_loop and "inner_container" in parent_loop) else self.inner_blocks
+        if is_priority:
+            target_parent = self.frame_priority_container
+            card_border_color = "#F59E0B"
+            hdr_bg_color = "#D97706"
+            badge_text = f"[⚡ 優先·{info['badge']}]"
+        elif parent_loop and "inner_container" in parent_loop:
+            target_parent = parent_loop["inner_container"]
+            card_border_color = info["color"]
+            hdr_bg_color = info["color"]
+            badge_text = f"[{info['badge']}]"
+        else:
+            target_parent = self.frame_normal_container
+            card_border_color = info["color"]
+            hdr_bg_color = info["color"]
+            badge_text = f"[{info['badge']}]"
+
         card = ctk.CTkFrame(
             target_parent,
             fg_color=COLOR_CARD_ITEM,
             corner_radius=8,
             border_width=1,
-            border_color=info["color"]
+            border_color=card_border_color
         )
-        card.pack(fill="x", padx=4, pady=3)
+        card.pack(fill="x", padx=4, pady=2 if is_priority else 3)
         block_item["frame"] = card
 
-        hdr = ctk.CTkFrame(card, fg_color=info["color"], corner_radius=6, height=32)
+        hdr = ctk.CTkFrame(card, fg_color=hdr_bg_color, corner_radius=6, height=32)
         hdr.pack(fill="x", padx=2, pady=2)
+        block_item["hdr_frame"] = hdr
 
         lbl_drag = ctk.CTkLabel(
             hdr,
@@ -2506,6 +3767,21 @@ class TaskFlowTab:
         lbl_drag.pack(side="left", padx=(2, 0))
         self._bind_drag(lbl_drag, block_item)
 
+        btn_fold = ctk.CTkButton(
+            hdr,
+            text="▼" if block_item.get("expanded", tk.BooleanVar(value=True)).get() else "▶",
+            width=20,
+            height=20,
+            corner_radius=3,
+            font=ctk.CTkFont(size=9, weight="bold"),
+            fg_color="transparent",
+            hover_color="#181825",
+            text_color="#FFFFFF",
+            command=lambda: self.toggle_block_fold(block_item)
+        )
+        btn_fold.pack(side="left", padx=(0, 2))
+        block_item["btn_fold"] = btn_fold
+
         chk_en = ctk.CTkCheckBox(
             hdr,
             text="",
@@ -2515,13 +3791,14 @@ class TaskFlowTab:
             checkbox_height=18,
             corner_radius=4,
             fg_color="#10B981",
-            hover_color="#059669"
+            hover_color="#059669",
+            command=self.auto_save_config
         )
         chk_en.pack(side="left", padx=(0, 2))
 
         lbl_num = ctk.CTkLabel(
             hdr,
-            text="#0",
+            text="⚡#0" if is_priority else "#0",
             font=ctk.CTkFont(family="Arial", size=11, weight="bold"),
             text_color="#FFFFFF"
         )
@@ -2531,7 +3808,7 @@ class TaskFlowTab:
         ent_name = ctk.CTkEntry(
             hdr,
             textvariable=block_item["name"],
-            width=130,
+            width=100,
             height=24,
             corner_radius=4,
             fg_color=COLOR_INPUT_BG,
@@ -2539,11 +3816,11 @@ class TaskFlowTab:
             text_color="#FFFFFF",
             font=ctk.CTkFont(size=11)
         )
-        ent_name.pack(side="left", padx=4)
+        ent_name.pack(side="left", padx=3)
 
         lbl_type = ctk.CTkLabel(
             hdr,
-            text=f"[{info['badge']}]",
+            text=badge_text,
             font=ctk.CTkFont(family="Arial", size=10),
             text_color="#FFFFFF"
         )
@@ -2601,7 +3878,35 @@ class TaskFlowTab:
         )
         btn_up.pack(side="right", padx=1)
 
-        if parent_loop:
+        if is_priority:
+            btn_prio_tog = ctk.CTkButton(
+                hdr,
+                text="⬇ 移至一般",
+                width=68,
+                height=22,
+                corner_radius=4,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="#3B82F6",
+                hover_color="#2563EB",
+                text_color="#FFFFFF",
+                command=lambda: self.demote_to_normal(block_item)
+            )
+            btn_prio_tog.pack(side="right", padx=1)
+        elif not parent_loop:
+            btn_prio_tog = ctk.CTkButton(
+                hdr,
+                text="⭐ 設為優先",
+                width=68,
+                height=22,
+                corner_radius=4,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="#D97706",
+                hover_color="#B45309",
+                text_color="#FFFFFF",
+                command=lambda: self.promote_to_priority(block_item)
+            )
+            btn_prio_tog.pack(side="right", padx=1)
+        else:
             btn_out = ctk.CTkButton(
                 hdr,
                 text="移出",
@@ -2623,15 +3928,16 @@ class TaskFlowTab:
             height=22,
             corner_radius=4,
             font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color="#F59E0B",
-            hover_color="#D97706",
+            fg_color="#F59E0B" if not is_priority else "#10B981",
+            hover_color="#D97706" if not is_priority else "#059669",
             text_color="#000000",
             command=lambda: self.select_block(block_item)
         )
         btn_pick.pack(side="right", padx=(1, 4))
 
         body = ctk.CTkFrame(card, fg_color="transparent")
-        body.pack(fill="x", padx=6, pady=(2, 6))
+        if block_item.get("expanded", tk.BooleanVar(value=True)).get():
+            body.pack(fill="x", padx=6, pady=(2, 6))
         block_item["body_frame"] = body
 
         self._build_block_fields(block_item, body)
@@ -3066,6 +4372,13 @@ class TaskFlowTab:
                         command=lambda b_ref=br: self.on_snip_template_dialog(b_ref, initial_name=f"branch_{b_ref['name']}")
                     )
                     btn_br_snip.pack(side="left", padx=1)
+
+                    btn_br_browse = ctk.CTkButton(
+                        row, text="📂", width=24, height=22, corner_radius=4, font=ctk.CTkFont(size=10),
+                        fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
+                        command=lambda b_ref=br: self.on_browse_template_dialog(b_ref)
+                    )
+                    btn_br_browse.pack(side="left", padx=1)
 
                     btn_br_apply = ctk.CTkButton(
                         row, text="📥", width=24, height=22, corner_radius=4, font=ctk.CTkFont(size=10),
@@ -3589,51 +4902,102 @@ class TaskFlowTab:
 
     def _bind_drag(self, handle, block_item):
         def on_start(e):
-            self._drag_data = {"block": block_item, "y": e.y_root}
+            self._drag_data = {"block": block_item, "y": e.y_root, "last_swap": 0.0}
 
         def on_motion(e):
             d = getattr(self, "_drag_data", None)
-            if not d or d["block"] not in self.blocks_list:
+            if not d:
                 return
-            idx = self.blocks_list.index(d["block"])
+            curr_b = d["block"]
+            is_prio = curr_b in self.priority_blocks_list
+            target_list = self.priority_blocks_list if is_prio else self.blocks_list
+            if curr_b not in target_list:
+                return
+
+            now = time.time()
+            if now - d.get("last_swap", 0.0) < 0.06:
+                return
+
+            idx = target_list.index(curr_b)
             dy = e.y_root - d["y"]
-            h = d["block"]["frame"].winfo_height() or 60
-            if dy > h * 0.7 and idx < len(self.blocks_list) - 1:
-                self.blocks_list[idx], self.blocks_list[idx + 1] = self.blocks_list[idx + 1], self.blocks_list[idx]
-                self._repack_all_blocks()
+            h = curr_b["frame"].winfo_height() or 36
+            if dy > h * 0.7 and idx < len(target_list) - 1:
+                target_list[idx], target_list[idx + 1] = target_list[idx + 1], target_list[idx]
                 d["y"] = e.y_root
+                d["last_swap"] = now
+                self._repack_all_blocks(fast_update=True)
             elif dy < -h * 0.7 and idx > 0:
-                self.blocks_list[idx], self.blocks_list[idx - 1] = self.blocks_list[idx - 1], self.blocks_list[idx]
-                self._repack_all_blocks()
+                target_list[idx], target_list[idx - 1] = target_list[idx - 1], target_list[idx]
                 d["y"] = e.y_root
+                d["last_swap"] = now
+                self._repack_all_blocks(fast_update=True)
 
         def on_end(e):
             self._drag_data = None
+            self._repack_all_blocks(fast_update=False)
             self.auto_save_config()
 
         handle.bind("<Button-1>", on_start)
         handle.bind("<B1-Motion>", on_motion)
         handle.bind("<ButtonRelease-1>", on_end)
 
-    def _repack_all_blocks(self):
+    def _update_section_badges(self):
+        p_cnt = len(self.priority_blocks_list)
+        if hasattr(self, "lbl_prio_count") and self.lbl_prio_count:
+            self.lbl_prio_count.configure(text=f"({p_cnt} 個優先步驟)")
+        if hasattr(self, "lbl_prio_empty") and self.lbl_prio_empty:
+            if p_cnt == 0:
+                self.lbl_prio_empty.pack(fill="x", padx=12, pady=8)
+            else:
+                self.lbl_prio_empty.pack_forget()
+
+        n_cnt = len(self.blocks_list)
+        if hasattr(self, "lbl_normal_count") and self.lbl_normal_count:
+            self.lbl_normal_count.configure(text=f"({n_cnt} 個步驟)")
+
+    def _repack_all_blocks(self, fast_update: bool = False):
+        # 1. 重新排序優先步驟
+        for b in self.priority_blocks_list:
+            b["frame"].pack_forget()
+        for i, b in enumerate(self.priority_blocks_list, start=1):
+            b["frame"].pack(fill="x", padx=4, pady=2)
+            if b.get("lbl_num"):
+                b["lbl_num"].configure(text=f"⚡#{i}")
+
+        # 2. 重新排序一般步驟
         for b in self.blocks_list:
             b["frame"].pack_forget()
         for i, b in enumerate(self.blocks_list, start=1):
             b["frame"].pack(fill="x", padx=4, pady=3)
-            b["lbl_num"].configure(text=f"#{i}")
+            if b.get("lbl_num"):
+                b["lbl_num"].configure(text=f"#{i}")
             if b["type"] == "loop":
                 in_list = b.get("inner_blocks_list", [])
                 for j, cb in enumerate(in_list, start=1):
                     cb["frame"].pack_forget()
                     cb["frame"].pack(fill="x", padx=2, pady=2)
-                    cb["lbl_num"].configure(text=f"#{i}.{j}")
-        self.scroll_blocks.update_idletasks()
+                    if cb.get("lbl_num"):
+                        cb["lbl_num"].configure(text=f"#{i}.{j}")
+
+        self._update_section_badges()
+        if not fast_update and hasattr(self, "scroll_blocks") and self.scroll_blocks:
+            try:
+                self.scroll_blocks.update_idletasks()
+            except Exception:
+                pass
 
     def _renumber_blocks(self):
-        self._repack_all_blocks()
+        self._repack_all_blocks(fast_update=False)
 
     def move_block(self, block_item: Dict[str, Any], direction: int):
-        if block_item in self.blocks_list:
+        if block_item in self.priority_blocks_list:
+            idx = self.priority_blocks_list.index(block_item)
+            target = idx + direction
+            if 0 <= target < len(self.priority_blocks_list):
+                self.priority_blocks_list[idx], self.priority_blocks_list[target] = self.priority_blocks_list[target], self.priority_blocks_list[idx]
+                self._repack_all_blocks()
+                self.auto_save_config()
+        elif block_item in self.blocks_list:
             idx = self.blocks_list.index(block_item)
             target = idx + direction
             if 0 <= target < len(self.blocks_list):
@@ -3653,27 +5017,43 @@ class TaskFlowTab:
 
     def duplicate_block(self, block_item: Dict[str, Any]):
         serialized = self._serialize_single_block(block_item)
+        is_prio = block_item in self.priority_blocks_list
         p_loop = block_item.get("parent_loop")
         self.add_block(
             b_type=serialized["type"],
             params=dict(serialized["params"]),
             name=f"{serialized['name']} (複製)",
             enabled=serialized["enabled"],
-            parent_loop=p_loop
+            parent_loop=p_loop,
+            is_priority=is_prio
         )
 
     def delete_block(self, block_item: Dict[str, Any]):
-        if block_item in self.blocks_list:
-            block_item["frame"].destroy()
+        if block_item in self.priority_blocks_list:
+            if block_item.get("frame"):
+                block_item["frame"].destroy()
+            self.priority_blocks_list.remove(block_item)
+            if self.selected_block_target is block_item:
+                self.selected_block_target = None
+            self._renumber_blocks()
+            self.auto_save_config()
+        elif block_item in self.blocks_list:
+            if block_item.get("frame"):
+                block_item["frame"].destroy()
             self.blocks_list.remove(block_item)
+            if self.selected_block_target is block_item:
+                self.selected_block_target = None
             self._renumber_blocks()
             self.auto_save_config()
         elif block_item.get("parent_loop"):
             parent = block_item["parent_loop"]
             in_list = parent.get("inner_blocks_list", [])
             if block_item in in_list:
-                block_item["frame"].destroy()
+                if block_item.get("frame"):
+                    block_item["frame"].destroy()
                 in_list.remove(block_item)
+                if self.selected_block_target is block_item:
+                    self.selected_block_target = None
                 self._renumber_blocks()
                 self.auto_save_config()
 
@@ -3747,10 +5127,17 @@ class TaskFlowTab:
         self.selected_block_target = block_item
         self._update_all_selection_highlights()
         b_name = block_item["name"].get() if hasattr(block_item.get("name"), "get") else "積木"
-        self._log(f"已選取目標積木 [{b_name}]")
+        is_prio = block_item in self.priority_blocks_list
+        self._log(f"已選取{'【優先辨識】' if is_prio else ''}目標積木 [{b_name}]")
 
     def _update_all_selection_highlights(self):
         target = getattr(self, "selected_block_target", None)
+        for b in self.priority_blocks_list:
+            if b.get("frame"):
+                if b is target:
+                    b["frame"].configure(border_width=2, border_color="#10B981")
+                else:
+                    b["frame"].configure(border_width=1, border_color="#F59E0B")
         for b in self.blocks_list:
             if b.get("frame"):
                 info = BLOCK_TYPES.get(b["type"], BLOCK_TYPES["tap_coord"])
@@ -3766,16 +5153,31 @@ class TaskFlowTab:
                     else:
                         cb["frame"].configure(border_width=1, border_color=info["color"])
 
-    def highlight_active_step(self, active_idx: int):
+    def highlight_active_step(self, active_idx: int, is_priority: bool = False):
         def _ui_update():
+            # 優先步驟高亮
+            for i, b in enumerate(self.priority_blocks_list):
+                if not b.get("frame"):
+                    continue
+                if is_priority and i == active_idx:
+                    b["frame"].configure(border_width=2, border_color="#10B981")
+                else:
+                    is_target = (b is getattr(self, "selected_block_target", None))
+                    b["frame"].configure(border_width=2 if is_target else 1, border_color="#10B981" if is_target else "#F59E0B")
+
+            # 一般步驟高亮
             for i, b in enumerate(self.blocks_list):
+                if not b.get("frame"):
+                    continue
                 info = BLOCK_TYPES.get(b["type"], BLOCK_TYPES["tap_coord"])
-                if i == active_idx:
+                if not is_priority and i == active_idx:
                     b["frame"].configure(border_width=2, border_color="#10B981")
                 else:
                     is_target = (b is getattr(self, "selected_block_target", None))
                     b["frame"].configure(border_width=2 if is_target else 1, border_color="#F59E0B" if is_target else info["color"])
-        self.parent.after(0, _ui_update)
+
+        if hasattr(self, "parent") and self.parent:
+            self.parent.after(0, _ui_update)
 
     def on_capture_screen(self):
         if not self.bot or not self.bot.device:
@@ -4088,14 +5490,15 @@ class TaskFlowTab:
         threading.Thread(target=work, daemon=True).start()
 
     def on_run_tasks(self):
-        if not self.blocks_list:
-            messagebox.showinfo("提示", "程式區目前沒有任何積木，請先從左側加入積木！")
+        if not self.blocks_list and not self.priority_blocks_list:
+            messagebox.showinfo("提示", "程式區目前沒有任何積木步驟，請先加入積木！")
             return
 
         if self.bot and getattr(self.bot, "is_running", False):
             messagebox.showwarning("提示", "【聯賽自動刷關】正在執行中，請先停止聯賽腳本再啟動任務清單。")
             return
 
+        active_priority_blocks = self._serialize_all_priority_blocks()
         active_blocks = self._serialize_all_blocks()
         loop_cnt = max(0, self.var_loop_count.get())
 
@@ -4107,19 +5510,22 @@ class TaskFlowTab:
         self.var_status_text.set("🟡 正在執行任務清單...")
 
         def _on_step(idx, cycle, total_cycles):
-            self.highlight_active_step(idx)
+            self.highlight_active_step(idx, is_priority=False)
             tot_str = str(total_cycles) if total_cycles > 0 else "∞"
             if idx >= 0:
                 self.var_status_text.set(f"▶ 執行中 (輪次 {cycle}/{tot_str}，步驟 #{idx + 1})")
             else:
                 self.var_status_text.set("🟢 任務已結束")
 
+        def _on_priority_hit(p_idx: int):
+            self.highlight_active_step(p_idx, is_priority=True)
+
         def _on_finish(success, msg):
             def _finish_ui():
                 self.btn_run.configure(state="normal")
                 self.btn_step.configure(state="normal")
                 self.btn_stop.configure(state="disabled")
-                self.highlight_active_step(-1)
+                self.highlight_active_step(-1, is_priority=False)
                 st_icon = "🟢" if success else "⚠️"
                 if hasattr(self, "indicator_light"):
                     self.indicator_light.configure(text_color="#10B981" if success else "#EF4444")
@@ -4129,21 +5535,29 @@ class TaskFlowTab:
         self.engine.global_settings.update(self.get_global_settings())
         self.engine.start(
             blocks_data=active_blocks,
+            priority_blocks_data=active_priority_blocks,
             loop_count=loop_cnt,
             on_step_change=_on_step,
             on_finish=_on_finish,
-            global_settings=self.get_global_settings()
+            global_settings=self.get_global_settings(),
+            on_priority_hit=_on_priority_hit
         )
 
     def on_step_task(self):
-        if not self.blocks_list:
+        all_blocks = self.priority_blocks_list + self.blocks_list
+        if not all_blocks:
+            messagebox.showinfo("提示", "程式區目前沒有任何積木步驟！")
             return
-        idx = self.selected_block_idx if (0 <= self.selected_block_idx < len(self.blocks_list)) else 0
-        block = self.blocks_list[idx]
-        s_data = self._serialize_single_block(block)
+        target = getattr(self, "selected_block_target", None)
+        if not target:
+            target = all_blocks[0]
+        s_data = self._serialize_single_block(target)
+        is_prio = target in self.priority_blocks_list
+        t_idx = self.priority_blocks_list.index(target) if is_prio else self.blocks_list.index(target)
 
-        self.highlight_active_step(idx)
-        self._log(f"👣 [單步執行] #{idx + 1} {s_data['name']}")
+        self.highlight_active_step(t_idx, is_priority=is_prio)
+        prefix = "⭐ 優先步驟" if is_prio else "步驟"
+        self._log(f"👣 [單步執行] {prefix} #{t_idx + 1} {s_data['name']}")
 
         self.engine.global_settings.update(self.get_global_settings())
         if self.bot and hasattr(self.bot, "set_allowed_languages"):
@@ -4155,7 +5569,7 @@ class TaskFlowTab:
 
         def _worker():
             self.engine.execute_block(s_data["type"], s_data["params"])
-            self.parent.after(500, lambda: self.highlight_active_step(-1))
+            self.parent.after(500, lambda: self.highlight_active_step(-1, is_priority=False))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -4204,6 +5618,15 @@ class TaskFlowTab:
             inner_list = b.get("inner_blocks_list", [])
             p["inner_blocks"] = [self._serialize_single_block(sb) for sb in inner_list]
 
+        # 儲存展開/收合狀態
+        p["expanded"] = bool(b["expanded"].get()) if "expanded" in b else True
+
+        # 若為純圖片模式，清空關鍵字欄位殘留，杜絕文字辨識誤判
+        tt_str = str(p.get("target_type", ""))
+        is_pure_img = ("圖片" in tt_str or "image" in tt_str.lower() or "模板" in tt_str) and ("文字" not in tt_str)
+        if is_pure_img and "keywords" in p:
+            p["keywords"] = ""
+
         return {
             "type": b.get("type", "tap_coord"),
             "name": str(b["name"].get() if hasattr(b.get("name"), "get") else b.get("name", "積木")),
@@ -4211,12 +5634,21 @@ class TaskFlowTab:
             "params": p
         }
 
+    def _serialize_all_priority_blocks(self) -> List[Dict[str, Any]]:
+        return [self._serialize_single_block(b) for b in self.priority_blocks_list]
+
     def _serialize_all_blocks(self) -> List[Dict[str, Any]]:
         return [self._serialize_single_block(b) for b in self.blocks_list]
 
     def on_clear_blocks(self):
-        if self.blocks_list and not messagebox.askyesno("確認", "確定要清空所有積木嗎？"):
+        total_cnt = len(self.priority_blocks_list) + len(self.blocks_list)
+        if total_cnt > 0 and not messagebox.askyesno("確認清空", "確定要清空所有優先步驟與一般流程積木嗎？"):
             return
+        for b in self.priority_blocks_list:
+            if b.get("frame"):
+                b["frame"].destroy()
+        self.priority_blocks_list.clear()
+
         for b in self.blocks_list:
             for cb in b.get("inner_blocks_list", []):
                 if cb.get("frame"):
@@ -4225,6 +5657,7 @@ class TaskFlowTab:
                 b["frame"].destroy()
         self.blocks_list.clear()
         self.selected_block_target = None
+        self._renumber_blocks()
         self.auto_save_config()
 
     def load_preset(self, preset_key: str):
@@ -4242,8 +5675,14 @@ class TaskFlowTab:
             return
 
         preset_title = preset.get("title", preset_key)
-        if self.blocks_list and not messagebox.askyesno("載入任務存檔", f"載入任務設定「{preset_title}」將取代目前積木清單，是否繼續？"):
+        total_cnt = len(self.priority_blocks_list) + len(self.blocks_list)
+        if total_cnt > 0 and not messagebox.askyesno("載入任務存檔", f"載入任務設定「{preset_title}」將取代目前積木清單，是否繼續？"):
             return
+
+        for b in self.priority_blocks_list:
+            if b.get("frame"):
+                b["frame"].destroy()
+        self.priority_blocks_list.clear()
 
         for b in self.blocks_list:
             for cb in b.get("inner_blocks_list", []):
@@ -4257,14 +5696,52 @@ class TaskFlowTab:
         if "loop_count" in preset:
             self.var_loop_count.set(preset.get("loop_count", 1))
 
-        for bd in preset.get("blocks", []):
+        # 辨識模式與 OCR 設定還原
+        gs = preset.get("global_settings", {})
+        if gs:
+            if "disable_ocr" in gs:
+                self.var_disable_ocr.set(bool(gs["disable_ocr"]))
+            elif "recognition_mode" in gs:
+                self.var_disable_ocr.set("image" in str(gs["recognition_mode"]).lower() or "圖片" in str(gs["recognition_mode"]))
+        elif "recognition_mode" in preset:
+            self.var_disable_ocr.set("image" in str(preset["recognition_mode"]).lower() or "圖片" in str(preset["recognition_mode"]))
+        else:
+            all_b = preset.get("priority_blocks", []) + preset.get("blocks", [])
+            has_img = any(bool(b.get("params", {}).get("template_image")) or "圖片" in str(b.get("params", {}).get("target_type", "")) for b in all_b)
+            has_txt = any("文字" in str(b.get("params", {}).get("target_type", "")) and not b.get("params", {}).get("template_image") for b in all_b)
+            if has_img and not has_txt:
+                self.var_disable_ocr.set(True)
+
+        p_blocks = preset.get("priority_blocks", [])
+        norm_blocks = preset.get("blocks", [])
+        tot_cnt = len(p_blocks) + len(norm_blocks)
+
+        # 優先辨識步驟 (大量積木時智慧折疊，杜絕卡頓)
+        for pbd in p_blocks:
+            p_params = dict(pbd.get("params", {}))
+            exp_val = p_params.get("expanded", pbd.get("expanded", False if tot_cnt > 6 else True))
+            self.add_block(
+                b_type=pbd.get("type", "detect_click"),
+                params=p_params,
+                name=pbd.get("name", ""),
+                enabled=pbd.get("enabled", True),
+                is_priority=True,
+                expanded=exp_val
+            )
+
+        # 一般流程步驟 (大量積木時智慧折疊，杜絕卡頓)
+        for bd in norm_blocks:
+            b_params = dict(bd.get("params", {}))
+            exp_val = b_params.get("expanded", bd.get("expanded", False if tot_cnt > 6 else True))
             self.add_block(
                 b_type=bd["type"],
-                params=dict(bd.get("params", {})),
+                params=b_params,
                 name=bd.get("name", ""),
-                enabled=bd.get("enabled", True)
+                enabled=bd.get("enabled", True),
+                is_priority=False,
+                expanded=exp_val
             )
-        self._log(f"已成功載入任務存檔: {preset_title} (共 {len(self.blocks_list)} 個步驟)")
+        self._log(f"已成功載入任務存檔: {preset_title} (優先 {len(self.priority_blocks_list)} 個, 一般 {len(self.blocks_list)} 個步驟)")
         self.auto_save_config()
 
     def auto_save_config(self):
@@ -4273,16 +5750,17 @@ class TaskFlowTab:
             if parent_d and not os.path.exists(parent_d):
                 os.makedirs(parent_d, exist_ok=True)
             data = {
-                "version": "1.0",
+                "version": "1.1",
                 "loop_count": self.var_loop_count.get(),
                 "global_settings": self.get_global_settings(),
+                "priority_blocks": self._serialize_all_priority_blocks(),
                 "blocks": self._serialize_all_blocks()
             }
             with open(self.save_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             if self.gui and hasattr(self.gui, "auto_save_current_config"):
                 self.gui.auto_save_current_config()
-        except Exception as e:
+        except Exception:
             pass
 
     def load_config_auto(self):
@@ -4294,23 +5772,35 @@ class TaskFlowTab:
             self.var_loop_count.set(data.get("loop_count", 1))
 
             gs = data.get("global_settings", {})
-            if gs and not self.gui:
-                if "interval" in gs:
-                    self.var_interval.set(gs["interval"])
-                if "confidence" in gs:
-                    self.var_confidence.set(gs["confidence"])
-                if "idle_strategy" in gs:
-                    self.var_idle_strategy.set(gs["idle_strategy"])
-                if "lang_tc" in gs:
-                    self.var_lang_tc.set(gs["lang_tc"])
-                if "lang_sc" in gs:
-                    self.var_lang_sc.set(gs["lang_sc"])
-                if "lang_en" in gs:
-                    self.var_lang_en.set(gs["lang_en"])
-                if "tg_token" in gs:
-                    self.var_tg_token.set(gs["tg_token"])
-                if "tg_chat_id" in gs:
-                    self.var_tg_chat_id.set(gs["tg_chat_id"])
+            if gs:
+                if "disable_ocr" in gs:
+                    self.var_disable_ocr.set(bool(gs["disable_ocr"]))
+                elif "recognition_mode" in gs:
+                    self.var_disable_ocr.set("image" in str(gs["recognition_mode"]).lower() or "圖片" in str(gs["recognition_mode"]))
+                if not self.gui:
+                    if "interval" in gs:
+                        self.var_interval.set(gs["interval"])
+                    if "confidence" in gs:
+                        self.var_confidence.set(gs["confidence"])
+                    if "idle_strategy" in gs:
+                        self.var_idle_strategy.set(gs["idle_strategy"])
+                    if "lang_tc" in gs:
+                        self.var_lang_tc.set(gs["lang_tc"])
+                    if "lang_sc" in gs:
+                        self.var_lang_sc.set(gs["lang_sc"])
+                    if "lang_en" in gs:
+                        self.var_lang_en.set(gs["lang_en"])
+                    if "tg_token" in gs:
+                        self.var_tg_token.set(gs["tg_token"])
+                    if "tg_chat_id" in gs:
+                        self.var_tg_chat_id.set(gs["tg_chat_id"])
+            elif "recognition_mode" in data:
+                self.var_disable_ocr.set("image" in str(data["recognition_mode"]).lower() or "圖片" in str(data["recognition_mode"]))
+
+            for b in self.priority_blocks_list:
+                if b.get("frame"):
+                    b["frame"].destroy()
+            self.priority_blocks_list.clear()
 
             for b in self.blocks_list:
                 for cb in b.get("inner_blocks_list", []):
@@ -4320,12 +5810,35 @@ class TaskFlowTab:
                     b["frame"].destroy()
             self.blocks_list.clear()
             self.selected_block_target = None
-            for bd in data.get("blocks", []):
+
+            p_blocks = data.get("priority_blocks", [])
+            norm_blocks = data.get("blocks", [])
+            tot_cnt = len(p_blocks) + len(norm_blocks)
+
+            # 載入優先步驟 (大量積木時智慧折疊，杜絕卡頓)
+            for pbd in p_blocks:
+                p_params = dict(pbd.get("params", {}))
+                exp_val = p_params.get("expanded", pbd.get("expanded", False if tot_cnt > 6 else True))
+                self.add_block(
+                    b_type=pbd.get("type", "detect_click"),
+                    params=p_params,
+                    name=pbd.get("name", ""),
+                    enabled=pbd.get("enabled", True),
+                    is_priority=True,
+                    expanded=exp_val
+                )
+
+            # 載入一般步驟 (大量積木時智慧折疊，杜絕卡頓)
+            for bd in norm_blocks:
+                b_params = dict(bd.get("params", {}))
+                exp_val = b_params.get("expanded", bd.get("expanded", False if tot_cnt > 6 else True))
                 self.add_block(
                     b_type=bd["type"],
-                    params=bd.get("params", {}),
+                    params=b_params,
                     name=bd.get("name", ""),
-                    enabled=bd.get("enabled", True)
+                    enabled=bd.get("enabled", True),
+                    is_priority=False,
+                    expanded=exp_val
                 )
         except Exception as e:
             self._log(f"讀取上次任務清單失敗: {e}")
@@ -4335,7 +5848,8 @@ class TaskFlowTab:
 
     def on_save_config_dialog(self, default_mode: str = "new"):
         """開啟任務設定存檔視窗：詢問使用者要存到哪裡，可直接自訂路徑與檔名儲存，不生成任何多餘資料夾"""
-        if not self.blocks_list:
+        total_cnt = len(self.priority_blocks_list) + len(self.blocks_list)
+        if total_cnt == 0:
             if not messagebox.askyesno("提示", "目前任務清單是空的，確定要儲存空的任務嗎？"):
                 return
 
@@ -4444,9 +5958,10 @@ class TaskFlowTab:
                     os.makedirs(parent_dir, exist_ok=True)
 
                 data = {
-                    "version": "1.0",
+                    "version": "1.1",
                     "loop_count": self.var_loop_count.get(),
                     "global_settings": self.get_global_settings(),
+                    "priority_blocks": self._serialize_all_priority_blocks(),
                     "blocks": self._serialize_all_blocks()
                 }
                 with open(target_path, "w", encoding="utf-8") as f:
@@ -4504,6 +6019,10 @@ class TaskFlowTab:
 
             gs = data.get("global_settings", {})
             if gs:
+                if "disable_ocr" in gs:
+                    self.var_disable_ocr.set(bool(gs["disable_ocr"]))
+                elif "recognition_mode" in gs:
+                    self.var_disable_ocr.set("image" in str(gs["recognition_mode"]).lower() or "圖片" in str(gs["recognition_mode"]))
                 if "interval" in gs:
                     self.var_interval.set(gs["interval"])
                 if "confidence" in gs:
@@ -4520,6 +6039,13 @@ class TaskFlowTab:
                     self.var_tg_token.set(gs["tg_token"])
                 if "tg_chat_id" in gs:
                     self.var_tg_chat_id.set(gs["tg_chat_id"])
+            elif "recognition_mode" in data:
+                self.var_disable_ocr.set("image" in str(data["recognition_mode"]).lower() or "圖片" in str(data["recognition_mode"]))
+
+            for b in self.priority_blocks_list:
+                if b.get("frame"):
+                    b["frame"].destroy()
+            self.priority_blocks_list.clear()
 
             for b in self.blocks_list:
                 for cb in b.get("inner_blocks_list", []):
@@ -4529,12 +6055,35 @@ class TaskFlowTab:
                     b["frame"].destroy()
             self.blocks_list.clear()
             self.selected_block_target = None
-            for bd in data.get("blocks", []):
+
+            p_blocks = data.get("priority_blocks", [])
+            norm_blocks = data.get("blocks", [])
+            tot_cnt = len(p_blocks) + len(norm_blocks)
+
+            # 載入優先步驟 (大量積木時智慧折疊，杜絕卡頓)
+            for pbd in p_blocks:
+                p_params = dict(pbd.get("params", {}))
+                exp_val = p_params.get("expanded", pbd.get("expanded", False if tot_cnt > 6 else True))
+                self.add_block(
+                    b_type=pbd.get("type", "detect_click"),
+                    params=p_params,
+                    name=pbd.get("name", ""),
+                    enabled=pbd.get("enabled", True),
+                    is_priority=True,
+                    expanded=exp_val
+                )
+
+            # 載入一般步驟 (大量積木時智慧折疊，杜絕卡頓)
+            for bd in norm_blocks:
+                b_params = dict(bd.get("params", {}))
+                exp_val = b_params.get("expanded", bd.get("expanded", False if tot_cnt > 6 else True))
                 self.add_block(
                     b_type=bd["type"],
-                    params=bd.get("params", {}),
+                    params=b_params,
                     name=bd.get("name", ""),
-                    enabled=bd.get("enabled", True)
+                    enabled=bd.get("enabled", True),
+                    is_priority=False,
+                    expanded=exp_val
                 )
             messagebox.showinfo("成功", f"成功載入任務清單:\n{os.path.basename(path)}")
         except Exception as e:
@@ -4542,6 +6091,10 @@ class TaskFlowTab:
 
     def get_block_choices(self) -> List[str]:
         choices = []
+        for i, b in enumerate(self.priority_blocks_list, start=1):
+            name = b["name"].get() if hasattr(b["name"], "get") else b.get("name", "")
+            b_type = b.get("type", "step")
+            choices.append(f"⚡#{i} {name} ({b_type})")
         for i, b in enumerate(self.blocks_list, start=1):
             name = b["name"].get() if hasattr(b["name"], "get") else b.get("name", "")
             b_type = b.get("type", "step")
@@ -4572,12 +6125,19 @@ class TaskFlowTab:
         if not choice_str:
             return None
         import re
+        m_prio = re.match(r"^⚡#(\d+)", choice_str.strip())
+        if m_prio:
+            idx = int(m_prio.group(1)) - 1
+            if 0 <= idx < len(self.priority_blocks_list):
+                return self._serialize_single_block(self.priority_blocks_list[idx])
+
         m = re.match(r"^#(\d+)", choice_str.strip())
         if m:
             idx = int(m.group(1)) - 1
             if 0 <= idx < len(self.blocks_list):
                 return self._serialize_single_block(self.blocks_list[idx])
-        for b in self.blocks_list:
+
+        for b in self.priority_blocks_list + self.blocks_list:
             name = b["name"].get() if hasattr(b["name"], "get") else b.get("name", "")
             if name and name in choice_str:
                 return self._serialize_single_block(b)
