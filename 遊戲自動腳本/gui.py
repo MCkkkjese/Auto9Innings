@@ -484,6 +484,14 @@ class TemplateSnipperDialog(ctk.CTkToplevel):
             fname += ".png"
 
         target_path = os.path.join(self.save_dir, fname)
+        if os.path.exists(target_path):
+            if not messagebox.askyesno(
+                "⚠️ 圖片衝突提醒",
+                f"模板圖片「{fname}」已經存在！\n\n路徑：{target_path}\n\n是否確認要覆蓋此圖片檔案？",
+                parent=self
+            ):
+                return
+
         try:
             success = imwrite_unicode(target_path, self.crop_bgr)
             if success:
@@ -892,6 +900,15 @@ class BaseballBotGUI:
                 var_save_file.set(p)
 
             target_path = os.path.abspath(p)
+            if os.path.exists(target_path):
+                fn = os.path.basename(target_path)
+                if not messagebox.askyesno(
+                    "⚠️ 檔案衝突提醒",
+                    f"設定檔「{fn}」已經存在！\n\n路徑：{target_path}\n\n確定要覆蓋此設定檔嗎？\n（此動作將取代現有檔案內容，無法復原）",
+                    parent=dlg
+                ):
+                    return
+
             try:
                 parent_dir = os.path.dirname(target_path)
                 if parent_dir and not os.path.exists(parent_dir):
@@ -3442,12 +3459,20 @@ class BaseballBotGUI:
             filetypes=[("JSON 設定檔", "*.json"), ("所有檔案", "*.*")]
         )
         if path:
+            if os.path.exists(path):
+                fn = os.path.basename(path)
+                if not messagebox.askyesno(
+                    "⚠️ 檔案衝突提醒",
+                    f"設定檔「{fn}」已經存在！\n\n路徑：{path}\n\n確定要覆蓋此設定檔嗎？\n（此動作將取代現有檔案內容，無法復原）",
+                    parent=self.root
+                ):
+                    return
             try:
                 cfg = self.serialize_current_config()
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, ensure_ascii=False, indent=2)
                 self.log_message(f"設定已儲存至: {os.path.basename(path)}")
-                messagebox.showinfo("成功", f"設定已成功另存至:\n{path}", parent=self.root)
+                messagebox.showinfo("儲存成功", f"✅ 設定已成功另存至:\n{path}", parent=self.root)
             except Exception as e:
                 messagebox.showerror("錯誤", f"儲存失敗: {e}", parent=self.root)
 

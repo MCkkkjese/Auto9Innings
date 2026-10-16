@@ -160,7 +160,7 @@ BLOCK_TYPES = {
         }
     },
     "wait_condition": {
-        "title": "等待條件",
+        "title": "等待條件（等待直到）",
         "badge": "等待",
         "color": "#8b5cf6",
         "default_name": "等待條件達成",
@@ -173,8 +173,23 @@ BLOCK_TYPES = {
             "image_multiscale": False,
             "interval": 1.0,
             "timeout": 30,
+            "click_mode": "🎯 點擊目標中心",
+            "custom_x": 960,
+            "custom_y": 540,
+            "block_x1": 800,
+            "block_y1": 450,
+            "block_x2": 1120,
+            "block_y2": 630,
+            "delay": 0.5,
             "delay_after": 0.5,
-            "on_timeout": "continue"
+            "on_timeout": "continue",
+            "repeat_enabled": False,
+            "repeat_mode": "指定次數",
+            "repeat_count": 10,
+            "repeat_interval": 0.25,
+            "repeat_area": "跟隨命中目標",
+            "repeat_custom_x": 960,
+            "repeat_custom_y": 540
         }
     },
     "wait_sec": {
@@ -1169,6 +1184,7 @@ class TaskEngine:
             screen = self.bot.capture_screen()
             present = False
             matched_desc = ""
+            hit_coord = (_safe_int(p.get("custom_x", 960)), _safe_int(p.get("custom_y", 540)))
 
             if screen is not None:
                 if is_image_mode:
@@ -1182,6 +1198,7 @@ class TaskEngine:
                         )
                         if m_res is not None:
                             present = True
+                            hit_coord = (int(m_res[0]), int(m_res[1]))
                             matched_desc = f"圖片「{os.path.basename(template_img)}」(相似度 {m_res[2]:.2f})"
                 else:
                     det_results = self.bot.scan_text(screen)
@@ -1193,10 +1210,12 @@ class TaskEngine:
                             txt = item.get("text", "")
                             if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
                                 present = True
+                                hit_coord = item["center"]
                                 matched_desc = f"打勾圖案 [{txt}]"
                                 break
                             if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
                                 present = True
+                                hit_coord = item["center"]
                                 matched_desc = f"叉叉圖案 [{txt}]"
                                 break
 
@@ -1208,6 +1227,7 @@ class TaskEngine:
                                 matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
                                 if matched and ratio >= conf_thresh:
                                     present = True
+                                    hit_coord = item["center"]
                                     matched_desc = f"關鍵字「{kw}」({item.get('text')})"
                                     break
                             if present:
@@ -1216,11 +1236,31 @@ class TaskEngine:
             elapsed = time.time() - start_time
             if is_wait_appear and present:
                 self._log(f"  ✅ 條件達成！已偵測到「{matched_desc}」出現 (耗時 {elapsed:.1f}s)")
-                if delay_after > 0:
-                    self._sleep_interruptible(delay_after)
-                return True
+                return self._handle_detect_hit(
+                    hit_name=matched_desc,
+                    hit_center=hit_coord,
+                    p=p,
+                    img_shape=(screen.shape[0], screen.shape[1]),
+                    is_image=is_image_mode,
+                    template_img=template_img,
+                    img_thresh=img_thresh,
+                    img_multiscale=img_multiscale,
+                    raw_kws=raw_kws,
+                    is_check=is_check,
+                    is_cross=is_cross
+                )
             elif not is_wait_appear and not present:
                 self._log(f"  ✅ 條件達成！目標「{desc}」已消失 (耗時 {elapsed:.1f}s)")
+                click_mode = str(p.get("click_mode", "⏳ 無動作(僅等待)")).strip()
+                is_wait_only = ("無動作" in click_mode or "僅等待" in click_mode or click_mode == "wait_only")
+                if not is_wait_only:
+                    return self._handle_detect_hit(
+                        hit_name=f"目標消失「{desc}」",
+                        hit_center=(p.get("custom_x", 960), p.get("custom_y", 540)),
+                        p=p,
+                        img_shape=(screen.shape[0], screen.shape[1]) if screen is not None else (1080, 1920),
+                        is_image=False
+                    )
                 if delay_after > 0:
                     self._sleep_interruptible(delay_after)
                 return True
@@ -3224,8 +3264,42 @@ class TaskFlowTab:
             vp["interval"] = tk.DoubleVar(value=_safe_float(p.get("interval", 1.0)))
             vp["timeout"] = tk.IntVar(value=_safe_int(p.get("timeout", 30)))
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
+            vp["delay"] = tk.DoubleVar(value=_safe_float(p.get("delay", p.get("delay_after", 0.5))))
             vp["on_timeout"] = tk.StringVar(value=p.get("on_timeout", "continue"))
 
+            vp["click_mode"] = tk.StringVar(value=p.get("click_mode", "🎯 點擊目標中心"))
+            vp["custom_x"] = tk.IntVar(value=_safe_int(p.get("custom_x", 960)))
+            vp["custom_y"] = tk.IntVar(value=_safe_int(p.get("custom_y", 540)))
+            vp["block_x1"] = tk.IntVar(value=_safe_int(p.get("block_x1", 800)))
+            vp["block_y1"] = tk.IntVar(value=_safe_int(p.get("block_y1", 450)))
+            vp["block_x2"] = tk.IntVar(value=_safe_int(p.get("block_x2", 1120)))
+            vp["block_y2"] = tk.IntVar(value=_safe_int(p.get("block_y2", 630)))
+
+            vp["repeat_enabled"] = tk.BooleanVar(value=bool(p.get("repeat_enabled", False)))
+            vp["repeat_mode"] = tk.StringVar(value=p.get("repeat_mode", "指定次數"))
+            vp["repeat_count"] = tk.IntVar(value=_safe_int(p.get("repeat_count", 10)))
+            vp["repeat_interval"] = tk.DoubleVar(value=_safe_float(p.get("repeat_interval", 0.25)))
+            vp["repeat_area"] = tk.StringVar(value=p.get("repeat_area", "跟隨命中目標"))
+            vp["repeat_custom_x"] = tk.IntVar(value=_safe_int(p.get("repeat_custom_x", 960)))
+            vp["repeat_custom_y"] = tk.IntVar(value=_safe_int(p.get("repeat_custom_y", 540)))
+
+            def _fill_from_preview(target_x_var, target_y_var, desc_label: str):
+                c_text = self.var_picked_coord.get()
+                if "座標:" not in c_text:
+                    messagebox.showinfo("提示", "請先在右側截圖畫面上點擊位置以獲取座標！", parent=self.parent)
+                    return
+                raw = c_text.replace("座標:", "").strip().strip("()")
+                try:
+                    x, y = [int(v.strip()) for v in raw.split(",")]
+                    target_x_var.set(x)
+                    target_y_var.set(y)
+                    b_name = block["name"].get() if hasattr(block.get("name"), "get") else "等待條件"
+                    self._log(f"已將選取座標 ({x}, {y}) 填入 [{b_name}] 之 {desc_label}")
+                    self.auto_save_config()
+                except Exception:
+                    pass
+
+            # 行 1: 條件、偵測類型與關鍵字
             row1 = ctk.CTkFrame(body, fg_color="transparent")
             row1.pack(fill="x", pady=2)
             ctk.CTkLabel(row1, text="條件:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
@@ -3249,6 +3323,29 @@ class TaskFlowTab:
 
             box_wait_img = self._build_image_template_row(body, vp, block_dict=block)
 
+            # 行 2: 頻率、限時、動作設定、延遲與超時
+            row2 = ctk.CTkFrame(body, fg_color="transparent")
+            row2.pack(fill="x", pady=2)
+            ctk.CTkLabel(row2, text="頻率:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["interval"], width=36, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 1))
+            ctk.CTkLabel(row2, text="s", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 4))
+
+            ctk.CTkLabel(row2, text="限時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["timeout"], width=36, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 1))
+            ctk.CTkLabel(row2, text="s", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
+
+            ctk.CTkLabel(row2, text="動作:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left")
+            ACTION_MODES = ["🎯 點擊目標中心", "📍 點擊自訂座標", "🔲 自訂特定區塊", "⏳ 無動作(僅等待)"]
+            combo_act = ctk.CTkComboBox(row2, variable=vp["click_mode"], values=ACTION_MODES, width=135, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
+            combo_act.pack(side="left", padx=(2, 6))
+
+            ctk.CTkLabel(row2, text="延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["delay"], width=36, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 1))
+            ctk.CTkLabel(row2, text="s", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
+
+            ctk.CTkLabel(row2, text="超時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkComboBox(row2, variable=vp["on_timeout"], values=["continue", "stop"], width=82, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly").pack(side="left", padx=(2, 0))
+
             def _toggle_wait_type(*_):
                 tt = vp["target_type"].get()
                 if "圖片" in tt or "模板" in tt:
@@ -3259,24 +3356,138 @@ class TaskFlowTab:
                     box_wait_kw.pack(side="left", fill="x", expand=True)
             vp["target_type"].trace_add("write", _toggle_wait_type)
 
-            row2 = ctk.CTkFrame(body, fg_color="transparent")
-            row2.pack(fill="x", pady=2)
-            ctk.CTkLabel(row2, text="頻率:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkEntry(row2, textvariable=vp["interval"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
-            ctk.CTkLabel(row2, text="s/次", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
+            # 動作細項面板：自訂座標輸入
+            box_custom_xy = ctk.CTkFrame(body, fg_color="transparent")
+            ctk.CTkLabel(box_custom_xy, text="點擊座標 X:", font=ctk.CTkFont(size=11), text_color="#38BDF8").pack(side="left")
+            ctk.CTkEntry(box_custom_xy, textvariable=vp["custom_x"], width=48, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 4))
+            ctk.CTkLabel(box_custom_xy, text="Y:", font=ctk.CTkFont(size=11), text_color="#38BDF8").pack(side="left")
+            ctk.CTkEntry(box_custom_xy, textvariable=vp["custom_y"], width=48, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
+            ctk.CTkButton(box_custom_xy, text="填入選取座標", width=76, height=24, corner_radius=4, font=ctk.CTkFont(size=10, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, command=lambda: _fill_from_preview(vp["custom_x"], vp["custom_y"], "自訂座標")).pack(side="left")
 
-            ctk.CTkLabel(row2, text="限時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkEntry(row2, textvariable=vp["timeout"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
-            ctk.CTkLabel(row2, text="s", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
+            # 動作細項面板：自訂特定區塊輸入
+            box_custom_block = ctk.CTkFrame(body, fg_color="transparent")
+            ctk.CTkLabel(box_custom_block, text="區塊左上(X1,Y1):", font=ctk.CTkFont(size=10), text_color="#A78BFA").pack(side="left")
+            ctk.CTkEntry(box_custom_block, textvariable=vp["block_x1"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
+            ctk.CTkEntry(box_custom_block, textvariable=vp["block_y1"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(1, 4))
+            ctk.CTkButton(box_custom_block, text="填左上", width=46, height=22, corner_radius=4, font=ctk.CTkFont(size=9), fg_color="#6D28D9", hover_color="#5B21B6", command=lambda: _fill_from_preview(vp["block_x1"], vp["block_y1"], "區塊左上")).pack(side="left", padx=(0, 6))
 
-            ctk.CTkLabel(row2, text="延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkEntry(row2, textvariable=vp["delay_after"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
-            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
+            ctk.CTkLabel(box_custom_block, text="右下(X2,Y2):", font=ctk.CTkFont(size=10), text_color="#A78BFA").pack(side="left")
+            ctk.CTkEntry(box_custom_block, textvariable=vp["block_x2"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
+            ctk.CTkEntry(box_custom_block, textvariable=vp["block_y2"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(1, 4))
+            ctk.CTkButton(box_custom_block, text="填右下", width=46, height=22, corner_radius=4, font=ctk.CTkFont(size=9), fg_color="#6D28D9", hover_color="#5B21B6", command=lambda: _fill_from_preview(vp["block_x2"], vp["block_y2"], "區塊右下")).pack(side="left")
 
-            ctk.CTkLabel(row2, text="超時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkComboBox(row2, variable=vp["on_timeout"], values=["continue", "stop"], width=90, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly").pack(side="left", padx=(2, 0))
+            def _refresh_click_mode_ui(*_):
+                cm = vp["click_mode"].get()
+                if "自訂座標" in cm:
+                    box_custom_block.pack_forget()
+                    box_custom_xy.pack(fill="x", pady=(2, 2))
+                elif "特定區塊" in cm or "自訂區塊" in cm:
+                    box_custom_xy.pack_forget()
+                    box_custom_block.pack(fill="x", pady=(2, 2))
+                else:
+                    box_custom_xy.pack_forget()
+                    box_custom_block.pack_forget()
+
+            vp["click_mode"].trace_add("write", _refresh_click_mode_ui)
+
+            # 行 3: ⚡ 命中後連點（過場跳過）勾選框
+            row_rep = ctk.CTkFrame(body, fg_color="transparent")
+            row_rep.pack(fill="x", pady=(3, 1))
+            ctk.CTkCheckBox(
+                row_rep,
+                text="⚡ 命中後連點（過場跳過）",
+                variable=vp["repeat_enabled"],
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="#F59E0B",
+                width=18,
+                height=18,
+                checkbox_width=16,
+                checkbox_height=16,
+                corner_radius=4
+            ).pack(side="left", padx=(0, 6))
+
+            # 連點細項面板 (暗色圓角卡片)
+            box_rep_detail = ctk.CTkFrame(body, fg_color="#181825", corner_radius=6, border_width=1, border_color="#334155")
+
+            # 連點面板第 1 列: 模式 + 次數 + 間隔
+            row_ro1 = ctk.CTkFrame(box_rep_detail, fg_color="transparent")
+            row_ro1.pack(fill="x", padx=6, pady=(3, 2))
+
+            ctk.CTkLabel(row_ro1, text="連點模式:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
+            ctk.CTkOptionMenu(
+                row_ro1,
+                variable=vp["repeat_mode"],
+                values=["指定次數", "持續連點"],
+                width=88,
+                height=22,
+                corner_radius=4,
+                font=ctk.CTkFont(size=10)
+            ).pack(side="left", padx=(0, 6))
+
+            box_ro_cnt = ctk.CTkFrame(row_ro1, fg_color="transparent")
+            ctk.CTkLabel(box_ro_cnt, text="次數:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(box_ro_cnt, textvariable=vp["repeat_count"], width=38, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(box_ro_cnt, text="次", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
+
+            ctk.CTkLabel(row_ro1, text="間隔:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row_ro1, textvariable=vp["repeat_interval"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row_ro1, text="秒", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
+
+            # 連點面板第 2 列: 連點位置 + 自訂座標輸入
+            row_ro2 = ctk.CTkFrame(box_rep_detail, fg_color="transparent")
+            row_ro2.pack(fill="x", padx=6, pady=(2, 4))
+
+            ctk.CTkLabel(row_ro2, text="連點位置:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
+            REP_AREAS = ["跟隨命中目標", "右下角區域", "中央區域", "右上角 (Skip)", "右半側中央", "自訂座標"]
+            ctk.CTkOptionMenu(
+                row_ro2,
+                variable=vp["repeat_area"],
+                values=REP_AREAS,
+                width=110,
+                height=22,
+                corner_radius=4,
+                font=ctk.CTkFont(size=10)
+            ).pack(side="left", padx=(0, 6))
+
+            box_rep_xy = ctk.CTkFrame(row_ro2, fg_color="transparent")
+            ctk.CTkLabel(box_rep_xy, text="X:", font=ctk.CTkFont(size=10), text_color="#F59E0B").pack(side="left")
+            ctk.CTkEntry(box_rep_xy, textvariable=vp["repeat_custom_x"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(box_rep_xy, text="Y:", font=ctk.CTkFont(size=10), text_color="#F59E0B").pack(side="left")
+            ctk.CTkEntry(box_rep_xy, textvariable=vp["repeat_custom_y"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 4))
+            ctk.CTkButton(
+                box_rep_xy,
+                text="填座標",
+                width=46,
+                height=22,
+                corner_radius=4,
+                font=ctk.CTkFont(size=9, weight="bold"),
+                fg_color="#D97706",
+                hover_color="#B45309",
+                command=lambda: _fill_from_preview(vp["repeat_custom_x"], vp["repeat_custom_y"], "連點自訂座標")
+            ).pack(side="left")
+
+            def _refresh_repeat_ui(*_):
+                if vp["repeat_enabled"].get():
+                    box_rep_detail.pack(fill="x", pady=(2, 4))
+                    if "指定次數" in vp["repeat_mode"].get():
+                        box_ro_cnt.pack(side="left", before=row_ro1.winfo_children()[-2])
+                    else:
+                        box_ro_cnt.pack_forget()
+
+                    if "自訂" in vp["repeat_area"].get():
+                        box_rep_xy.pack(side="left")
+                    else:
+                        box_rep_xy.pack_forget()
+                else:
+                    box_rep_detail.pack_forget()
+
+            vp["repeat_enabled"].trace_add("write", _refresh_repeat_ui)
+            vp["repeat_mode"].trace_add("write", _refresh_repeat_ui)
+            vp["repeat_area"].trace_add("write", _refresh_repeat_ui)
 
             _toggle_wait_type()
+            _refresh_click_mode_ui()
+            _refresh_repeat_ui()
 
         elif b_type == "wait_sec":
             vp["seconds"] = tk.DoubleVar(value=p.get("seconds", 3.0))
@@ -4218,6 +4429,15 @@ class TaskFlowTab:
                 var_save_file.set(p)
 
             target_path = os.path.abspath(p)
+            if os.path.exists(target_path):
+                fn = os.path.basename(target_path)
+                if not messagebox.askyesno(
+                    "⚠️ 檔案衝突提醒",
+                    f"任務設定檔「{fn}」已經存在！\n\n路徑：{target_path}\n\n確定要覆蓋此設定檔嗎？\n（此動作將取代現有檔案內容，無法復原）",
+                    parent=dlg
+                ):
+                    return
+
             try:
                 parent_dir = os.path.dirname(target_path)
                 if parent_dir and not os.path.exists(parent_dir):

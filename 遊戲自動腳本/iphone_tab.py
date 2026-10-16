@@ -796,6 +796,14 @@ class IPhoneMirrorTab:
         if not save_path:
             return
 
+        if os.path.exists(save_path):
+            if not messagebox.askyesno(
+                "⚠️ 圖片衝突提醒",
+                f"模板圖片「{os.path.basename(save_path)}」已經存在！\n\n路徑：{save_path}\n\n是否確認要覆蓋此圖片檔案？",
+                parent=self.parent
+            ):
+                return
+
         try:
             success = imwrite_unicode(save_path, crop_bgr)
             if not success:
@@ -958,6 +966,15 @@ class IPhoneMirrorTab:
                 p += ".json"
 
             target_path = os.path.abspath(p)
+            if os.path.exists(target_path):
+                fn = os.path.basename(target_path)
+                if not messagebox.askyesno(
+                    "⚠️ 檔案衝突提醒",
+                    f"iPhone 自動刷設定「{fn}」已經存在！\n\n路徑：{target_path}\n\n確定要覆蓋此設定檔嗎？\n（此動作將取代現有檔案內容，無法復原）",
+                    parent=dlg
+                ):
+                    return
+
             try:
                 parent_dir = os.path.dirname(target_path)
                 if parent_dir and not os.path.exists(parent_dir):
