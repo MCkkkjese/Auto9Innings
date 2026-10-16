@@ -107,11 +107,22 @@ BLOCK_TYPES = {
             "image_threshold": 0.80,
             "image_multiscale": False,
             "timeout": 10,
-            "click_mode": "click_text",
+            "click_mode": "🎯 點擊目標中心",
             "custom_x": 960,
             "custom_y": 540,
+            "block_x1": 800,
+            "block_y1": 450,
+            "block_x2": 1120,
+            "block_y2": 630,
             "delay": 1.5,
-            "on_timeout": "continue"
+            "on_timeout": "continue",
+            "repeat_enabled": False,
+            "repeat_mode": "指定次數",
+            "repeat_count": 10,
+            "repeat_interval": 0.25,
+            "repeat_area": "跟隨命中目標",
+            "repeat_custom_x": 960,
+            "repeat_custom_y": 540
         }
     },
     "branch_if": {
@@ -660,6 +671,170 @@ class TaskEngine:
             self._sleep_interruptible(delay_after)
         return True
 
+    def _handle_detect_hit(
+        self,
+        hit_name: str,
+        hit_center: Tuple[int, int],
+        p: Dict[str, Any],
+        img_shape: Tuple[int, int],
+        is_image: bool = False,
+        template_img: str = "",
+        img_thresh: float = 0.80,
+        img_multiscale: bool = False,
+        raw_kws: str = "",
+        is_check: bool = False,
+        is_cross: bool = False
+    ) -> bool:
+        """
+        處理偵測命中後的動作執行：
+        1. 依動作模式計算點擊位置 (目標中心、自訂座標、自訂特定區塊、無動作僅等待)
+        2. ⚡ 命中後連點 (跟隨目標、自訂座標、右下角、中央、右上Skip、右半中央；支援指定次數或持續連點直到目標消失)
+        3. 執行結束延遲
+        """
+        img_h, img_w = img_shape
+        click_mode = str(p.get("click_mode", "🎯 點擊目標中心")).strip()
+        cx = _safe_int(p.get("custom_x", 960))
+        cy = _safe_int(p.get("custom_y", 540))
+        bx1 = _safe_int(p.get("block_x1", 800))
+        by1 = _safe_int(p.get("block_y1", 450))
+        bx2 = _safe_int(p.get("block_x2", 1120))
+        by2 = _safe_int(p.get("block_y2", 630))
+
+        # 1. 計算第一階段點擊目標座標
+        click_coord = None
+        is_custom_xy = (
+            click_mode in ("custom_coord", "自訂座標", "📍 點擊自訂座標", "📍 點擊指定座標 (自訂)")
+            or "自訂座標" in click_mode
+            or "指定座標" in click_mode
+        )
+        is_custom_block = (
+            click_mode in ("custom_block", "自訂特定區塊", "🔲 自訂特定區塊")
+            or "特定區塊" in click_mode
+            or "自訂區塊" in click_mode
+        )
+        is_wait_only = (
+            click_mode in ("wait_only", "無動作", "無動作(僅等待)", "⏳ 無動作(僅等待)")
+            or "僅等待" in click_mode
+            or "無動作" in click_mode
+        )
+
+        if is_wait_only:
+            click_coord = None
+        elif is_custom_xy:
+            click_coord = (cx + random.randint(-4, 4), cy + random.randint(-4, 4))
+        elif is_custom_block:
+            min_x, max_x = min(bx1, bx2), max(bx1, bx2)
+            min_y, max_y = min(by1, by2), max(by1, by2)
+            click_coord = (random.randint(min_x, max_x), random.randint(min_y, max_y))
+        else:
+            # 🎯 點擊目標中心 (預設)
+            click_coord = (hit_center[0] + random.randint(-3, 3), hit_center[1] + random.randint(-3, 3))
+
+        # 2. 執行第一階段點擊
+        if click_coord is not None:
+            self._log(f"  🎯 命中【{hit_name}】→ 點擊目標 ({click_coord[0]}, {click_coord[1]})")
+            self.bot.tap(click_coord[0], click_coord[1])
+        else:
+            self._log(f"  🎯 命中【{hit_name}】(設定為無動作/僅等待，不執行單次點擊)")
+
+        # 3. ⚡ 命中後連點（過場跳過）
+        rep_enabled = bool(p.get("repeat_enabled", False))
+        if rep_enabled and not self._stop_event.is_set():
+            rep_mode = str(p.get("repeat_mode", "指定次數")).strip()
+            rep_area = str(p.get("repeat_area", "跟隨命中目標")).strip()
+            rep_count = max(1, _safe_int(p.get("repeat_count", 10)))
+            rep_interval = max(0.05, _safe_float(p.get("repeat_interval", p.get("repeat_speed", 0.25))))
+            rep_cx = _safe_int(p.get("repeat_custom_x", 960))
+            rep_cy = _safe_int(p.get("repeat_custom_y", 540))
+
+            # 計算連點基準座標 (base_x, base_y)
+            if rep_area == "右下角區域":
+                base_x, base_y = int(img_w * 0.86), int(img_h * 0.86)
+            elif rep_area == "中央區域":
+                base_x, base_y = int(img_w * 0.50), int(img_h * 0.50)
+            elif rep_area == "右上角 (Skip)":
+                base_x, base_y = int(img_w * 0.90), int(img_h * 0.12)
+            elif rep_area == "右半側中央":
+                base_x, base_y = int(img_w * 0.82), int(img_h * 0.50)
+            elif "自訂" in rep_area:
+                base_x, base_y = rep_cx, rep_cy
+            else:
+                # 跟隨命中目標 (或若為無動作，跟隨 hit_center)
+                base_x, base_y = click_coord if click_coord is not None else hit_center
+
+            min_spd = max(0.05, rep_interval - 0.05)
+            max_spd = rep_interval + 0.05
+
+            if rep_mode == "指定次數":
+                self._log(f"  ⚡ [命中後連點] 在「{rep_area}」({base_x}, {base_y}) 連點 {rep_count} 次 (間隔 {rep_interval:.2f}s)...")
+                for c in range(rep_count):
+                    if self._stop_event.is_set():
+                        return False
+                    rx = base_x + random.randint(-8, 8)
+                    ry = base_y + random.randint(-8, 8)
+                    self.bot.tap(rx, ry, delay_range=(min_spd, max_spd))
+            else:
+                # 持續連點直到畫面變動 / 目標消失
+                self._log(f"  ⚡ [命中後連點] 正在持續連點「{rep_area}」({base_x}, {base_y}) 跳過過場 (直到目標消失)...")
+                tap_cnt = 0
+                max_continuous_taps = 60  # 防卡死安全上限
+                while tap_cnt < max_continuous_taps:
+                    if self._stop_event.is_set():
+                        return False
+                    rx = base_x + random.randint(-8, 8)
+                    ry = base_y + random.randint(-8, 8)
+                    self.bot.tap(rx, ry, delay_range=(min_spd, max_spd))
+                    tap_cnt += 1
+
+                    if tap_cnt % 3 == 0:
+                        chk_screen = self.bot.capture_screen()
+                        if chk_screen is not None:
+                            still_there = False
+                            if is_image and template_img:
+                                chk_gray = cv2.cvtColor(chk_screen, cv2.COLOR_BGR2GRAY)
+                                if hasattr(self.bot, "match_template"):
+                                    m = self.bot.match_template(
+                                        chk_gray, template_img,
+                                        threshold=img_thresh,
+                                        multi_scale=img_multiscale
+                                    )
+                                    if m:
+                                        still_there = True
+                            else:
+                                chk_det = self.bot.scan_text(chk_screen)
+                                if is_check or is_cross:
+                                    for it in chk_det:
+                                        s = it.get("symbol")
+                                        t = it.get("text", "")
+                                        if is_check and (s == "check" or t in ("[打勾]", "✓", "✔", "√") or (len(t) == 1 and t.upper() == "V")):
+                                            still_there = True
+                                            break
+                                        if is_cross and (s == "cross" or t in ("[叉叉]", "✕", "✖", "×", "X", "x")):
+                                            still_there = True
+                                            break
+                                if not still_there and raw_kws:
+                                    conf_thresh = self._get_confidence()
+                                    kws_chk = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
+                                    for kw in kws_chk:
+                                        for it in chk_det:
+                                            matched, ratio = self.bot._is_text_matched(kw, it.get("text", ""), similarity_threshold=conf_thresh)
+                                            if matched and ratio >= conf_thresh:
+                                                still_there = True
+                                                break
+                                        if still_there:
+                                            break
+
+                            if not still_there:
+                                self._log(f"  ✨ [命中後連點] 原目標已消失，過場跳過完成！(共連點 {tap_cnt} 次)")
+                                break
+
+        # 4. 執行結束延遲
+        delay = max(0.0, _safe_float(p.get("delay", 1.5)))
+        if delay > 0:
+            self._sleep_interruptible(delay)
+
+        return True
+
     def _exec_detect_click(self, p: Dict[str, Any]) -> bool:
         target_type = p.get("target_type", "📝 僅文字")
         raw_kws = p.get("keywords", "")
@@ -667,10 +842,6 @@ class TaskEngine:
         img_thresh = _safe_float(p.get("image_threshold", 0.80), 0.80)
         img_multiscale = bool(p.get("image_multiscale", False))
         timeout = max(1, _safe_int(p.get("timeout", 10)))
-        click_mode = p.get("click_mode", "click_text")
-        cx = _safe_int(p.get("custom_x", 960))
-        cy = _safe_int(p.get("custom_y", 540))
-        delay = _safe_float(p.get("delay", 1.5))
 
         is_image_mode = ("圖片" in target_type or "image" in target_type.lower() or "模板" in target_type)
         is_check = ("打勾" in target_type or "check" in target_type.lower())
@@ -689,6 +860,7 @@ class TaskEngine:
 
             screen = self.bot.capture_screen()
             if screen is not None:
+                img_h, img_w = screen.shape[:2]
                 # 1. 圖片模板模式
                 if is_image_mode:
                     if not template_img:
@@ -705,12 +877,16 @@ class TaskEngine:
                         if res is not None:
                             tx, ty, score_val, bbox = res
                             img_name = os.path.basename(template_img)
-                            target_x = cx if click_mode in ("custom_coord", "自訂座標", "📍 點擊自訂座標") else tx
-                            target_y = cy if click_mode in ("custom_coord", "自訂座標", "📍 點擊自訂座標") else ty
-                            self._log(f"  🎯 命中圖片模板「{img_name}」(相似度 {score_val:.2f})，點擊 ({target_x}, {target_y})")
-                            self.bot.tap(target_x, target_y)
-                            self._sleep_interruptible(delay)
-                            return True
+                            return self._handle_detect_hit(
+                                hit_name=f"圖片模板「{img_name}」(相似度 {score_val:.2f})",
+                                hit_center=(tx, ty),
+                                p=p,
+                                img_shape=(img_h, img_w),
+                                is_image=True,
+                                template_img=template_img,
+                                img_thresh=img_thresh,
+                                img_multiscale=img_multiscale
+                            )
                 else:
                     # 2. 文字/符號 OCR 模式
                     det_results = self.bot.scan_text(screen)
@@ -721,9 +897,23 @@ class TaskEngine:
                             sym = item.get("symbol")
                             txt = item.get("text", "")
                             if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
-                                return self._do_click(click_mode, item, cx, cy, delay)
+                                return self._handle_detect_hit(
+                                    hit_name=f"打勾符號 [{txt}]",
+                                    hit_center=item["center"],
+                                    p=p,
+                                    img_shape=(img_h, img_w),
+                                    raw_kws=raw_kws,
+                                    is_check=True
+                                )
                             if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
-                                return self._do_click(click_mode, item, cx, cy, delay)
+                                return self._handle_detect_hit(
+                                    hit_name=f"叉叉符號 [{txt}]",
+                                    hit_center=item["center"],
+                                    p=p,
+                                    img_shape=(img_h, img_w),
+                                    raw_kws=raw_kws,
+                                    is_cross=True
+                                )
 
                     # 比對關鍵字
                     conf_thresh = self._get_confidence()
@@ -731,22 +921,18 @@ class TaskEngine:
                         for item in det_results:
                             matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
                             if matched and ratio >= conf_thresh:
-                                return self._do_click(click_mode, item, cx, cy, delay)
+                                return self._handle_detect_hit(
+                                    hit_name=f"文字「{item.get('text')}」(匹配「{kw}」)",
+                                    hit_center=item["center"],
+                                    p=p,
+                                    img_shape=(img_h, img_w),
+                                    raw_kws=raw_kws
+                                )
 
             time.sleep(scan_delay)
 
         self._log(f"  ⚠️ 等待超時 ({timeout}s 未偵測到目標【{desc_target}】)")
         return False
-
-    def _do_click(self, click_mode: str, item: Dict[str, Any], cx: int, cy: int, delay: float) -> bool:
-        if click_mode in ("custom_coord", "自訂座標", "📍 點擊自訂座標"):
-            tx, ty = cx, cy
-        else:
-            tx, ty = item["center"]
-        self._log(f"  🎯 命中目標 [{item.get('text')}]，點擊座標 ({tx}, {ty})")
-        self.bot.tap(tx, ty)
-        self._sleep_interruptible(delay)
-        return True
 
     def _exec_branch_if(self, p: Dict[str, Any]) -> bool:
         """條件分支：判斷當前畫面文字或圖片來去點擊不同的座標 (支援多個 If 與 Else If)"""
@@ -1258,9 +1444,19 @@ class TaskFlowTab:
         self.selected_coord: Optional[Tuple[int, int]] = None
         self._drag_data = None
 
+        if self.gui and hasattr(self.gui, "config_dir"):
+            self.config_dir = self.gui.config_dir
+        else:
+            self.config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs")
+            if not os.path.exists(self.config_dir):
+                try:
+                    os.makedirs(self.config_dir, exist_ok=True)
+                except Exception:
+                    self.config_dir = os.getcwd()
+
         if self.gui and hasattr(self.gui, "task_presets_dir"):
             self.presets_dir = self.gui.task_presets_dir
-            self.save_file = self.gui.task_save_file
+            self.save_file = getattr(self.gui, "task_save_file", os.path.join(self.presets_dir, "tasks_flow.json"))
         else:
             self.presets_dir = self.config_dir
             tf_name = "tasks_flow.json" if self.instance_id == 1 else f"tasks_flow_{self.instance_id}.json"
@@ -1508,10 +1704,11 @@ class TaskFlowTab:
         btn_apply.pack(side="left")
 
         def _update_thumb(*_):
-            img_val = vp["template_image"].get().strip()
+            img_val = vp["template_image"].get().strip() if "template_image" in vp and hasattr(vp["template_image"], "get") else ""
             if not img_val:
                 lbl_thumb.configure(image="", text="（未選圖）", fg=COLOR_TEXT_DIM, width=8, height=2)
-                vp["_thumb_img"] = None
+                lbl_thumb.image = None
+                vp.pop("_thumb_img", None)
                 return
             full_p = self.resolve_image_path(img_val)
             if full_p and os.path.exists(full_p):
@@ -1527,12 +1724,14 @@ class TaskFlowTab:
                         pil_img = Image.fromarray(rgb)
                         tk_img = ImageTk.PhotoImage(pil_img)
                         lbl_thumb.configure(image=tk_img, text="", width=tw, height=th)
-                        vp["_thumb_img"] = tk_img
+                        lbl_thumb.image = tk_img  # 保存在 Label 自身防止垃圾回收，絕不放進 var_params 污染存檔
+                        vp.pop("_thumb_img", None)
                         return
                 except Exception:
                     pass
             lbl_thumb.configure(image="", text="⚠️ 缺檔", fg="#EF4444", width=8, height=2)
-            vp["_thumb_img"] = None
+            lbl_thumb.image = None
+            vp.pop("_thumb_img", None)
 
         vp["template_image"].trace_add("write", _update_thumb)
         vp["template_image"].trace_add("write", lambda *_: self.auto_save_config())
@@ -1680,6 +1879,11 @@ class TaskFlowTab:
             try:
                 with open(fpath, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                if not isinstance(data, dict):
+                    continue
+                # 只有包含 blocks 或任務清單特徵的檔案才認列為任務設定檔
+                if "blocks" not in data and "version" not in data and "loop_count" not in data:
+                    continue
                 title = data.get("title") or data.get("name") or key
                 desc = data.get("desc", "")
                 blocks = data.get("blocks", [])
@@ -1694,8 +1898,8 @@ class TaskFlowTab:
                 }
                 DAILY_PRESETS[key] = preset_obj
                 self.presets[key] = preset_obj
-            except Exception as e:
-                self._log(f"⚠️ 讀取任務檔案 {fname} 失敗: {e}")
+            except Exception:
+                pass
 
         self._render_preset_buttons()
 
@@ -2199,8 +2403,8 @@ class TaskFlowTab:
 
         return block_item
 
-    def add_inner_block(self, loop_item: Dict[str, Any], b_type: str):
-        self.add_block(b_type=b_type, parent_loop=loop_item)
+    def add_inner_block(self, loop_item: Dict[str, Any], b_type: str, params: Optional[Dict[str, Any]] = None, name: str = ""):
+        return self.add_block(b_type=b_type, params=params, name=name, parent_loop=loop_item)
 
     def pull_prev_block_into_loop(self, loop_item: Dict[str, Any]):
         if loop_item not in self.blocks_list:
@@ -2497,13 +2701,62 @@ class TaskFlowTab:
             vp["template_image"] = tk.StringVar(value=p.get("template_image", ""))
             vp["image_threshold"] = tk.DoubleVar(value=_safe_float(p.get("image_threshold", 0.80), 0.80))
             vp["image_multiscale"] = tk.BooleanVar(value=bool(p.get("image_multiscale", False)))
-            vp["timeout"] = tk.IntVar(value=p.get("timeout", 10))
-            vp["click_mode"] = tk.StringVar(value=p.get("click_mode", "click_text"))
-            vp["custom_x"] = tk.IntVar(value=p.get("custom_x", 960))
-            vp["custom_y"] = tk.IntVar(value=p.get("custom_y", 540))
-            vp["delay"] = tk.DoubleVar(value=p.get("delay", 1.5))
+            vp["timeout"] = tk.IntVar(value=_safe_int(p.get("timeout", 10)))
+
+            raw_mode = p.get("click_mode", "🎯 點擊目標中心")
+            if raw_mode in ("click_text", "click_target", "點擊目標中心", "🎯 點擊目標圖片 (按鈕中心)", "🎯 點擊目標文字 (詞條中心)"):
+                init_act = "🎯 點擊目標中心"
+            elif raw_mode in ("custom_coord", "自訂座標", "📍 點擊指定座標 (自訂)"):
+                init_act = "📍 點擊自訂座標"
+            elif raw_mode in ("custom_block", "自訂特定區塊", "🔲 自訂特定區塊"):
+                init_act = "🔲 自訂特定區塊"
+            elif raw_mode in ("wait_only", "無動作", "無動作(僅等待)", "⏳ 無動作(僅等待)"):
+                init_act = "⏳ 無動作(僅等待)"
+            else:
+                init_act = raw_mode
+            vp["click_mode"] = tk.StringVar(value=init_act)
+
+            vp["custom_x"] = tk.IntVar(value=_safe_int(p.get("custom_x", 960)))
+            vp["custom_y"] = tk.IntVar(value=_safe_int(p.get("custom_y", 540)))
+            vp["block_x1"] = tk.IntVar(value=_safe_int(p.get("block_x1", 800)))
+            vp["block_y1"] = tk.IntVar(value=_safe_int(p.get("block_y1", 450)))
+            vp["block_x2"] = tk.IntVar(value=_safe_int(p.get("block_x2", 1120)))
+            vp["block_y2"] = tk.IntVar(value=_safe_int(p.get("block_y2", 630)))
+            vp["delay"] = tk.DoubleVar(value=_safe_float(p.get("delay", 1.5)))
             vp["on_timeout"] = tk.StringVar(value=p.get("on_timeout", "continue"))
 
+            # 命中後連點設定
+            vp["repeat_enabled"] = tk.BooleanVar(value=bool(p.get("repeat_enabled", False)))
+            vp["repeat_mode"] = tk.StringVar(value=p.get("repeat_mode", "指定次數"))
+            vp["repeat_count"] = tk.IntVar(value=_safe_int(p.get("repeat_count", 10)))
+            vp["repeat_interval"] = tk.DoubleVar(value=_safe_float(p.get("repeat_interval", p.get("repeat_speed", 0.25))))
+            vp["repeat_area"] = tk.StringVar(value=p.get("repeat_area", "跟隨命中目標"))
+            vp["repeat_custom_x"] = tk.IntVar(value=_safe_int(p.get("repeat_custom_x", 960)))
+            vp["repeat_custom_y"] = tk.IntVar(value=_safe_int(p.get("repeat_custom_y", 540)))
+
+            for k in ("target_type", "keywords", "template_image", "image_threshold", "image_multiscale",
+                      "timeout", "click_mode", "custom_x", "custom_y", "block_x1", "block_y1",
+                      "block_x2", "block_y2", "delay", "on_timeout", "repeat_enabled", "repeat_mode",
+                      "repeat_count", "repeat_interval", "repeat_area", "repeat_custom_x", "repeat_custom_y"):
+                vp[k].trace_add("write", lambda *_: self.auto_save_config())
+
+            def _fill_from_preview(target_x_var, target_y_var, desc_label="座標"):
+                c_text = self.var_picked_coord.get()
+                if "座標:" not in c_text:
+                    messagebox.showinfo("提示", "請先在右側截圖預覽上點擊位置以獲取座標！")
+                    return
+                raw = c_text.replace("座標:", "").strip().strip("()")
+                try:
+                    x, y = [int(v.strip()) for v in raw.split(",")]
+                    target_x_var.set(x)
+                    target_y_var.set(y)
+                    b_name = block["name"].get() if hasattr(block.get("name"), "get") else "偵測點擊"
+                    self._log(f"已將選取座標 ({x}, {y}) 填入 [{b_name}] 之 {desc_label}")
+                    self.auto_save_config()
+                except Exception:
+                    pass
+
+            # 行 1: 偵測類型與關鍵字
             row1 = ctk.CTkFrame(body, fg_color="transparent")
             row1.pack(fill="x", pady=2)
             ctk.CTkLabel(row1, text="類型:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
@@ -2523,7 +2776,124 @@ class TaskFlowTab:
             ctk.CTkLabel(box_kw, text="關鍵字:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
             ctk.CTkEntry(box_kw, textvariable=vp["keywords"], width=150, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6), fill="x", expand=True)
 
+            # 圖片模板微縮圖與參數設定列
             box_img_det = self._build_image_template_row(body, vp, block_dict=block)
+
+            # 行 2: 動作設定、超時與延遲
+            row2 = ctk.CTkFrame(body, fg_color="transparent")
+            row2.pack(fill="x", pady=2)
+            ctk.CTkLabel(row2, text="超時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["timeout"], width=38, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 6))
+
+            ctk.CTkLabel(row2, text="動作:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left")
+            ACTION_MODES = ["🎯 點擊目標中心", "📍 點擊自訂座標", "🔲 自訂特定區塊", "⏳ 無動作(僅等待)"]
+            combo_act = ctk.CTkComboBox(row2, variable=vp["click_mode"], values=ACTION_MODES, width=135, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
+            combo_act.pack(side="left", padx=(2, 6))
+
+            ctk.CTkLabel(row2, text="延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row2, textvariable=vp["delay"], width=40, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+
+            # 動作細項面板：自訂座標輸入
+            box_custom_xy = ctk.CTkFrame(body, fg_color="transparent")
+            ctk.CTkLabel(box_custom_xy, text="點擊座標 X:", font=ctk.CTkFont(size=11), text_color="#38BDF8").pack(side="left")
+            ctk.CTkEntry(box_custom_xy, textvariable=vp["custom_x"], width=48, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 4))
+            ctk.CTkLabel(box_custom_xy, text="Y:", font=ctk.CTkFont(size=11), text_color="#38BDF8").pack(side="left")
+            ctk.CTkEntry(box_custom_xy, textvariable=vp["custom_y"], width=48, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
+            ctk.CTkButton(box_custom_xy, text="填入選取座標", width=76, height=24, corner_radius=4, font=ctk.CTkFont(size=10, weight="bold"), fg_color=COLOR_BTN_PRIMARY, hover_color=COLOR_BTN_PRIMARY_HOVER, command=lambda: _fill_from_preview(vp["custom_x"], vp["custom_y"], "自訂座標")).pack(side="left")
+
+            # 動作細項面板：自訂特定區塊輸入
+            box_custom_block = ctk.CTkFrame(body, fg_color="transparent")
+            ctk.CTkLabel(box_custom_block, text="區塊左上(X1,Y1):", font=ctk.CTkFont(size=10), text_color="#A78BFA").pack(side="left")
+            ctk.CTkEntry(box_custom_block, textvariable=vp["block_x1"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
+            ctk.CTkEntry(box_custom_block, textvariable=vp["block_y1"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(1, 4))
+            ctk.CTkButton(box_custom_block, text="填左上", width=46, height=22, corner_radius=4, font=ctk.CTkFont(size=9), fg_color="#6D28D9", hover_color="#5B21B6", command=lambda: _fill_from_preview(vp["block_x1"], vp["block_y1"], "區塊左上")).pack(side="left", padx=(0, 6))
+
+            ctk.CTkLabel(box_custom_block, text="右下(X2,Y2):", font=ctk.CTkFont(size=10), text_color="#A78BFA").pack(side="left")
+            ctk.CTkEntry(box_custom_block, textvariable=vp["block_x2"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=1)
+            ctk.CTkEntry(box_custom_block, textvariable=vp["block_y2"], width=44, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(1, 4))
+            ctk.CTkButton(box_custom_block, text="填右下", width=46, height=22, corner_radius=4, font=ctk.CTkFont(size=9), fg_color="#6D28D9", hover_color="#5B21B6", command=lambda: _fill_from_preview(vp["block_x2"], vp["block_y2"], "區塊右下")).pack(side="left")
+
+            # 行 3: ⚡ 命中後連點（過場跳過）勾選框
+            row_rep = ctk.CTkFrame(body, fg_color="transparent")
+            row_rep.pack(fill="x", pady=(3, 1))
+            ctk.CTkCheckBox(
+                row_rep,
+                text="⚡ 命中後連點（過場跳過）",
+                variable=vp["repeat_enabled"],
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="#F59E0B",
+                width=18,
+                height=18,
+                checkbox_width=16,
+                checkbox_height=16,
+                corner_radius=4
+            ).pack(side="left", padx=(0, 6))
+
+            # 連點細項面板 (暗色圓角卡片)
+            box_rep_detail = ctk.CTkFrame(body, fg_color="#181825", corner_radius=6, border_width=1, border_color="#334155")
+
+            # 連點面板第 1 列: 模式 + 次數 + 間隔
+            row_ro1 = ctk.CTkFrame(box_rep_detail, fg_color="transparent")
+            row_ro1.pack(fill="x", padx=6, pady=(3, 2))
+
+            ctk.CTkLabel(row_ro1, text="連點模式:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
+            ctk.CTkOptionMenu(
+                row_ro1,
+                variable=vp["repeat_mode"],
+                values=["指定次數", "持續連點"],
+                width=88,
+                height=22,
+                corner_radius=4,
+                font=ctk.CTkFont(size=10)
+            ).pack(side="left", padx=(0, 6))
+
+            box_ro_cnt = ctk.CTkFrame(row_ro1, fg_color="transparent")
+            ctk.CTkLabel(box_ro_cnt, text="次數:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(box_ro_cnt, textvariable=vp["repeat_count"], width=38, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(box_ro_cnt, text="次", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
+
+            ctk.CTkLabel(row_ro1, text="間隔:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            ctk.CTkEntry(row_ro1, textvariable=vp["repeat_interval"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(row_ro1, text="秒", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
+
+            # 連點面板第 2 列: 連點位置 + 自訂座標輸入
+            row_ro2 = ctk.CTkFrame(box_rep_detail, fg_color="transparent")
+            row_ro2.pack(fill="x", padx=6, pady=(2, 4))
+
+            ctk.CTkLabel(row_ro2, text="連點位置:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 2))
+            REP_AREAS = ["跟隨命中目標", "右下角區域", "中央區域", "右上角 (Skip)", "右半側中央", "自訂座標"]
+            ctk.CTkOptionMenu(
+                row_ro2,
+                variable=vp["repeat_area"],
+                values=REP_AREAS,
+                width=110,
+                height=22,
+                corner_radius=4,
+                font=ctk.CTkFont(size=10)
+            ).pack(side="left", padx=(0, 6))
+
+            box_rep_xy = ctk.CTkFrame(row_ro2, fg_color="transparent")
+            ctk.CTkLabel(box_rep_xy, text="X:", font=ctk.CTkFont(size=10), text_color="#F59E0B").pack(side="left")
+            ctk.CTkEntry(box_rep_xy, textvariable=vp["repeat_custom_x"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 2))
+            ctk.CTkLabel(box_rep_xy, text="Y:", font=ctk.CTkFont(size=10), text_color="#F59E0B").pack(side="left")
+            ctk.CTkEntry(box_rep_xy, textvariable=vp["repeat_custom_y"], width=42, height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, font=ctk.CTkFont(family="Menlo", size=10)).pack(side="left", padx=(2, 4))
+            ctk.CTkButton(box_rep_xy, text="填入", width=38, height=22, corner_radius=4, font=ctk.CTkFont(size=9), fg_color="#D97706", hover_color="#B45309", command=lambda: _fill_from_preview(vp["repeat_custom_x"], vp["repeat_custom_y"], "連點自訂座標")).pack(side="left")
+
+            def _refresh_click_mode_ui(*_):
+                cm = vp["click_mode"].get()
+                if "自訂座標" in cm or cm == "custom_coord":
+                    box_custom_block.pack_forget()
+                    box_custom_xy.pack(fill="x", pady=(2, 2), before=row_rep)
+                elif "區塊" in cm or cm == "custom_block":
+                    box_custom_xy.pack_forget()
+                    box_custom_block.pack(fill="x", pady=(2, 2), before=row_rep)
+                else:
+                    box_custom_xy.pack_forget()
+                    box_custom_block.pack_forget()
+
+            vp["click_mode"].trace_add("write", _refresh_click_mode_ui)
 
             def _toggle_det_type(*_):
                 tt = vp["target_type"].get()
@@ -2533,37 +2903,31 @@ class TaskFlowTab:
                 else:
                     box_img_det.pack_forget()
                     box_kw.pack(side="left", fill="x", expand=True)
+
             vp["target_type"].trace_add("write", _toggle_det_type)
 
-            row2 = ctk.CTkFrame(body, fg_color="transparent")
-            row2.pack(fill="x", pady=2)
-            ctk.CTkLabel(row2, text="超時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkEntry(row2, textvariable=vp["timeout"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
-            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 6))
+            def _refresh_repeat_ui(*_):
+                if vp["repeat_enabled"].get():
+                    box_rep_detail.pack(fill="x", pady=(2, 2))
+                    if vp["repeat_mode"].get() == "指定次數":
+                        box_ro_cnt.pack(side="left", padx=(0, 6), before=row_ro1.winfo_children()[-3])
+                    else:
+                        box_ro_cnt.pack_forget()
 
-            ctk.CTkLabel(row2, text="動作:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            combo_act = ctk.CTkComboBox(row2, variable=vp["click_mode"], values=["click_text", "custom_coord"], width=105, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
-            combo_act.pack(side="left", padx=(2, 6))
-
-            box_xy = ctk.CTkFrame(row2, fg_color="transparent")
-            ctk.CTkLabel(box_xy, text="X:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkEntry(box_xy, textvariable=vp["custom_x"], width=48, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 4))
-            ctk.CTkLabel(box_xy, text="Y:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkEntry(box_xy, textvariable=vp["custom_y"], width=48, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 6))
-
-            def _toggle_xy(*_):
-                if vp["click_mode"].get() == "custom_coord":
-                    box_xy.pack(side="left")
+                    if "自訂" in vp["repeat_area"].get():
+                        box_rep_xy.pack(side="left", padx=(4, 0))
+                    else:
+                        box_rep_xy.pack_forget()
                 else:
-                    box_xy.pack_forget()
-            vp["click_mode"].trace_add("write", _toggle_xy)
-            _toggle_xy()
+                    box_rep_detail.pack_forget()
 
-            ctk.CTkLabel(row2, text="延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
-            ctk.CTkEntry(row2, textvariable=vp["delay"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
-            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+            vp["repeat_enabled"].trace_add("write", _refresh_repeat_ui)
+            vp["repeat_mode"].trace_add("write", _refresh_repeat_ui)
+            vp["repeat_area"].trace_add("write", _refresh_repeat_ui)
 
             _toggle_det_type()
+            _refresh_click_mode_ui()
+            _refresh_repeat_ui()
 
         elif b_type == "branch_if":
             branches_data = p.get("branches")
@@ -3156,11 +3520,16 @@ class TaskFlowTab:
         except Exception:
             return
         vp = target_block.get("var_params", {})
+        b_name = target_block["name"].get() if hasattr(target_block.get("name"), "get") else "積木"
         if "x" in vp and "y" in vp:
             vp["x"].set(x)
             vp["y"].set(y)
-            b_name = target_block["name"].get() if hasattr(target_block.get("name"), "get") else "積木"
             self._log(f"已將座標 ({x}, {y}) 填入 [{b_name}]")
+            self.auto_save_config()
+        elif "custom_x" in vp and "custom_y" in vp:
+            vp["custom_x"].set(x)
+            vp["custom_y"].set(y)
+            self._log(f"已將座標 ({x}, {y}) 填入 [{b_name}] 自訂座標")
             self.auto_save_config()
 
     def select_block(self, block_item: Dict[str, Any]):
@@ -3587,33 +3956,47 @@ class TaskFlowTab:
 
     def _serialize_single_block(self, b: Dict[str, Any]) -> Dict[str, Any]:
         p = {}
-        for k, v in b["var_params"].items():
+        for k, v in b.get("var_params", {}).items():
+            # 徹底忽略所有私有/臨時快取屬性 (如 _thumb_img, _btn 等)
+            if str(k).startswith("_"):
+                continue
+
             if k == "branches" and isinstance(v, list):
                 p["branches"] = [
                     {
-                        "name": br.get("name", "If"),
-                        "keywords": br["keywords"].get() if hasattr(br.get("keywords"), "get") else br.get("keywords", ""),
-                        "template_image": br["template_image"].get() if hasattr(br.get("template_image"), "get") else br.get("template_image", ""),
-                        "threshold": br["threshold"].get() if hasattr(br.get("threshold"), "get") else br.get("threshold", 0.80),
-                        "multiscale": br["multiscale"].get() if hasattr(br.get("multiscale"), "get") else br.get("multiscale", False),
-                        "x": br["x"].get() if hasattr(br.get("x"), "get") else br.get("x", 0),
-                        "y": br["y"].get() if hasattr(br.get("y"), "get") else br.get("y", 0)
+                        "name": str(br.get("name", "If")),
+                        "keywords": str(br["keywords"].get() if hasattr(br.get("keywords"), "get") else br.get("keywords", "")),
+                        "template_image": str(br["template_image"].get() if hasattr(br.get("template_image"), "get") else br.get("template_image", "")),
+                        "threshold": float(br["threshold"].get() if hasattr(br.get("threshold"), "get") else br.get("threshold", 0.80)),
+                        "multiscale": bool(br["multiscale"].get() if hasattr(br.get("multiscale"), "get") else br.get("multiscale", False)),
+                        "x": int(br["x"].get() if hasattr(br.get("x"), "get") else br.get("x", 0)),
+                        "y": int(br["y"].get() if hasattr(br.get("y"), "get") else br.get("y", 0))
                     }
                     for br in v
                 ]
             elif hasattr(v, "get"):
-                p[k] = v.get()
-            else:
+                raw_v = v.get()
+                if isinstance(raw_v, (str, int, float, bool)):
+                    p[k] = raw_v
+                elif raw_v is None:
+                    p[k] = None
+                else:
+                    p[k] = str(raw_v)
+            elif isinstance(v, (str, int, float, bool)):
                 p[k] = v
+            elif isinstance(v, (list, tuple)):
+                p[k] = [x for x in v if isinstance(x, (str, int, float, bool, dict))]
+            elif isinstance(v, dict):
+                p[k] = {str(dk): dv for dk, dv in v.items() if not str(dk).startswith("_") and isinstance(dv, (str, int, float, bool, list, dict))}
 
-        if b["type"] == "loop":
+        if b.get("type") == "loop":
             inner_list = b.get("inner_blocks_list", [])
             p["inner_blocks"] = [self._serialize_single_block(sb) for sb in inner_list]
 
         return {
-            "type": b["type"],
-            "name": b["name"].get() if hasattr(b["name"], "get") else b["name"],
-            "enabled": b["enabled"].get() if hasattr(b["enabled"], "get") else b["enabled"],
+            "type": b.get("type", "tap_coord"),
+            "name": str(b["name"].get() if hasattr(b.get("name"), "get") else b.get("name", "積木")),
+            "enabled": bool(b["enabled"].get() if hasattr(b.get("enabled"), "get") else b.get("enabled", True)),
             "params": p
         }
 
@@ -3675,6 +4058,9 @@ class TaskFlowTab:
 
     def auto_save_config(self):
         try:
+            parent_d = os.path.dirname(self.save_file)
+            if parent_d and not os.path.exists(parent_d):
+                os.makedirs(parent_d, exist_ok=True)
             data = {
                 "version": "1.0",
                 "loop_count": self.var_loop_count.get(),
@@ -3685,7 +4071,7 @@ class TaskFlowTab:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             if self.gui and hasattr(self.gui, "auto_save_current_config"):
                 self.gui.auto_save_current_config()
-        except Exception:
+        except Exception as e:
             pass
 
     def load_config_auto(self):
