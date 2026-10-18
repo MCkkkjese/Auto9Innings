@@ -763,11 +763,21 @@ class BaseballBotGUI:
                 btn.configure(fg_color=COLOR_BTN_DARK, text_color=COLOR_TEXT_MUTED)
 
     def _on_tab_changed(self):
-        """切換頁籤事件回呼：當點擊進入打擊輔助時先跳出警告，並同步頂部按鈕高亮"""
+        """切換頁籤事件回呼：當點擊進入打擊輔助時先跳出警告，並同步頂部按鈕高亮與預覽刷新"""
         self._update_tab_nav_highlights()
         selected_tab = self.tabview.get()
         if "即時打擊輔助" in selected_tab:
             messagebox.showwarning("警告", "正在開發，功能不完全")
+        elif "任務清單" in selected_tab:
+            if hasattr(self, "task_tab") and self.task_tab:
+                if self.task_tab.var_auto_preview.get():
+                    self.task_tab._schedule_auto_refresh(delay_ms=200)
+                elif self.current_screen_bgr is not None and self.task_tab.current_screen_bgr is None:
+                    self.task_tab.current_screen_bgr = self.current_screen_bgr
+                    self.task_tab._render_preview(self.current_screen_bgr)
+        elif "聯賽自動刷" in selected_tab:
+            if self.var_auto_refresh.get() and self.bot.device and not (self.bot.is_running or self.is_running):
+                self._schedule_next_refresh(delay_ms=200)
 
     def _build_disabled_batting_tab(self, parent: ctk.CTkFrame):
         """
@@ -3807,7 +3817,19 @@ class BaseballBotGUI:
         if not target or target == "未偵測到裝置":
             target = None
         self.log_message(f"連線至裝置: {target or '預設第一台'}")
+
+        # 強制重置截圖鎖定狀態與排程，杜絕前次連線殘留的死鎖
+        self._capturing = False
+        if self.auto_refresh_job:
+            try:
+                self.root.after_cancel(self.auto_refresh_job)
+            except Exception:
+                pass
+            self.auto_refresh_job = None
+
         if self.bot.connect(target_serial=target):
+            if self.bot.device:
+                self.var_device.set(self.bot.device.serial)
             self._set_status("已連線 (CONNECTED)", COLOR_RUNNING)
             self.btn_start.configure(state="normal")
             self.btn_stop.configure(state="disabled")
@@ -3815,6 +3837,13 @@ class BaseballBotGUI:
             self.on_preview_and_detect()
             if self.var_auto_refresh.get():
                 self._schedule_next_refresh(self._get_preview_interval_ms())
+
+            # ⭐ 同步通知任務清單分頁連線成功，恢復預覽與自動刷新
+            if hasattr(self, "task_tab") and self.task_tab:
+                try:
+                    self.task_tab.on_device_connected()
+                except Exception as e:
+                    self.log_message(f"通知任務清單連線異常: {e}")
         else:
             self._set_status("連線失敗 (FAILED)", COLOR_STOPPED)
             messagebox.showerror("錯誤", "無法連線至指定的 ADB 裝置。請檢查連接埠或重啟模擬器。")
@@ -4154,17 +4183,22 @@ class BaseballBotGUI:
         self.btn_capture.configure(state="disabled")
 
         def work():
-            screen = self.bot.capture_screen()
-            def done():
-                self._capturing = False
-                self.btn_capture.configure(state="normal")
-                if screen is not None:
-                    self.current_screen_bgr = screen
-                    self._render_preview(screen)
-                if self.var_auto_refresh.get() and self.bot.device and not (self.bot.is_running or self.is_running):
-                    if not self.auto_refresh_job:
-                        self._schedule_next_refresh(self._get_preview_interval_ms())
-            self.root.after(0, done)
+            screen = None
+            try:
+                screen = self.bot.capture_screen()
+            except Exception as e:
+                self.log_message(f"畫面抓取異常: {e}")
+            finally:
+                def done():
+                    self._capturing = False
+                    self.btn_capture.configure(state="normal")
+                    if screen is not None:
+                        self.current_screen_bgr = screen
+                        self._render_preview(screen)
+                    if self.var_auto_refresh.get() and self.bot.device and not (self.bot.is_running or self.is_running):
+                        if not self.auto_refresh_job:
+                            self._schedule_next_refresh(self._get_preview_interval_ms())
+                self.root.after(0, done)
         threading.Thread(target=work, daemon=True).start()
 
     def on_bot_frame_update(self, screen_bgr: np.ndarray, detected_items: list, matched=None):
@@ -4591,6 +4625,9 @@ class BaseballBotGUI:
             self.on_preview_and_detect()
             interval_ms = self._get_preview_interval_ms()
             self._schedule_next_refresh(interval_ms)
+        elif self.var_auto_refresh.get() and not self.bot.device:
+            # 尚未連線或斷線時維持定時心跳檢測，確保模擬器重開後即時捕獲
+            self._schedule_next_refresh(2000)
 
     # ==========================================================================
     # 📜 日誌終端輸出與跨執行緒佇列渲染

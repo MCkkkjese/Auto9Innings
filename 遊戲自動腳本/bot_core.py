@@ -694,12 +694,12 @@ class BaseballBot:
             return None
 
     def get_devices_list(self) -> List[str]:
-        """獲取目前 ADB 連接的所有裝置序號（若未啟動則自動偵測啟動）"""
+        """獲取目前 ADB 連接的所有在線裝置序號（若未啟動則自動偵測啟動）"""
         try:
             client = AdbClient(host=self.adb_host, port=self.adb_port)
-            devices = client.devices()
-            if devices:
-                return [d.serial for d in devices]
+            devs = client.devices(state="device") or client.devices()
+            if devs:
+                return [d.serial for d in devs]
         except Exception:
             pass
 
@@ -709,8 +709,8 @@ class BaseballBot:
 
         try:
             client = AdbClient(host=self.adb_host, port=self.adb_port)
-            devices = client.devices()
-            return [d.serial for d in devices]
+            devs = client.devices(state="device") or client.devices()
+            return [d.serial for d in devs]
         except Exception as e:
             self._log(f"ADB 連線異常: {e}", "ERROR")
             return []
@@ -718,23 +718,37 @@ class BaseballBot:
     def connect(self, target_serial: Optional[str] = None) -> bool:
         """連線至 ADB Server 並選定目標裝置"""
         try:
+            self.device = None
             client = AdbClient(host=self.adb_host, port=self.adb_port)
-            devices = client.devices()
+            try:
+                devices = client.devices(state="device")
+            except Exception:
+                devices = []
+
+            if not devices:
+                try:
+                    devices = client.devices()
+                except Exception:
+                    devices = []
 
             if not devices:
                 self.auto_detect_and_start_adb()
-                devices = client.devices()
+                try:
+                    devices = client.devices(state="device") or client.devices()
+                except Exception:
+                    devices = []
 
             if not devices:
                 self._log("未檢測到任何已連線的模擬器！請確認 BlueStacks/MuMu 已開機。", "ERROR")
                 return False
 
-            if target_serial:
+            if target_serial and target_serial != "未偵測到裝置":
                 matched = [d for d in devices if d.serial == target_serial]
-                if not matched:
-                    self._log(f"找不到序號為 {target_serial} 的裝置！", "ERROR")
-                    return False
-                self.device = matched[0]
+                if matched:
+                    self.device = matched[0]
+                else:
+                    self._log(f"指定序號 {target_serial} 不在線，自動切換至在線裝置: {devices[0].serial}", "WARNING")
+                    self.device = devices[0]
             else:
                 self.device = devices[0]
 
@@ -742,16 +756,31 @@ class BaseballBot:
             return True
         except Exception as e:
             self._log(f"連線 ADB 異常: {e}", "ERROR")
+            self.device = None
             return False
 
+    def _safe_screencap(self, device, timeout: float = 3.0) -> Optional[bytes]:
+        """透過 ppadb 取得 screencap 二進位資料，限制 socket 超時杜絕永久死鎖"""
+        try:
+            conn = device.create_connection(timeout=timeout)
+            with conn:
+                cmd = "shell:/system/bin/screencap -p"
+                conn.send(cmd)
+                result = conn.read_all()
+            if result and len(result) > 5 and result[5] == 0x0d:
+                return bytes(result.replace(b'\r\n', b'\n'))
+            return bytes(result) if result else None
+        except Exception:
+            return None
+
     # =========================================================================
-    # 【項目 D】ADB 通訊強韌化 (3 次重試、斷線自動重新取得連線)
+    # 【項目 D】ADB 通訊強韌化 (超時防禦、斷線快速恢復機制)
     # 【項目 C】記憶體與效能保護 (明確刪除暫存 buffer 與顯式記憶體管理)
     # =========================================================================
-    def capture_screen(self, max_retries: int = 3) -> Optional[np.ndarray]:
+    def capture_screen(self, max_retries: int = 2) -> Optional[np.ndarray]:
         """
         後台截圖並轉為 BGR OpenCV 矩陣。
-        【項目 D - 強化】：內建 3 次重試與斷線自動重連機制。
+        【項目 D - 強化】：內建 3 秒 Socket 超時防禦，杜絕模擬器斷線造成的永久阻塞死鎖。
         【項目 C - 強化】：主動釋放 raw_png 二進位緩衝區與臨時陣列，避免記憶體洩漏。
         """
         if not self.device:
@@ -763,11 +792,9 @@ class BaseballBot:
         for attempt in range(1, max_retries + 1):
             raw_png = None
 
-            # 管道 1: pure-python-adb 原生 screencap
-            try:
-                raw_png = self.device.screencap()
-            except Exception as adb_err:
-                raw_png = None
+            # 管道 1: pure-python-adb 帶有 3 秒 Socket 逾時防禦原生 screencap
+            if self.device:
+                raw_png = self._safe_screencap(self.device, timeout=3.0)
 
             # 管道 2: 備援 exec-out (針對 BlueStacks FAIL 0006closed 或 Socket 中斷)
             if not raw_png or len(raw_png) < 100:
@@ -776,7 +803,7 @@ class BaseballBot:
                     try:
                         cmd = [adb_bin, "-s", current_serial, "exec-out", "screencap", "-p"]
                         kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
-                        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, **kwargs)
+                        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3, **kwargs)
                         if proc.returncode == 0 and len(proc.stdout) > 100:
                             raw_png = proc.stdout
                     except Exception as sub_e:
@@ -799,12 +826,11 @@ class BaseballBot:
 
             # 若此輪失敗，進行重試並在需要時重新連線
             if attempt < max_retries:
-                self._log(f"⚠️ 截圖通訊微斷線 (第 {attempt}/{max_retries} 次)，1 秒後重試並修復連線...", "WARNING")
-                time.sleep(1.0)
-                # 【項目 D】重新取得 device 物件連線
-                self.connect(target_serial=current_serial)
+                time.sleep(0.5)
+                # 重新取得 device 物件連線
+                if current_serial:
+                    self.connect(target_serial=current_serial)
 
-        self._log("截圖失敗：連續 3 次重試後仍無法從裝置取得畫面緩衝區", "ERROR")
         return None
 
     # 別名相容

@@ -2187,7 +2187,7 @@ class TaskFlowTab:
 
         self.var_loop_count = tk.IntVar(value=1)
         self.var_status_text = tk.StringVar(value="🟢 閒置中")
-        self.var_auto_preview = tk.BooleanVar(value=False)
+        self.var_auto_preview = tk.BooleanVar(value=True)
         self.var_preview_coords = tk.StringVar(value="")
         self.var_picked_coord = tk.StringVar(value="尚未選取座標")
 
@@ -2534,42 +2534,45 @@ class TaskFlowTab:
         btn_apply.pack(side="left")
 
         def _update_thumb(*_):
-            img_val = vp["template_image"].get().strip() if "template_image" in vp and hasattr(vp["template_image"], "get") else ""
-            if not img_val:
-                lbl_thumb.configure(image="", text="（未選圖）", fg=COLOR_TEXT_DIM, width=8, height=2)
+            try:
+                img_val = vp["template_image"].get().strip() if "template_image" in vp and hasattr(vp["template_image"], "get") else ""
+                if not img_val:
+                    lbl_thumb.configure(image="", text="（未選圖）", fg=COLOR_TEXT_DIM, width=8, height=2)
+                    lbl_thumb.image = None
+                    lbl_count.configure(text="")
+                    vp.pop("_thumb_img", None)
+                    return
+
+                img_list = TaskEngine.parse_template_images_list(img_val)
+                if len(img_list) > 1:
+                    lbl_count.configure(text=f"[{len(img_list)}張複選]")
+                else:
+                    lbl_count.configure(text="")
+
+                first_p = self.resolve_image_path(img_list[0]) if img_list else None
+                if first_p and os.path.exists(first_p):
+                    try:
+                        bgr = imread_unicode(first_p)
+                        if bgr is not None:
+                            th_h, th_w = bgr.shape[:2]
+                            max_dim = 36
+                            scale = min(max_dim / max(1, th_w), max_dim / max(1, th_h))
+                            tw, th = max(1, int(th_w * scale)), max(1, int(th_h * scale))
+                            resized = cv2.resize(bgr, (tw, th), interpolation=cv2.INTER_AREA)
+                            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                            pil_img = Image.fromarray(rgb)
+                            tk_img = ImageTk.PhotoImage(pil_img)
+                            lbl_thumb.configure(image=tk_img, text="", width=tw, height=th)
+                            lbl_thumb.image = tk_img  # 保存在 Label 自身防止垃圾回收，絕不放進 var_params 污染存檔
+                            vp.pop("_thumb_img", None)
+                            return
+                    except Exception:
+                        pass
+                lbl_thumb.configure(image="", text=f"⚠️ {len(img_list)}張" if len(img_list) > 1 else "⚠️ 缺檔", fg="#EF4444", width=8, height=2)
                 lbl_thumb.image = None
-                lbl_count.configure(text="")
                 vp.pop("_thumb_img", None)
-                return
-
-            img_list = TaskEngine.parse_template_images_list(img_val)
-            if len(img_list) > 1:
-                lbl_count.configure(text=f"[{len(img_list)}張複選]")
-            else:
-                lbl_count.configure(text="")
-
-            first_p = self.resolve_image_path(img_list[0]) if img_list else None
-            if first_p and os.path.exists(first_p):
-                try:
-                    bgr = imread_unicode(first_p)
-                    if bgr is not None:
-                        th_h, th_w = bgr.shape[:2]
-                        max_dim = 36
-                        scale = min(max_dim / max(1, th_w), max_dim / max(1, th_h))
-                        tw, th = max(1, int(th_w * scale)), max(1, int(th_h * scale))
-                        resized = cv2.resize(bgr, (tw, th), interpolation=cv2.INTER_AREA)
-                        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-                        pil_img = Image.fromarray(rgb)
-                        tk_img = ImageTk.PhotoImage(pil_img)
-                        lbl_thumb.configure(image=tk_img, text="", width=tw, height=th)
-                        lbl_thumb.image = tk_img  # 保存在 Label 自身防止垃圾回收，絕不放進 var_params 污染存檔
-                        vp.pop("_thumb_img", None)
-                        return
-                except Exception:
-                    pass
-            lbl_thumb.configure(image="", text=f"⚠️ {len(img_list)}張" if len(img_list) > 1 else "⚠️ 缺檔", fg="#EF4444", width=8, height=2)
-            lbl_thumb.image = None
-            vp.pop("_thumb_img", None)
+            except Exception:
+                pass
 
         vp["template_image"].trace_add("write", _update_thumb)
         vp["template_image"].trace_add("write", lambda *_: self.auto_save_config())
@@ -3349,20 +3352,17 @@ class TaskFlowTab:
     def _toggle_preview_canvas(self):
         """展開或收合預覽畫布 (小螢幕下收合畫布可讓日誌終端全展開)"""
         self._preview_open = not getattr(self, "_preview_open", True)
-        if self._preview_open:
-            if hasattr(self, "preview_holder"):
-                self.preview_holder.pack(fill="x", expand=False, padx=10, pady=(4, 4), before=self.coord_box)
-            if hasattr(self, "coord_box"):
-                self.coord_box.pack(fill="x", padx=10, pady=(0, 4), before=self.card_log)
-            if hasattr(self, "btn_fold_preview"):
-                self.btn_fold_preview.configure(text="畫布 ▾")
-        else:
-            if hasattr(self, "preview_holder"):
-                self.preview_holder.pack_forget()
-            if hasattr(self, "coord_box"):
-                self.coord_box.pack_forget()
-            if hasattr(self, "btn_fold_preview"):
-                self.btn_fold_preview.configure(text="畫布 ▸")
+        if hasattr(self, "preview_container"):
+            if self._preview_open:
+                if hasattr(self, "card_log") and self.card_log.winfo_manager() == "pack":
+                    self.preview_container.pack(fill="x", expand=False, padx=0, pady=0, before=self.card_log)
+                else:
+                    self.preview_container.pack(fill="x", expand=False, padx=0, pady=0)
+            else:
+                self.preview_container.pack_forget()
+
+        if hasattr(self, "btn_fold_preview"):
+            self.btn_fold_preview.configure(text="畫布 ▾" if self._preview_open else "畫布 ▸")
 
     def _build_picker_panel(self, parent):
         card = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_CARD_BORDER)
@@ -3416,7 +3416,11 @@ class TaskFlowTab:
         )
         self.lbl_coord_rt.pack(side="right")
 
-        self.preview_holder = tk.Frame(card, width=340, height=200, bg="#181825")
+        # 預覽畫布與座標操控總容器 (便於安全展開/收合，永不損壞 pack 幾何參照)
+        self.preview_container = ctk.CTkFrame(card, fg_color="transparent")
+        self.preview_container.pack(fill="x", expand=False, padx=0, pady=0)
+
+        self.preview_holder = tk.Frame(self.preview_container, width=340, height=200, bg="#181825")
         self.preview_holder.pack_propagate(False)
         self.preview_holder.pack(fill="x", expand=False, padx=10, pady=(4, 4))
         self.preview_holder.bind("<Configure>", self._on_preview_resize)
@@ -3435,7 +3439,7 @@ class TaskFlowTab:
         self.lbl_canvas.bind("<Leave>", lambda e: self.var_preview_coords.set(""))
         self.lbl_canvas.bind("<Button-1>", self._on_preview_click)
 
-        coord_box = ctk.CTkFrame(card, fg_color="transparent")
+        coord_box = ctk.CTkFrame(self.preview_container, fg_color="transparent")
         coord_box.pack(fill="x", padx=10, pady=(0, 4))
         self.coord_box = coord_box
 
@@ -3522,6 +3526,10 @@ class TaskFlowTab:
         )
         self.log_textbox.pack(fill="both", expand=True, padx=6, pady=(0, 6))
         self.log_textbox.configure(state="disabled")
+
+        # 預設啟動預覽畫面連續刷新 (若已連線則立即抓圖，未連線則維持心跳排程)
+        if self.var_auto_preview.get():
+            self._schedule_auto_refresh(delay_ms=800)
 
     def add_block(
         self,
@@ -5204,24 +5212,24 @@ class TaskFlowTab:
                 screen = self.bot.capture_screen()
             except Exception as e:
                 err = e
-
-            def done():
-                self._capturing = False
-                self.btn_capture.configure(state="normal")
-                if screen is not None:
-                    self.current_screen_bgr = screen
-                    self._render_preview(screen)
-                    self._log("📸 畫面擷取成功！點擊畫面任意位置即可選取座標。")
-                else:
-                    if self.gui and getattr(self.gui, "current_screen_bgr", None) is not None:
-                        self.current_screen_bgr = self.gui.current_screen_bgr
-                        self._render_preview(self.current_screen_bgr)
-                        self._log("📸 已同步主視窗快取畫面。")
+            finally:
+                def done():
+                    self._capturing = False
+                    self.btn_capture.configure(state="normal")
+                    if screen is not None:
+                        self.current_screen_bgr = screen
+                        self._render_preview(screen)
+                        self._log("📸 畫面擷取成功！點擊畫面任意位置即可選取座標。")
                     else:
-                        self._log(f"❌ 擷取失敗: {err or '無法從裝置取得畫面'}")
-                        messagebox.showerror("錯誤", f"無法從模擬器取得截圖{': ' + str(err) if err else ''}")
+                        if self.gui and getattr(self.gui, "current_screen_bgr", None) is not None:
+                            self.current_screen_bgr = self.gui.current_screen_bgr
+                            self._render_preview(self.current_screen_bgr)
+                            self._log("📸 已同步主視窗快取畫面。")
+                        else:
+                            self._log(f"❌ 擷取失敗: {err or '無法從裝置取得畫面'}")
+                            messagebox.showerror("錯誤", f"無法從模擬器取得截圖{': ' + str(err) if err else ''}")
 
-            self.parent.after(0, done)
+                self.parent.after(0, done)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -5451,43 +5459,85 @@ class TaskFlowTab:
     def on_toggle_auto_refresh(self):
         if self.var_auto_preview.get():
             if not self.bot or not self.bot.device:
-                messagebox.showwarning("提示", "請先連線模擬器")
-                self.var_auto_preview.set(False)
-                return
+                if self.gui and hasattr(self.gui, "bot") and self.gui.bot and self.gui.bot.device:
+                    self.bot = self.gui.bot
+                else:
+                    messagebox.showwarning("提示", "請先連線模擬器")
+                    self.var_auto_preview.set(False)
+                    return
             self._schedule_auto_refresh(delay_ms=200)
         elif self._auto_preview_job:
-            self.parent.after_cancel(self._auto_preview_job)
+            try:
+                self.parent.after_cancel(self._auto_preview_job)
+            except Exception:
+                pass
             self._auto_preview_job = None
 
     def _schedule_auto_refresh(self, delay_ms: int = 1500):
         if not self.var_auto_preview.get():
             return
+        if self._auto_preview_job:
+            try:
+                self.parent.after_cancel(self._auto_preview_job)
+            except Exception:
+                pass
         self._auto_preview_job = self.parent.after(delay_ms, self._auto_refresh_tick)
 
     def _auto_refresh_tick(self):
         self._auto_preview_job = None
         if not self.var_auto_preview.get():
             return
+
+        # 檢查並同步 bot 裝置
         if not self.bot or not self.bot.device:
-            self.var_auto_preview.set(False)
+            if self.gui and hasattr(self.gui, "bot") and self.gui.bot and self.gui.bot.device:
+                self.bot = self.gui.bot
+            else:
+                # 尚未連線或斷線時維持心跳重試，絕不強制關閉使用者的自動開關
+                self._schedule_auto_refresh(delay_ms=2000)
+                return
+
+        if getattr(self, "_capturing", False):
+            self._schedule_auto_refresh(delay_ms=600)
             return
+
+        self._capturing = True
 
         def work():
             screen = None
             try:
                 screen = self.bot.capture_screen()
             except Exception:
-                pass
+                screen = None
+            finally:
+                def done():
+                    self._capturing = False
+                    if screen is not None:
+                        self.current_screen_bgr = screen
+                        self._render_preview(screen)
+                    self._schedule_auto_refresh(delay_ms=1500)
 
-            def done():
-                if screen is not None:
-                    self.current_screen_bgr = screen
-                    self._render_preview(screen)
-                self._schedule_auto_refresh(delay_ms=1500)
-
-            self.parent.after(0, done)
+                self.parent.after(0, done)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def on_device_connected(self):
+        """當 ADB 裝置連線或重新連線成功時觸發：立即同步 bot 並恢復預覽刷新"""
+        self._capturing = False
+        if self.gui and hasattr(self.gui, "bot") and self.gui.bot and self.gui.bot.device:
+            self.bot = self.gui.bot
+
+        if self._auto_preview_job:
+            try:
+                self.parent.after_cancel(self._auto_preview_job)
+            except Exception:
+                pass
+            self._auto_preview_job = None
+
+        if self.var_auto_preview.get():
+            self._schedule_auto_refresh(delay_ms=200)
+        else:
+            self.on_capture_screen()
 
     def on_run_tasks(self):
         if not self.blocks_list and not self.priority_blocks_list:
