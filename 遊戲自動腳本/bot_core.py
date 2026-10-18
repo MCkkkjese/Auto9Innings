@@ -584,12 +584,15 @@ class BaseballBot:
         lines.append(f"⏰ 時間: {now_str}")
         full_msg = "\n".join(lines)
 
+        # 拷貝一份影像以防呼叫端後續回收釋放或覆寫
+        img_to_send = screen_bgr.copy() if screen_bgr is not None else None
+
         def _do_send():
             try:
                 # 若有附帶螢幕截圖，優先發送照片
-                if screen_bgr is not None:
+                if img_to_send is not None:
                     try:
-                        ok, buf = cv2.imencode('.jpg', screen_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                        ok, buf = cv2.imencode('.jpg', img_to_send, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                         if ok:
                             url = f"https://api.telegram.org/bot{token}/sendPhoto"
                             files = {'photo': ('screenshot.jpg', buf.tobytes(), 'image/jpeg')}
@@ -1899,7 +1902,9 @@ class BaseballBot:
                         tg_tok = tg_cfg.get("token", "")
                         tg_cid = tg_cfg.get("chat_id", "")
                         tg_msg = tg_cfg.get("message", f"🚨 聯賽偵測到事件「{p_text}」，正在跳轉執行任務清單...")
-                        self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=p_tag, hit_text=p_text, screen_bgr=screen)
+                        attach_img = tg_cfg.get("attach_screenshot", True)
+                        img_to_send = screen if attach_img else None
+                        self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=p_tag, hit_text=p_text, screen_bgr=img_to_send)
 
                     if hasattr(self, "task_flow_handler") and self.task_flow_handler:
                         try:
@@ -1943,7 +1948,9 @@ class BaseballBot:
                         tg_tok = tg_cfg.get("token", "")
                         tg_cid = tg_cfg.get("chat_id", "")
                         tg_msg = tg_cfg.get("message", "")
-                        self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=p_tag, hit_text=p_text)
+                        attach_img = tg_cfg.get("attach_screenshot", True)
+                        img_to_send = screen if attach_img else None
+                        self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=p_tag, hit_text=p_text, screen_bgr=img_to_send)
 
                     # 命中後連點過渡動作 或 步驟自訂換頁延遲
                     if rep_enabled and self.is_running:
@@ -2194,7 +2201,9 @@ class BaseballBot:
                         tg_tok = tg_cfg.get("token", "")
                         tg_cid = tg_cfg.get("chat_id", "")
                         tg_msg = tg_cfg.get("message", f"🚨 聯賽偵測到「{text}」，正在跳轉執行任務清單...")
-                        self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=step_tag, hit_text=text, screen_bgr=screen)
+                        attach_img = tg_cfg.get("attach_screenshot", True)
+                        img_to_send = screen if attach_img else None
+                        self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=step_tag, hit_text=text, screen_bgr=img_to_send)
 
                     if hasattr(self, "task_flow_handler") and self.task_flow_handler:
                         try:
@@ -2234,7 +2243,9 @@ class BaseballBot:
                     tg_tok = tg_cfg.get("token", "")
                     tg_cid = tg_cfg.get("chat_id", "")
                     tg_msg = tg_cfg.get("message", "")
-                    self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=step_tag, hit_text=text)
+                    attach_img = tg_cfg.get("attach_screenshot", True)
+                    img_to_send = screen if attach_img else None
+                    self.send_telegram_notify(tg_tok, tg_cid, tg_msg, step_name=step_tag, hit_text=text, screen_bgr=img_to_send)
 
                 # 【步驟換頁冷卻 / 過渡連點】：點擊與預覽呈現皆完成後，才進行遊戲過場或換頁冷卻
                 if rep_enabled and self.is_running:

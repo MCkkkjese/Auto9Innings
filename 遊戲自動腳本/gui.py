@@ -1699,6 +1699,7 @@ class BaseballBotGUI:
         repeat_custom_y: int = 540,
         tg_enabled: bool = False,
         tg_message: str = "",
+        tg_attach_screenshot: bool = True,
         task_target_mode: str = "📋 完整任務清單",
         task_target_item: str = "",
         task_cooldown: float = 60.0,
@@ -1731,6 +1732,7 @@ class BaseballBotGUI:
             repeat_custom_y=repeat_custom_y,
             tg_enabled=tg_enabled,
             tg_message=tg_message,
+            tg_attach_screenshot=tg_attach_screenshot,
             task_target_mode=task_target_mode,
             task_target_item=task_target_item,
             task_cooldown=task_cooldown,
@@ -1767,6 +1769,7 @@ class BaseballBotGUI:
         repeat_custom_y: int = 540,
         tg_enabled: bool = False,
         tg_message: str = "",
+        tg_attach_screenshot: bool = True,
         task_target_mode: str = "📋 完整任務清單",
         task_target_item: str = "",
         task_cooldown: float = 60.0,
@@ -1815,6 +1818,7 @@ class BaseballBotGUI:
             "repeat_custom_y": tk.IntVar(value=repeat_custom_y),
             "tg_enabled": tk.BooleanVar(value=tg_enabled),
             "tg_message": tk.StringVar(value=tg_message),
+            "tg_attach_screenshot": tk.BooleanVar(value=tg_attach_screenshot),
             "task_target_mode": tk.StringVar(value=task_target_mode),
             "task_target_item": tk.StringVar(value=task_target_item),
             "task_cooldown": tk.DoubleVar(value=task_cooldown),
@@ -1841,7 +1845,7 @@ class BaseballBotGUI:
             p["delay"], p["roi"], p["while_condition"], p["repeat_enabled"],
             p["repeat_mode"], p["repeat_count"], p["repeat_speed"],
             p["repeat_area"], p["repeat_custom_x"], p["repeat_custom_y"],
-            p["tg_enabled"], p["tg_message"], p["task_target_mode"],
+            p["tg_enabled"], p["tg_message"], p["tg_attach_screenshot"], p["task_target_mode"],
             p["task_target_item"], p["task_cooldown"]
         ]:
             _v.trace_add("write", _on_p_var_changed)
@@ -1925,7 +1929,7 @@ class BaseballBotGUI:
                 if ex:
                     parts.append(f"排除: {ex}")
             if p["tg_enabled"].get():
-                parts.append("📱TG")
+                parts.append("📱TG+📷" if p.get("tg_attach_screenshot") and p["tg_attach_screenshot"].get() else "📱TG")
             return "  ·  ".join(parts)
 
         # 動作與比對列 (彈性雙行分組佈局，徹底消除遮蔽)
@@ -2278,14 +2282,29 @@ class BaseballBotGUI:
             corner_radius=4
         ).pack(side="left", padx=(0, 6))
 
+        chk_attach_p = ctk.CTkCheckBox(
+            row_tg,
+            text="📷 附帶截圖",
+            variable=p["tg_attach_screenshot"],
+            font=ctk.CTkFont(size=11),
+            text_color="#FBBF24",
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4
+        )
+
         box_tg_msg = ctk.CTkFrame(detail, fg_color="transparent")
         ctk.CTkLabel(box_tg_msg, text="訊息內容:", font=ctk.CTkFont(size=10), text_color="#38BDF8").pack(side="left", padx=(22, 4))
         ctk.CTkEntry(box_tg_msg, textvariable=p["tg_message"], height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=10)).pack(side="left", fill="x", expand=True)
 
         def _refresh_p_tg_ui(*_):
             if p["tg_enabled"].get():
+                chk_attach_p.pack(side="left", padx=(0, 6))
                 box_tg_msg.pack(fill="x", pady=(2, 0))
             else:
+                chk_attach_p.pack_forget()
                 box_tg_msg.pack_forget()
         p["tg_enabled"].trace_add("write", _refresh_p_tg_ui)
         _refresh_p_tg_ui()
@@ -2421,6 +2440,7 @@ class BaseballBotGUI:
         timeout_seconds: int = 20,
         tg_enabled: bool = False,
         tg_message: str = "",
+        tg_attach_screenshot: bool = True,
         task_target_mode: str = "📋 完整任務清單",
         task_target_item: str = "",
         task_cooldown: float = 60.0,
@@ -2454,6 +2474,7 @@ class BaseballBotGUI:
             timeout_seconds=timeout_seconds,
             tg_enabled=tg_enabled,
             tg_message=tg_message,
+            tg_attach_screenshot=tg_attach_screenshot,
             task_target_mode=task_target_mode,
             task_target_item=task_target_item,
             task_cooldown=task_cooldown,
@@ -2491,6 +2512,7 @@ class BaseballBotGUI:
         timeout_seconds: int = 20,
         tg_enabled: bool = False,
         tg_message: str = "",
+        tg_attach_screenshot: bool = True,
         task_target_mode: str = "📋 完整任務清單",
         task_target_item: str = "",
         task_cooldown: float = 60.0,
@@ -2540,6 +2562,7 @@ class BaseballBotGUI:
             "timeout_seconds": tk.IntVar(value=timeout_seconds),
             "tg_enabled": tk.BooleanVar(value=tg_enabled),
             "tg_message": tk.StringVar(value=tg_message),
+            "tg_attach_screenshot": tk.BooleanVar(value=tg_attach_screenshot),
             "task_target_mode": tk.StringVar(value=task_target_mode),
             "task_target_item": tk.StringVar(value=task_target_item),
             "task_cooldown": tk.DoubleVar(value=task_cooldown),
@@ -2568,7 +2591,7 @@ class BaseballBotGUI:
             s["repeat_count"], s["repeat_speed"], s["repeat_area"],
             s["repeat_custom_x"], s["repeat_custom_y"], s["timeout_enabled"],
             s["timeout_seconds"], s["tg_enabled"], s["tg_message"],
-            s["task_target_mode"], s["task_target_item"], s["task_cooldown"]
+            s["tg_attach_screenshot"], s["task_target_mode"], s["task_target_item"], s["task_cooldown"]
         ]:
             _v.trace_add("write", _on_s_var_changed)
 
@@ -2651,7 +2674,7 @@ class BaseballBotGUI:
                 if ex:
                     parts.append(f"排除: {ex}")
             if s["tg_enabled"].get():
-                parts.append("📱TG")
+                parts.append("📱TG+📷" if s.get("tg_attach_screenshot") and s["tg_attach_screenshot"].get() else "📱TG")
             return "  ·  ".join(parts)
 
         # 動作與比對列 (彈性雙行分組佈局，徹底消除遮蔽)
@@ -3017,14 +3040,29 @@ class BaseballBotGUI:
             corner_radius=4
         ).pack(side="left", padx=(0, 6))
 
+        chk_attach_s = ctk.CTkCheckBox(
+            row_tg,
+            text="📷 附帶截圖",
+            variable=s["tg_attach_screenshot"],
+            font=ctk.CTkFont(size=11),
+            text_color="#FBBF24",
+            width=18,
+            height=18,
+            checkbox_width=16,
+            checkbox_height=16,
+            corner_radius=4
+        )
+
         box_tg_msg = ctk.CTkFrame(detail, fg_color="transparent")
         ctk.CTkLabel(box_tg_msg, text="訊息內容:", font=ctk.CTkFont(size=10), text_color="#38BDF8").pack(side="left", padx=(22, 4))
         ctk.CTkEntry(box_tg_msg, textvariable=s["tg_message"], height=22, corner_radius=4, fg_color=COLOR_INPUT_BG, font=ctk.CTkFont(size=10)).pack(side="left", fill="x", expand=True)
 
         def _refresh_s_tg_ui(*_):
             if s["tg_enabled"].get():
+                chk_attach_s.pack(side="left", padx=(0, 6))
                 box_tg_msg.pack(fill="x", pady=(2, 0))
             else:
+                chk_attach_s.pack_forget()
                 box_tg_msg.pack_forget()
         s["tg_enabled"].trace_add("write", _refresh_s_tg_ui)
         _refresh_s_tg_ui()
@@ -3157,6 +3195,7 @@ class BaseballBotGUI:
                 "enabled": p["enabled"].get(),
                 "tg_enabled": p["tg_enabled"].get() if "tg_enabled" in p else False,
                 "tg_message": p["tg_message"].get() if "tg_message" in p else "",
+                "tg_attach_screenshot": p["tg_attach_screenshot"].get() if "tg_attach_screenshot" in p else True,
                 "task_target_mode": p["task_target_mode"].get() if "task_target_mode" in p else "📋 完整任務清單",
                 "task_target_item": p["task_target_item"].get() if "task_target_item" in p else "",
                 "task_cooldown": p["task_cooldown"].get() if "task_cooldown" in p else 60.0,
@@ -3193,6 +3232,7 @@ class BaseballBotGUI:
                 "timeout_seconds": s["timeout_seconds"].get() if "timeout_seconds" in s else 20,
                 "tg_enabled": s["tg_enabled"].get() if "tg_enabled" in s else False,
                 "tg_message": s["tg_message"].get() if "tg_message" in s else "",
+                "tg_attach_screenshot": s["tg_attach_screenshot"].get() if "tg_attach_screenshot" in s else True,
                 "task_target_mode": s["task_target_mode"].get() if "task_target_mode" in s else "📋 完整任務清單",
                 "task_target_item": s["task_target_item"].get() if "task_target_item" in s else "",
                 "task_cooldown": s["task_cooldown"].get() if "task_cooldown" in s else 60.0,
@@ -3209,9 +3249,11 @@ class BaseballBotGUI:
 
         tg_on = p_data.get("tg_enabled", False)
         tg_msg = p_data.get("tg_message", "")
+        tg_attach = p_data.get("tg_attach_screenshot", True)
         if isinstance(p_data.get("telegram"), dict):
             tg_on = p_data["telegram"].get("enabled", tg_on)
             tg_msg = p_data["telegram"].get("message", tg_msg)
+            tg_attach = p_data["telegram"].get("attach_screenshot", tg_attach)
 
         return self._create_priority_step_widget_impl(
             container=container,
@@ -3241,6 +3283,7 @@ class BaseballBotGUI:
             enabled=bool(p_data.get("enabled", True)),
             tg_enabled=bool(tg_on),
             tg_message=str(tg_msg),
+            tg_attach_screenshot=bool(tg_attach),
             task_target_mode=str(p_data.get("task_target_mode", "📋 完整任務清單")),
             task_target_item=str(p_data.get("task_target_item", "")),
             task_cooldown=float(p_data.get("task_cooldown", 60.0)),
@@ -3257,9 +3300,11 @@ class BaseballBotGUI:
 
         tg_on = s_data.get("tg_enabled", False)
         tg_msg = s_data.get("tg_message", "")
+        tg_attach = s_data.get("tg_attach_screenshot", True)
         if isinstance(s_data.get("telegram"), dict):
             tg_on = s_data["telegram"].get("enabled", tg_on)
             tg_msg = s_data["telegram"].get("message", tg_msg)
+            tg_attach = s_data["telegram"].get("attach_screenshot", tg_attach)
 
         return self._create_step_widget_impl(
             container=container,
@@ -3290,6 +3335,7 @@ class BaseballBotGUI:
             timeout_seconds=int(s_data.get("timeout_seconds", 20)),
             tg_enabled=bool(tg_on),
             tg_message=str(tg_msg),
+            tg_attach_screenshot=bool(tg_attach),
             task_target_mode=str(s_data.get("task_target_mode", "📋 完整任務清單")),
             task_target_item=str(s_data.get("task_target_item", "")),
             task_cooldown=float(s_data.get("task_cooldown", 60.0)),
@@ -4043,6 +4089,7 @@ class BaseballBotGUI:
                 "telegram": {
                     "enabled": s["tg_enabled"].get() if "tg_enabled" in s else False,
                     "message": s["tg_message"].get().strip() if "tg_message" in s else "",
+                    "attach_screenshot": s["tg_attach_screenshot"].get() if "tg_attach_screenshot" in s else True,
                     "token": self.var_tg_token.get().strip(),
                     "chat_id": self.var_tg_chat_id.get().strip(),
                 },
@@ -4099,6 +4146,7 @@ class BaseballBotGUI:
                 "telegram": {
                     "enabled": p["tg_enabled"].get() if "tg_enabled" in p else False,
                     "message": p["tg_message"].get().strip() if "tg_message" in p else "",
+                    "attach_screenshot": p["tg_attach_screenshot"].get() if "tg_attach_screenshot" in p else True,
                     "token": self.var_tg_token.get().strip(),
                     "chat_id": self.var_tg_chat_id.get().strip(),
                 },
@@ -4704,11 +4752,29 @@ class BaseballBotGUI:
             messagebox.showwarning("警告", "請先輸入 Telegram Token 與 Chat ID。")
             return
         self.log_message("正在發送 Telegram 測試通知...")
-        threading.Thread(target=self._send_tg_worker, args=(token, chat_id), daemon=True).start()
+        curr_screen = getattr(self, "current_screen_bgr", None)
+        screen_copy = curr_screen.copy() if curr_screen is not None else None
+        threading.Thread(target=self._send_tg_worker, args=(token, chat_id, screen_copy), daemon=True).start()
 
-    def _send_tg_worker(self, token, chat_id):
+    def _send_tg_worker(self, token, chat_id, screen_bgr=None):
         import requests
         try:
+            if screen_bgr is not None:
+                try:
+                    ok, buf = cv2.imencode('.jpg', screen_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                    if ok:
+                        url = f"https://api.telegram.org/bot{token}/sendPhoto"
+                        files = {'photo': ('screenshot.jpg', buf.tobytes(), 'image/jpeg')}
+                        data = {'chat_id': chat_id, 'caption': "⚾ Auto9Innings 測試通知已成功送達！（含遊戲截圖）"}
+                        resp = requests.post(url, data=data, files=files, timeout=12)
+                        if resp.status_code == 200 and resp.json().get("ok"):
+                            self.log_message("✅ Telegram 測試相片通知發送成功！")
+                            return
+                        else:
+                            self.log_message(f"⚠️ Telegram 相片測試發送失敗，改送純文字: {resp.text}")
+                except Exception as e_img:
+                    self.log_message(f"⚠️ Telegram 測試截圖編碼異常: {e_img}")
+
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             resp = requests.post(url, json={"chat_id": chat_id, "text": "⚾ Auto9Innings 測試通知已成功送達！"}, timeout=10)
             if resp.status_code == 200:
