@@ -571,35 +571,39 @@ class TaskEngine:
 
         return success
 
-    def _check_and_exec_priority(self, context_desc: str = "") -> bool:
+    def _check_priority_on_frame(
+        self,
+        screen: Optional[np.ndarray] = None,
+        screen_gray: Optional[np.ndarray] = None,
+        det_results: Optional[List[Dict[str, Any]]] = None,
+        context_desc: str = ""
+    ) -> Tuple[bool, Optional[np.ndarray], Optional[List[Dict[str, Any]]]]:
         """
-        優先辨識檢查：比照聯賽自動刷，優先級嚴格大於一般流程的每一個步驟。
+        在指定畫面幀 (或即時截圖) 上檢查優先辨識步驟：
+        比照聯賽自動刷，優先級嚴格大於一般流程的每一個步驟。
         遍歷 priority_blocks，若有任何優先積木命中 (圖片模板、符號、或文字 OCR)，
         立即插隊執行對應點擊或連點跳過過場，並記錄日誌。
-        回傳 True 代表有優先動作命中並已執行。
+        回傳 (hit: bool, screen_gray, det_results)，方便後續步驟直接複用計算結果，避免重複截圖與重複 OCR！
         """
         if not self.priority_blocks or self._stop_event.is_set():
-            return False
-
-        if not self.bot or not hasattr(self.bot, "capture_screen"):
-            return False
-
-        screen = None
-        try:
-            screen = self.bot.capture_screen()
-        except Exception:
-            return False
+            return False, screen_gray, det_results
 
         if screen is None:
-            return False
+            if not self.bot or not hasattr(self.bot, "capture_screen"):
+                return False, screen_gray, det_results
+            try:
+                screen = self.bot.capture_screen()
+            except Exception:
+                return False, screen_gray, det_results
+
+        if screen is None:
+            return False, screen_gray, det_results
 
         img_h, img_w = screen.shape[:2]
-        screen_gray = None
-        det_results = None
 
         for p_idx, p_block in enumerate(self.priority_blocks):
             if self._stop_event.is_set():
-                return False
+                return False, screen_gray, det_results
             if not p_block.get("enabled", True):
                 continue
 
@@ -662,7 +666,7 @@ class TaskEngine:
                                 self.on_priority_hit(-1)
                             except Exception:
                                 pass
-                        return True
+                        return True, screen_gray, det_results
                 # 純圖片模式未命中圖片時，直接檢查下一個優先積木，徹底杜絕任何文字 OCR 誤判！
                 continue
 
@@ -710,7 +714,7 @@ class TaskEngine:
                                 self.on_priority_hit(-1)
                             except Exception:
                                 pass
-                        return True
+                        return True, screen_gray, det_results
                 # 若雙重模式未中圖片且全域停用 OCR，跳過下方的文字比對
                 if disable_ocr:
                     continue
@@ -748,10 +752,9 @@ class TaskEngine:
                             if self.on_priority_hit:
                                 try:
                                     self.on_priority_hit(-1)
-                                    pass
                                 except Exception:
                                     pass
-                            return True
+                            return True, screen_gray, det_results
                         if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
                             ctx_info = f" [{context_desc}]" if context_desc else ""
                             self._log(f"⭐ [優先辨識: {b_name}] 命中叉叉符號 [{txt}]{ctx_info} → 優先執行動作！")
@@ -774,7 +777,7 @@ class TaskEngine:
                                     self.on_priority_hit(-1)
                                 except Exception:
                                     pass
-                            return True
+                            return True, screen_gray, det_results
 
                 # 文字關鍵字
                 if kws and not disable_ocr:
@@ -803,7 +806,7 @@ class TaskEngine:
                                         self.on_priority_hit(-1)
                                     except Exception:
                                         pass
-                                return True
+                                return True, screen_gray, det_results
 
             # 3. 條件分支 (branch_if) 若被設為優先步驟
             if b_type == "branch_if":
@@ -827,7 +830,8 @@ class TaskEngine:
                                 hit_b_tpl, m_res = matched_b_res
                                 bx = _safe_int(branch.get("x", 960))
                                 by = _safe_int(branch.get("y", 540))
-                                self._log(f"⭐ [優先辨識: {b_name}] 命中分支圖片「{os.path.basename(hit_b_tpl)}」→ 點擊 ({bx}, {by})")
+                                ctx_info = f" [{context_desc}]" if context_desc else ""
+                                self._log(f"⭐ [優先辨識: {b_name}] 命中分支圖片「{os.path.basename(hit_b_tpl)}」{ctx_info} → 點擊 ({bx}, {by})")
                                 if self.on_priority_hit:
                                     try:
                                         self.on_priority_hit(p_idx)
@@ -840,9 +844,14 @@ class TaskEngine:
                                     except Exception:
                                         pass
                                 self._sleep_interruptible(1.0, check_priority=False)
-                                return True
+                                return True, screen_gray, det_results
 
-        return False
+        return False, screen_gray, det_results
+
+    def _check_and_exec_priority(self, context_desc: str = "") -> bool:
+        """舊版相容介面：即時截圖並執行優先步驟檢查，回傳是否命中"""
+        hit, _, _ = self._check_priority_on_frame(context_desc=context_desc)
+        return hit
 
     def _build_next_candidates(
         self,
@@ -1129,12 +1138,35 @@ class TaskEngine:
         if screen is None:
             return False, ""
 
+        screen_gray = None
+        det_results = None
+
+        # ⭐ 同步優先動作檢查 (共享同一畫面幀)
+        if self.priority_blocks:
+            p_hit, screen_gray, det_results = self._check_priority_on_frame(
+                screen=screen,
+                screen_gray=screen_gray,
+                det_results=det_results,
+                context_desc="條件檢測中"
+            )
+            if p_hit:
+                # 優先動作執行後畫面可能改變，重新截圖以確認當前條件
+                try:
+                    screen = self.bot.capture_screen()
+                    screen_gray = None
+                    det_results = None
+                except Exception:
+                    pass
+                if screen is None:
+                    return False, ""
+
         # 1. 圖片模板比對條件 (若設定為圖片模式，純粹進行模板比對，未命中直接返回，絕不跑文字 OCR)
         if is_image:
             tpl_list = self.parse_template_images_list(template_image)
             if not tpl_list:
                 return False, ""
-            screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+            if screen_gray is None:
+                screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
             matched = False
             matched_fname = ""
             score_val = 0.0
@@ -1165,7 +1197,10 @@ class TaskEngine:
             return False, ""
 
         # 符號比對
-        det_results = self.bot.scan_text(screen)
+        if det_results is None and hasattr(self.bot, "scan_text"):
+            det_results = self.bot.scan_text(screen)
+        if det_results is None:
+            det_results = []
         present = False
         matched_desc = ""
 
@@ -1384,22 +1419,30 @@ class TaskEngine:
 
                     # 每隔 3 次點擊檢測一次畫面 (反應極速且節省 CPU)
                     if tap_cnt % 3 == 0:
-                        # 1. ⭐ 優先動作插隊檢查
-                        if self.priority_blocks and self._check_and_exec_priority("連點中途"):
-                            self._log(f"  ⭐ 連點中途觸發其他優先動作，結束當前連點切換！")
-                            break
-
                         chk_screen = self.bot.capture_screen()
                         if chk_screen is not None:
                             chk_gray = None
                             chk_det = None
                             hit_next = False
 
+                            # 1. ⭐ 同步優先動作檢查 (共享同一畫面幀)
+                            if self.priority_blocks:
+                                p_hit, chk_gray, chk_det = self._check_priority_on_frame(
+                                    screen=chk_screen,
+                                    screen_gray=chk_gray,
+                                    det_results=chk_det,
+                                    context_desc="連點中途"
+                                )
+                                if p_hit:
+                                    self._log(f"  ⭐ 連點中途觸發其他優先動作，結束當前連點切換！")
+                                    break
+
                             # 追蹤原目標是否還在畫面上
                             if not orig_disappeared:
                                 still_there = False
                                 if is_image and template_img:
-                                    chk_gray = cv2.cvtColor(chk_screen, cv2.COLOR_BGR2GRAY)
+                                    if chk_gray is None:
+                                        chk_gray = cv2.cvtColor(chk_screen, cv2.COLOR_BGR2GRAY)
                                     if hasattr(self.bot, "match_template"):
                                         chk_tpl_list = self.parse_template_images_list(template_img)
                                         for single_tpl in chk_tpl_list:
@@ -1408,7 +1451,10 @@ class TaskEngine:
                                                 still_there = True
                                                 break
                                 else:
-                                    chk_det = self.bot.scan_text(chk_screen)
+                                    if chk_det is None and hasattr(self.bot, "scan_text"):
+                                        chk_det = self.bot.scan_text(chk_screen)
+                                    if chk_det is None:
+                                        chk_det = []
                                     if is_check or is_cross:
                                         for it in chk_det:
                                             s = it.get("symbol"); t = it.get("text", "")
@@ -1478,7 +1524,9 @@ class TaskEngine:
         template_img = p.get("template_image", "").strip()
         img_thresh = _safe_float(p.get("image_threshold", 0.80), 0.80)
         img_multiscale = bool(p.get("image_multiscale", False))
-        timeout = max(1, _safe_int(p.get("timeout", 10)))
+        raw_timeout = _safe_int(p.get("timeout", 10))
+        is_infinite = (raw_timeout <= 0)
+        timeout = 0 if is_infinite else max(1, raw_timeout)
 
         disable_ocr = bool(self.global_settings.get("disable_ocr", False))
         is_image_mode = ("圖片" in target_type or "image" in target_type.lower() or "模板" in target_type) and ("文字" not in target_type)
@@ -1488,7 +1536,7 @@ class TaskEngine:
         tpl_list = self.parse_template_images_list(template_img)
         kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
         scan_delay = self._get_scan_interval()
-        deadline = time.time() + timeout
+        deadline = float("inf") if is_infinite else (time.time() + timeout)
 
         desc_target = (
             f"圖片「{', '.join([os.path.basename(x) for x in tpl_list])}」"
@@ -1500,26 +1548,40 @@ class TaskEngine:
             self._log(f"  ⚠️ 全域已關閉文字辨識 (純圖片模式 / 0-OCR)，跳過文字目標【{desc_target}】。")
             return False
 
-        self._log(f"  🔍 等待目標【{desc_target}】出現 (限時 {timeout}s, 刷新速度 {scan_delay:.2f}s)...")
+        timeout_desc = "無限秒" if is_infinite else f"{timeout}s"
+        self._log(f"  🔍 等待目標【{desc_target}】出現 (限時 {timeout_desc}, 刷新速度 {scan_delay:.2f}s)...")
 
-        while time.time() < deadline:
+        while is_infinite or time.time() < deadline:
             if self._stop_event.is_set():
                 return False
-
-            # ⭐ 優先動作插隊檢查
-            if self.priority_blocks and self._check_and_exec_priority("等待目標出現中"):
-                time.sleep(0.1)
-                continue
 
             screen = self.bot.capture_screen()
             if screen is not None:
                 img_h, img_w = screen.shape[:2]
+                screen_gray = None
+                det_results = None
+
+                # ⭐ 同步優先動作檢查 (共享同一畫面幀，並刷新超時)
+                if self.priority_blocks:
+                    p_hit, screen_gray, det_results = self._check_priority_on_frame(
+                        screen=screen,
+                        screen_gray=screen_gray,
+                        det_results=det_results,
+                        context_desc="等待目標出現中"
+                    )
+                    if p_hit:
+                        if not is_infinite:
+                            deadline = time.time() + timeout  # 刷新超時，不扣除當前步驟的等待時間
+                        time.sleep(0.1)
+                        continue
+
                 # 1. 圖片模板模式
                 if is_image_mode:
                     if not tpl_list:
                         self._log("  ⚠️ 未指定模板圖檔，無法進行圖片比對！")
                         return False
-                    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                    if screen_gray is None:
+                        screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
                     if hasattr(self.bot, "match_template"):
                         for single_tpl in tpl_list:
                             res = self.bot.match_template(
@@ -1544,7 +1606,10 @@ class TaskEngine:
                                 )
                 else:
                     # 2. 文字/符號 OCR 模式
-                    det_results = self.bot.scan_text(screen)
+                    if det_results is None and hasattr(self.bot, "scan_text"):
+                        det_results = self.bot.scan_text(screen)
+                    if det_results is None:
+                        det_results = []
 
                     # 優先比對符號
                     if is_check or is_cross:
@@ -1622,16 +1687,19 @@ class TaskEngine:
         ex = _safe_int(p.get("else_x", 960))
         ey = _safe_int(p.get("else_y", 950))
 
-        timeout = max(1, _safe_int(p.get("timeout", 8)))
+        raw_timeout = _safe_int(p.get("timeout", 8))
+        is_infinite = (raw_timeout <= 0)
+        timeout = 0 if is_infinite else max(1, raw_timeout)
         delay = _safe_float(p.get("delay", 1.5))
 
         scan_delay = self._get_scan_interval()
         conf_thresh = self._get_confidence()
         disable_ocr = bool(self.global_settings.get("disable_ocr", False))
-        deadline = time.time() + timeout
-        self._log(f"  🔀 正在判斷多分支條件 (共有 {len(branches)} 個分支, 限時 {timeout}s, 刷新速度 {scan_delay:.2f}s)...")
+        deadline = float("inf") if is_infinite else (time.time() + timeout)
+        timeout_desc = "無限秒" if is_infinite else f"{timeout}s"
+        self._log(f"  🔀 正在判斷多分支條件 (共有 {len(branches)} 個分支, 限時 {timeout_desc}, 刷新速度 {scan_delay:.2f}s)...")
 
-        while time.time() < deadline:
+        while is_infinite or time.time() < deadline:
             if self._stop_event.is_set():
                 return False
 
@@ -1639,6 +1707,20 @@ class TaskEngine:
             if screen is not None:
                 screen_gray = None
                 det_results = None
+
+                # ⭐ 同步優先動作檢查 (共享同一畫面幀，並刷新超時)
+                if self.priority_blocks:
+                    p_hit, screen_gray, det_results = self._check_priority_on_frame(
+                        screen=screen,
+                        screen_gray=screen_gray,
+                        det_results=det_results,
+                        context_desc="分支判斷中"
+                    )
+                    if p_hit:
+                        if not is_infinite:
+                            deadline = time.time() + timeout  # 刷新超時，不扣除當前步驟的等待時間
+                        time.sleep(0.1)
+                        continue
 
                 # 依序檢查 If 以及各個 Else If 分支
                 for b_idx, branch in enumerate(branches):
@@ -1745,6 +1827,17 @@ class TaskEngine:
                 if not sb.get("enabled", True):
                     continue
 
+                # ⭐ 迴圈內部步驟執行前優先動作檢查
+                prio_hits = 0
+                while self._check_and_exec_priority(f"迴圈子步驟 #{s_idx + 1} 前"):
+                    prio_hits += 1
+                    if self._stop_event.is_set() or prio_hits >= 10:
+                        break
+                    time.sleep(0.3)
+
+                if self._stop_event.is_set():
+                    return False
+
                 sb_type = sb.get("type", "tap_coord")
                 sb_name = sb.get("name", f"子步驟 #{s_idx + 1}")
                 sb_params = sb.get("params", {})
@@ -1828,7 +1921,9 @@ class TaskEngine:
         default_interval = scan_delay if "interval" not in p else _safe_float(p.get("interval", scan_delay))
         interval = max(0.02, default_interval)
 
-        timeout = max(1, _safe_int(p.get("timeout", 30)))
+        raw_timeout = _safe_int(p.get("timeout", 30))
+        is_infinite = (raw_timeout <= 0)
+        timeout = 0 if is_infinite else max(1, raw_timeout)
         delay_after = max(0.0, _safe_float(p.get("delay_after", 0.5)))
         on_timeout = p.get("on_timeout", "continue")
 
@@ -1844,19 +1939,15 @@ class TaskEngine:
             self._log(f"  ⚠️ 全域已關閉文字辨識 (純圖片模式 / 0-OCR)，跳過文字條件等待【{desc}】。")
             return False
 
-        self._log(f"  ⏳ 等待「{desc}」{mode_str} (每 {interval:.2f}s 偵測一次，限時 {timeout}s)...")
+        timeout_desc = "無限秒" if is_infinite else f"{timeout}s"
+        self._log(f"  ⏳ 等待「{desc}」{mode_str} (每 {interval:.2f}s 偵測一次，限時 {timeout_desc})...")
 
         start_time = time.time()
-        deadline = start_time + timeout
+        deadline = float("inf") if is_infinite else (start_time + timeout)
 
-        while time.time() < deadline:
+        while is_infinite or time.time() < deadline:
             if self._stop_event.is_set():
                 return False
-
-            # ⭐ 優先動作插隊檢查
-            if self.priority_blocks and self._check_and_exec_priority("等待條件達成中"):
-                time.sleep(0.1)
-                continue
 
             screen = self.bot.capture_screen()
             present = False
@@ -1865,9 +1956,27 @@ class TaskEngine:
             hit_coord = (_safe_int(p.get("custom_x", 960)), _safe_int(p.get("custom_y", 540)))
 
             if screen is not None:
+                screen_gray = None
+                det_results = None
+
+                # ⭐ 同步優先動作檢查 (共享同一畫面幀，並刷新超時)
+                if self.priority_blocks:
+                    p_hit, screen_gray, det_results = self._check_priority_on_frame(
+                        screen=screen,
+                        screen_gray=screen_gray,
+                        det_results=det_results,
+                        context_desc="等待條件達成中"
+                    )
+                    if p_hit:
+                        if not is_infinite:
+                            deadline = time.time() + timeout  # 刷新超時，不扣除當前步驟的等待時間
+                        time.sleep(0.1)
+                        continue
+
                 if is_image_mode:
                     if tpl_list and hasattr(self.bot, "match_template"):
-                        screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                        if screen_gray is None:
+                            screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
                         for single_tpl in tpl_list:
                             m_res = self.bot.match_template(
                                 screen_gray,
@@ -1882,7 +1991,10 @@ class TaskEngine:
                                 matched_tpl = single_tpl
                                 break
                 else:
-                    det_results = self.bot.scan_text(screen)
+                    if det_results is None and hasattr(self.bot, "scan_text"):
+                        det_results = self.bot.scan_text(screen)
+                    if det_results is None:
+                        det_results = []
 
                     # 優先比對符號
                     if is_check or is_cross:
@@ -2745,7 +2857,7 @@ class TaskFlowTab:
                 height=30,
                 corner_radius=6,
                 anchor="w",
-                command=lambda bt=b_type: self.add_block(bt)
+                command=lambda bt=b_type: self.on_add_block_interactive(bt)
             )
             btn.pack(fill="x", pady=2)
 
@@ -3531,6 +3643,232 @@ class TaskFlowTab:
         if self.var_auto_preview.get():
             self._schedule_auto_refresh(delay_ms=800)
 
+    def ask_block_insert_position(
+        self,
+        current_blocks: list,
+        block_type_label: str = "任務積木",
+        title: str = "🧩 新增積木 - 選擇插入位置"
+    ) -> Optional[int]:
+        """
+        彈出對話框讓使用者選擇新積木步驟要插入在清單中的哪一個位置。
+        若目前步驟數為 0，則直接回傳 0（第 1 步）。
+        若目前步驟數 >= 1，彈出模態對話框，預設選取最後一步（index = len(current_blocks)）。
+        若使用者點選「確認」或按 Enter，回傳選擇的插入索引 (0 ~ len(current_blocks))。
+        若使用者取消或關閉視窗，回傳 None。
+        """
+        if not current_blocks:
+            return 0
+
+        N = len(current_blocks)
+        top_win = self.parent.winfo_toplevel() if hasattr(self.parent, "winfo_toplevel") else self.parent
+
+        dlg = ctk.CTkToplevel(top_win)
+        dlg.title(title)
+        dlg.geometry("460x260")
+        dlg.minsize(440, 240)
+        dlg.resizable(False, False)
+        dlg.configure(fg_color="#1E1E2E")
+        if top_win:
+            dlg.transient(top_win)
+        dlg.grab_set()
+
+        try:
+            dlg.update_idletasks()
+            if top_win:
+                pw = top_win.winfo_width()
+                ph = top_win.winfo_height()
+                px = top_win.winfo_rootx()
+                py = top_win.winfo_rooty()
+                w, h = 460, 260
+                x = px + max(0, (pw - w) // 2)
+                y = py + max(0, (ph - h) // 2)
+                dlg.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+        def _get_block_name(item, fallback="積木"):
+            if isinstance(item, dict):
+                if "name" in item:
+                    v = item["name"]
+                    raw = v.get() if hasattr(v, "get") else str(v)
+                    raw = str(raw).strip()
+                    if raw:
+                        return raw[:15] + "..." if len(raw) > 18 else raw
+            return fallback
+
+        options_text = []
+        option_to_idx = {}
+        for i in range(N + 1):
+            if i == 0:
+                first_name = _get_block_name(current_blocks[0], fallback=f"{block_type_label} 1")
+                t = f"第 1 步 (最前面，在「{first_name}」之前)"
+            elif i == N:
+                t = f"第 {N + 1} 步 (最後一步) [預設]"
+            else:
+                prev_name = _get_block_name(current_blocks[i - 1], fallback=f"{block_type_label} {i}")
+                t = f"第 {i + 1} 步 (在「{prev_name}」之後)"
+            options_text.append(t)
+            option_to_idx[t] = i
+
+        default_option_text = options_text[-1]
+        result = [None]
+
+        card = ctk.CTkFrame(dlg, fg_color="#252538", corner_radius=10, border_width=1, border_color="#313244")
+        card.pack(fill="both", expand=True, padx=14, pady=14)
+
+        lbl_title = ctk.CTkLabel(
+            card,
+            text=f"📍 選擇新{block_type_label}插入位置",
+            font=ctk.CTkFont(family="Arial", size=15, weight="bold"),
+            text_color="#FBBF24"
+        )
+        lbl_title.pack(anchor="w", padx=14, pady=(12, 4))
+
+        lbl_desc = ctk.CTkLabel(
+            card,
+            text=f"目前已有 {N} 個{block_type_label}。請選擇要將新{block_type_label}插入在哪個位置：",
+            font=ctk.CTkFont(size=12),
+            text_color="#CDD6F4"
+        )
+        lbl_desc.pack(anchor="w", padx=14, pady=(0, 10))
+
+        var_choice = tk.StringVar(value=default_option_text)
+        var_num = tk.StringVar(value=str(N + 1))
+
+        f_select = ctk.CTkFrame(card, fg_color="transparent")
+        f_select.pack(fill="x", padx=14, pady=(0, 8))
+
+        ctk.CTkLabel(f_select, text="位置清單:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#A6ADC8").pack(side="left", padx=(0, 8))
+
+        combo = ctk.CTkOptionMenu(
+            f_select,
+            variable=var_choice,
+            values=options_text,
+            width=320,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11)
+        )
+        combo.pack(side="left", fill="x", expand=True)
+
+        f_quick = ctk.CTkFrame(card, fg_color="transparent")
+        f_quick.pack(fill="x", padx=14, pady=(0, 12))
+
+        ctk.CTkLabel(f_quick, text="或直接指定序號: 第", font=ctk.CTkFont(size=11), text_color="#A6ADC8").pack(side="left", padx=(0, 4))
+
+        entry_num = ctk.CTkEntry(
+            f_quick,
+            textvariable=var_num,
+            width=50,
+            height=26,
+            corner_radius=4,
+            fg_color="#181825",
+            font=ctk.CTkFont(family="Menlo", size=11),
+            justify="center"
+        )
+        entry_num.pack(side="left", padx=(0, 4))
+
+        def _step_num(delta):
+            s = var_num.get().strip()
+            cur = int(s) if s.isdigit() else (N + 1)
+            nxt = max(1, min(N + 1, cur + delta))
+            var_num.set(str(nxt))
+
+        btn_minus = ctk.CTkButton(
+            f_quick, text="◀", width=26, height=24, corner_radius=4,
+            fg_color="#313244", hover_color="#45475A", font=ctk.CTkFont(size=10),
+            command=lambda: _step_num(-1)
+        )
+        btn_minus.pack(side="left", padx=(0, 2))
+
+        btn_plus = ctk.CTkButton(
+            f_quick, text="▶", width=26, height=24, corner_radius=4,
+            fg_color="#313244", hover_color="#45475A", font=ctk.CTkFont(size=10),
+            command=lambda: _step_num(1)
+        )
+        btn_plus.pack(side="left", padx=(0, 6))
+
+        ctk.CTkLabel(f_quick, text=f"步 (可輸入 1 ~ {N + 1})", font=ctk.CTkFont(size=11), text_color="#A6ADC8").pack(side="left")
+
+        updating = [False]
+
+        def on_dropdown_changed(val):
+            if updating[0]:
+                return
+            updating[0] = True
+            idx = option_to_idx.get(val, N)
+            var_num.set(str(idx + 1))
+            updating[0] = False
+
+        def on_num_changed(*_):
+            if updating[0]:
+                return
+            s = var_num.get().strip()
+            if s.isdigit():
+                val = int(s)
+                if 1 <= val <= N + 1:
+                    updating[0] = True
+                    var_choice.set(options_text[val - 1])
+                    updating[0] = False
+
+        combo.configure(command=on_dropdown_changed)
+        var_num.trace_add("write", on_num_changed)
+
+        def do_confirm():
+            s = var_num.get().strip()
+            if s.isdigit() and 1 <= int(s) <= N + 1:
+                result[0] = int(s) - 1
+            else:
+                sel = var_choice.get()
+                result[0] = option_to_idx.get(sel, N)
+            dlg.destroy()
+
+        def do_cancel():
+            result[0] = None
+            dlg.destroy()
+
+        f_btn = ctk.CTkFrame(card, fg_color="transparent")
+        f_btn.pack(fill="x", padx=14, pady=(4, 8), side="bottom")
+
+        btn_cancel = ctk.CTkButton(
+            f_btn,
+            text="取消 (Esc)",
+            width=90,
+            height=30,
+            corner_radius=6,
+            fg_color="#45475A",
+            hover_color="#585B70",
+            font=ctk.CTkFont(size=11),
+            command=do_cancel
+        )
+        btn_cancel.pack(side="left")
+
+        btn_confirm = ctk.CTkButton(
+            f_btn,
+            text="➕ 確認新增 (Enter)",
+            width=130,
+            height=30,
+            corner_radius=6,
+            fg_color="#10B981",
+            hover_color="#059669",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=do_confirm
+        )
+        btn_confirm.pack(side="right")
+
+        dlg.bind("<Return>", lambda e: do_confirm())
+        dlg.bind("<KP_Enter>", lambda e: do_confirm())
+        dlg.bind("<Escape>", lambda e: do_cancel())
+        dlg.protocol("WM_DELETE_WINDOW", do_cancel)
+
+        btn_confirm.focus_set()
+
+        if top_win:
+            top_win.wait_window(dlg)
+        else:
+            dlg.wait_window()
+        return result[0]
+
     def add_block(
         self,
         b_type: str,
@@ -3539,18 +3877,23 @@ class TaskFlowTab:
         enabled: bool = True,
         parent_loop: Optional[Dict[str, Any]] = None,
         is_priority: bool = False,
-        expanded: Optional[bool] = None
+        expanded: Optional[bool] = None,
+        insert_index: Optional[int] = None
     ) -> Dict[str, Any]:
         info = BLOCK_TYPES.get(b_type, BLOCK_TYPES["tap_coord"])
         if params is None:
             params = dict(info["default_params"])
         if not name:
+            pos_num = (insert_index + 1) if insert_index is not None else (
+                (len(self.priority_blocks_list) + 1) if is_priority else
+                (len(parent_loop.get('inner_blocks_list', [])) + 1 if parent_loop else len(self.blocks_list) + 1)
+            )
             if is_priority:
-                name = f"優先{info['default_name']} #{len(self.priority_blocks_list) + 1}"
+                name = f"優先{info['default_name']} #{pos_num}"
             elif parent_loop:
-                name = f"{info['default_name']} #{len(parent_loop.get('inner_blocks_list', [])) + 1}"
+                name = f"{info['default_name']} #{pos_num}"
             else:
-                name = f"{info['default_name']} #{len(self.blocks_list) + 1}"
+                name = f"{info['default_name']} #{pos_num}"
 
         init_exp = True
         if expanded is not None:
@@ -3574,11 +3917,21 @@ class TaskFlowTab:
         self._render_block_widget(block_item, parent_loop=parent_loop, is_priority=is_priority)
 
         if is_priority:
-            self.priority_blocks_list.append(block_item)
+            if insert_index is not None and 0 <= insert_index <= len(self.priority_blocks_list):
+                self.priority_blocks_list.insert(insert_index, block_item)
+            else:
+                self.priority_blocks_list.append(block_item)
         elif parent_loop:
-            parent_loop.setdefault("inner_blocks_list", []).append(block_item)
+            inner_list = parent_loop.setdefault("inner_blocks_list", [])
+            if insert_index is not None and 0 <= insert_index <= len(inner_list):
+                inner_list.insert(insert_index, block_item)
+            else:
+                inner_list.append(block_item)
         else:
-            self.blocks_list.append(block_item)
+            if insert_index is not None and 0 <= insert_index <= len(self.blocks_list):
+                self.blocks_list.insert(insert_index, block_item)
+            else:
+                self.blocks_list.append(block_item)
 
         if b_type == "loop" and "inner_blocks" in params:
             for sub_data in params.get("inner_blocks", []):
@@ -3594,17 +3947,37 @@ class TaskFlowTab:
         self.auto_save_config()
 
         if parent_loop is None and not is_priority:
-            self.parent.after(50, lambda: getattr(self.canvas_blocks, "yview_moveto", lambda *_: None)(1.0))
+            if insert_index is None or insert_index >= len(self.blocks_list) - 1:
+                self.parent.after(50, lambda: getattr(self.canvas_blocks, "yview_moveto", lambda *_: None)(1.0))
 
         return block_item
 
     def on_add_priority_block(self):
         """快捷加入優先辨識步驟"""
+        insert_idx = self.ask_block_insert_position(
+            current_blocks=self.priority_blocks_list,
+            block_type_label="優先辨識步驟",
+            title="⭐ 新增優先步驟 - 選擇插入位置"
+        )
+        if insert_idx is None:
+            return None
         return self.add_block(
             b_type="detect_click",
-            name=f"優先辨識 #{len(self.priority_blocks_list) + 1}",
-            is_priority=True
+            name=f"優先辨識 #{insert_idx + 1}",
+            is_priority=True,
+            insert_index=insert_idx
         )
+
+    def on_add_block_interactive(self, b_type: str):
+        """從工具箱按鈕互動式加入積木（詢問插入位置）"""
+        insert_idx = self.ask_block_insert_position(
+            current_blocks=self.blocks_list,
+            block_type_label="任務積木",
+            title="🧩 新增積木 - 選擇插入位置"
+        )
+        if insert_idx is None:
+            return None
+        return self.add_block(b_type=b_type, insert_index=insert_idx)
 
     def promote_to_priority(self, block_item: Dict[str, Any]):
         """將一般步驟提升為優先辨識步驟"""
@@ -3692,7 +4065,15 @@ class TaskFlowTab:
                 self.btn_prio_fold.configure(text="▼")
 
     def add_inner_block(self, loop_item: Dict[str, Any], b_type: str, params: Optional[Dict[str, Any]] = None, name: str = ""):
-        return self.add_block(b_type=b_type, params=params, name=name, parent_loop=loop_item)
+        in_list = loop_item.get("inner_blocks_list", [])
+        insert_idx = self.ask_block_insert_position(
+            current_blocks=in_list,
+            block_type_label="迴圈內部積木",
+            title="🔁 新增迴圈積木 - 選擇插入位置"
+        )
+        if insert_idx is None:
+            return None
+        return self.add_block(b_type=b_type, params=params, name=name, parent_loop=loop_item, insert_index=insert_idx)
 
     def pull_prev_block_into_loop(self, loop_item: Dict[str, Any]):
         if loop_item not in self.blocks_list:
@@ -4138,7 +4519,7 @@ class TaskFlowTab:
             row2.pack(fill="x", pady=2)
             ctk.CTkLabel(row2, text="超時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
             ctk.CTkEntry(row2, textvariable=vp["timeout"], width=38, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 2))
-            ctk.CTkLabel(row2, text="秒", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(0, 6))
+            ctk.CTkLabel(row2, text="秒 (0=無限)", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
 
             ctk.CTkLabel(row2, text="動作:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left")
             ACTION_MODES = ["🎯 點擊目標中心", "📍 點擊自訂座標", "🔲 自訂特定區塊", "⏳ 無動作(僅等待)"]
@@ -4313,7 +4694,7 @@ class TaskFlowTab:
                         {"name": "Else If", "keywords": "失敗, 挑戰失敗", "template_image": "", "threshold": 0.80, "multiscale": False, "x": 960, "y": 950}
                     ]
 
-            vp["timeout"] = tk.IntVar(value=p.get("timeout", 8))
+            vp["timeout"] = tk.IntVar(value=_safe_int(p.get("timeout", 8), 8))
             vp["delay"] = tk.DoubleVar(value=p.get("delay", 1.5))
             vp["else_action"] = tk.StringVar(value=p.get("else_action", p.get("cond_else_action", "skip")))
             vp["else_x"] = tk.IntVar(value=p.get("else_x", 960))
@@ -4345,7 +4726,7 @@ class TaskFlowTab:
 
             ctk.CTkLabel(row_ctrl, text="限時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
             ctk.CTkEntry(row_ctrl, textvariable=vp["timeout"], width=38, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=2)
-            ctk.CTkLabel(row_ctrl, text="s 延遲:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left", padx=(4, 0))
+            ctk.CTkLabel(row_ctrl, text="s(0=∞) 延遲:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(2, 0))
             ctk.CTkEntry(row_ctrl, textvariable=vp["delay"], width=42, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=2)
             ctk.CTkLabel(row_ctrl, text="s", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
 
@@ -4653,7 +5034,7 @@ class TaskFlowTab:
 
             ctk.CTkLabel(row2, text="限時:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED).pack(side="left")
             ctk.CTkEntry(row2, textvariable=vp["timeout"], width=36, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left", padx=(2, 1))
-            ctk.CTkLabel(row2, text="s", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
+            ctk.CTkLabel(row2, text="s (0=無限)", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 6))
 
             ctk.CTkLabel(row2, text="動作:", font=ctk.CTkFont(size=11, weight="bold"), text_color=COLOR_TEXT_PRIMARY).pack(side="left")
             ACTION_MODES = ["🎯 點擊目標中心", "📍 點擊自訂座標", "🔲 自訂特定區塊", "⏳ 無動作(僅等待)"]
@@ -5027,13 +5408,21 @@ class TaskFlowTab:
         serialized = self._serialize_single_block(block_item)
         is_prio = block_item in self.priority_blocks_list
         p_loop = block_item.get("parent_loop")
+        insert_idx = None
+        if is_prio and block_item in self.priority_blocks_list:
+            insert_idx = self.priority_blocks_list.index(block_item) + 1
+        elif p_loop and block_item in p_loop.get("inner_blocks_list", []):
+            insert_idx = p_loop["inner_blocks_list"].index(block_item) + 1
+        elif block_item in self.blocks_list:
+            insert_idx = self.blocks_list.index(block_item) + 1
         self.add_block(
             b_type=serialized["type"],
             params=dict(serialized["params"]),
             name=f"{serialized['name']} (複製)",
             enabled=serialized["enabled"],
             parent_loop=p_loop,
-            is_priority=is_prio
+            is_priority=is_prio,
+            insert_index=insert_idx
         )
 
     def delete_block(self, block_item: Dict[str, Any]):
@@ -5617,6 +6006,24 @@ class TaskFlowTab:
                 allow_en=bool(self.var_lang_en.get())
             )
 
+        # ⭐ 單步執行時若是普通步驟，亦需同步載入有效優先步驟，確保單步執行時優先步驟同步發揮作用
+        if not is_prio:
+            self.engine.priority_blocks = [
+                self._serialize_single_block(b)
+                for b in self.priority_blocks_list
+                if b.get("enabled", True)
+            ]
+        else:
+            self.engine.priority_blocks = []
+
+        def _on_priority_hit(hit_idx: int):
+            if hit_idx >= 0:
+                self.parent.after(0, lambda: self.highlight_active_step(hit_idx, is_priority=True))
+            else:
+                self.parent.after(0, lambda: self.highlight_active_step(-1, is_priority=True))
+
+        self.engine.on_priority_hit = _on_priority_hit
+
         def _worker():
             self.engine.execute_block(s_data["type"], s_data["params"])
             self.parent.after(500, lambda: self.highlight_active_step(-1, is_priority=False))
@@ -5650,7 +6057,10 @@ class TaskFlowTab:
                     for br in v
                 ]
             elif hasattr(v, "get"):
-                raw_v = v.get()
+                try:
+                    raw_v = v.get()
+                except Exception:
+                    raw_v = 0 if k == "timeout" else None
                 if isinstance(raw_v, (str, int, float, bool)):
                     p[k] = raw_v
                 elif raw_v is None:

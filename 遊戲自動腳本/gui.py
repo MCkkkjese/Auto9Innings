@@ -1611,25 +1611,274 @@ class BaseballBotGUI:
         self.log_message(f"🔄 辨識模式已切換為：{'🖼️ 圖片特徵比對模式 (0-OCR / 極致節能)' if is_img else '📝 文字辨識模式 (RapidOCR)'}")
         self.auto_save_current_config()
 
+    def ask_step_insert_position(
+        self,
+        parent=None,
+        current_steps: list = None,
+        step_type_label: str = "步驟",
+        title: str = "➕ 選擇新增位置"
+    ) -> Optional[int]:
+        """
+        彈出對話框讓使用者選擇新步驟要插入在清單中的哪一個位置。
+        若目前步驟數為 0，則直接回傳 0（第 1 步）。
+        若目前步驟數 >= 1，彈出模態對話框，預設選取最後一步（index = len(current_steps)）。
+        若使用者點選「確認」或按 Enter，回傳選擇的插入索引 (0 ~ len(current_steps))。
+        若使用者取消或關閉視窗，回傳 None。
+        """
+        if current_steps is None:
+            current_steps = self.steps_list
+        if not current_steps:
+            return 0
+
+        N = len(current_steps)
+        if parent is None:
+            parent = getattr(self, "root", None)
+        top_win = parent.winfo_toplevel() if parent and hasattr(parent, "winfo_toplevel") else parent
+
+        dlg = ctk.CTkToplevel(top_win)
+        dlg.title(title)
+        dlg.geometry("460x260")
+        dlg.minsize(440, 240)
+        dlg.resizable(False, False)
+        dlg.configure(fg_color="#1E1E2E")
+        if top_win:
+            dlg.transient(top_win)
+        dlg.grab_set()
+
+        try:
+            dlg.update_idletasks()
+            if top_win:
+                pw = top_win.winfo_width()
+                ph = top_win.winfo_height()
+                px = top_win.winfo_rootx()
+                py = top_win.winfo_rooty()
+                w, h = 460, 260
+                x = px + max(0, (pw - w) // 2)
+                y = py + max(0, (ph - h) // 2)
+                dlg.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+        def _get_item_name(item, fallback="步驟"):
+            if isinstance(item, dict):
+                if "name" in item:
+                    v = item["name"]
+                    raw = v.get() if hasattr(v, "get") else str(v)
+                    raw = str(raw).strip()
+                    if raw:
+                        return raw[:15] + "..." if len(raw) > 18 else raw
+            return fallback
+
+        options_text = []
+        option_to_idx = {}
+        for i in range(N + 1):
+            if i == 0:
+                first_name = _get_item_name(current_steps[0], fallback=f"{step_type_label} 1")
+                t = f"第 1 步 (最前面，在「{first_name}」之前)"
+            elif i == N:
+                t = f"第 {N + 1} 步 (最後一步) [預設]"
+            else:
+                prev_name = _get_item_name(current_steps[i - 1], fallback=f"{step_type_label} {i}")
+                t = f"第 {i + 1} 步 (在「{prev_name}」之後)"
+            options_text.append(t)
+            option_to_idx[t] = i
+
+        default_option_text = options_text[-1]
+        result = [None]
+
+        card = ctk.CTkFrame(dlg, fg_color="#252538", corner_radius=10, border_width=1, border_color="#313244")
+        card.pack(fill="both", expand=True, padx=14, pady=14)
+
+        lbl_title = ctk.CTkLabel(
+            card,
+            text=f"📍 選擇新{step_type_label}插入位置",
+            font=ctk.CTkFont(family="Arial", size=15, weight="bold"),
+            text_color="#FBBF24"
+        )
+        lbl_title.pack(anchor="w", padx=14, pady=(12, 4))
+
+        lbl_desc = ctk.CTkLabel(
+            card,
+            text=f"目前已有 {N} 個{step_type_label}。請選擇要將新{step_type_label}插入在哪個位置：",
+            font=ctk.CTkFont(size=12),
+            text_color="#CDD6F4"
+        )
+        lbl_desc.pack(anchor="w", padx=14, pady=(0, 10))
+
+        var_choice = tk.StringVar(value=default_option_text)
+        var_num = tk.StringVar(value=str(N + 1))
+
+        f_select = ctk.CTkFrame(card, fg_color="transparent")
+        f_select.pack(fill="x", padx=14, pady=(0, 8))
+
+        ctk.CTkLabel(f_select, text="位置清單:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#A6ADC8").pack(side="left", padx=(0, 8))
+
+        combo = ctk.CTkOptionMenu(
+            f_select,
+            variable=var_choice,
+            values=options_text,
+            width=320,
+            height=28,
+            corner_radius=6,
+            font=ctk.CTkFont(size=11)
+        )
+        combo.pack(side="left", fill="x", expand=True)
+
+        f_quick = ctk.CTkFrame(card, fg_color="transparent")
+        f_quick.pack(fill="x", padx=14, pady=(0, 12))
+
+        ctk.CTkLabel(f_quick, text="或直接指定序號: 第", font=ctk.CTkFont(size=11), text_color="#A6ADC8").pack(side="left", padx=(0, 4))
+
+        entry_num = ctk.CTkEntry(
+            f_quick,
+            textvariable=var_num,
+            width=50,
+            height=26,
+            corner_radius=4,
+            fg_color="#181825",
+            font=ctk.CTkFont(family="Menlo", size=11),
+            justify="center"
+        )
+        entry_num.pack(side="left", padx=(0, 4))
+
+        def _step_num(delta):
+            s = var_num.get().strip()
+            cur = int(s) if s.isdigit() else (N + 1)
+            nxt = max(1, min(N + 1, cur + delta))
+            var_num.set(str(nxt))
+
+        btn_minus = ctk.CTkButton(
+            f_quick, text="◀", width=26, height=24, corner_radius=4,
+            fg_color="#313244", hover_color="#45475A", font=ctk.CTkFont(size=10),
+            command=lambda: _step_num(-1)
+        )
+        btn_minus.pack(side="left", padx=(0, 2))
+
+        btn_plus = ctk.CTkButton(
+            f_quick, text="▶", width=26, height=24, corner_radius=4,
+            fg_color="#313244", hover_color="#45475A", font=ctk.CTkFont(size=10),
+            command=lambda: _step_num(1)
+        )
+        btn_plus.pack(side="left", padx=(0, 6))
+
+        ctk.CTkLabel(f_quick, text=f"步 (可輸入 1 ~ {N + 1})", font=ctk.CTkFont(size=11), text_color="#A6ADC8").pack(side="left")
+
+        updating = [False]
+
+        def on_dropdown_changed(val):
+            if updating[0]:
+                return
+            updating[0] = True
+            idx = option_to_idx.get(val, N)
+            var_num.set(str(idx + 1))
+            updating[0] = False
+
+        def on_num_changed(*_):
+            if updating[0]:
+                return
+            s = var_num.get().strip()
+            if s.isdigit():
+                val = int(s)
+                if 1 <= val <= N + 1:
+                    updating[0] = True
+                    var_choice.set(options_text[val - 1])
+                    updating[0] = False
+
+        combo.configure(command=on_dropdown_changed)
+        var_num.trace_add("write", on_num_changed)
+
+        def do_confirm():
+            s = var_num.get().strip()
+            if s.isdigit() and 1 <= int(s) <= N + 1:
+                result[0] = int(s) - 1
+            else:
+                sel = var_choice.get()
+                result[0] = option_to_idx.get(sel, N)
+            dlg.destroy()
+
+        def do_cancel():
+            result[0] = None
+            dlg.destroy()
+
+        f_btn = ctk.CTkFrame(card, fg_color="transparent")
+        f_btn.pack(fill="x", padx=14, pady=(4, 8), side="bottom")
+
+        btn_cancel = ctk.CTkButton(
+            f_btn,
+            text="取消 (Esc)",
+            width=90,
+            height=30,
+            corner_radius=6,
+            fg_color="#45475A",
+            hover_color="#585B70",
+            font=ctk.CTkFont(size=11),
+            command=do_cancel
+        )
+        btn_cancel.pack(side="left")
+
+        btn_confirm = ctk.CTkButton(
+            f_btn,
+            text="➕ 確認新增 (Enter)",
+            width=130,
+            height=30,
+            corner_radius=6,
+            fg_color="#10B981",
+            hover_color="#059669",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=do_confirm
+        )
+        btn_confirm.pack(side="right")
+
+        dlg.bind("<Return>", lambda e: do_confirm())
+        dlg.bind("<KP_Enter>", lambda e: do_confirm())
+        dlg.bind("<Escape>", lambda e: do_cancel())
+        dlg.protocol("WM_DELETE_WINDOW", do_cancel)
+
+        btn_confirm.focus_set()
+
+        if top_win:
+            top_win.wait_window(dlg)
+        else:
+            dlg.wait_window()
+        return result[0]
+
     def on_add_priority_step(self):
-        n = len(self.priority_steps_list) + 1
+        insert_idx = self.ask_step_insert_position(
+            parent=self.root,
+            current_steps=self.priority_steps_list,
+            step_type_label="優先步驟",
+            title="⭐ 新增優先步驟 - 選擇插入位置"
+        )
+        if insert_idx is None:
+            return
+        n = insert_idx + 1
         is_img = ("圖片" in self.var_recognition_mode.get())
         self._create_priority_step_widget(
             name=f"優先 {n}",
             target_type="🖼️ 圖片特徵 (模板比對)" if is_img else "📝 文字辨識 (OCR)",
             action=ACTION_TARGET_IMAGE if is_img else ACTION_TARGET_TEXT,
-            expanded=True
+            expanded=True,
+            insert_index=insert_idx
         )
 
     def on_add_task_trigger_step(self):
-        n = len(self.priority_steps_list) + 1
+        insert_idx = self.ask_step_insert_position(
+            parent=self.root,
+            current_steps=self.priority_steps_list,
+            step_type_label="任務跳轉步驟",
+            title="⚡ 新增任務跳轉 - 選擇插入位置"
+        )
+        if insert_idx is None:
+            return
+        n = insert_idx + 1
         self._create_priority_step_widget(
             name=f"任務跳轉 {n}",
             keywords="",
             action="📋 執行任務清單",
             task_target_mode="📋 完整任務清單",
             task_cooldown=60.0,
-            expanded=True
+            expanded=True,
+            insert_index=insert_idx
         )
 
     def on_delete_priority_step(self, p_step):
@@ -1704,7 +1953,8 @@ class BaseballBotGUI:
         task_target_item: str = "",
         task_cooldown: float = 60.0,
         enabled: bool = True,
-        expanded: bool = False
+        expanded: bool = False,
+        insert_index: Optional[int] = None
     ):
         return self._create_priority_step_widget_impl(
             container=self.frame_priority_cards,
@@ -1738,7 +1988,8 @@ class BaseballBotGUI:
             task_cooldown=task_cooldown,
             enabled=enabled,
             expanded=expanded,
-            on_changed=self.auto_save_current_config
+            on_changed=self.auto_save_current_config,
+            insert_index=insert_index
         )
 
     def _create_priority_step_widget_impl(
@@ -1774,7 +2025,8 @@ class BaseballBotGUI:
         task_target_item: str = "",
         task_cooldown: float = 60.0,
         enabled: bool = True,
-        expanded: bool = False
+        expanded: bool = False,
+        insert_index: Optional[int] = None
     ):
         if container is None:
             container = self.frame_priority_cards
@@ -1828,7 +2080,10 @@ class BaseballBotGUI:
             "_lbl_empty": lbl_empty,
             "_on_changed": on_changed,
         }
-        steps_collection.append(p)
+        if insert_index is not None and 0 <= insert_index <= len(steps_collection):
+            steps_collection.insert(insert_index, p)
+        else:
+            steps_collection.append(p)
 
         def _on_p_var_changed(*_):
             if getattr(self, "_is_loading_config", False):
@@ -2323,20 +2578,32 @@ class BaseballBotGUI:
 
         p["expanded"].trace_add("write", refresh)
         refresh()
-        self._renumber_priority_steps(steps_collection, lbl_empty)
+        if insert_index is not None:
+            self._repack_all_priority_steps(steps_collection, lbl_empty)
+        else:
+            self._renumber_priority_steps(steps_collection, lbl_empty)
         return p
 
     # --------------------------------------------------------------------------
     # 一般步驟卡片建立 (Normal Steps)
     # --------------------------------------------------------------------------
     def on_add_empty_step(self):
-        n = len(self.steps_list) + 1
+        insert_idx = self.ask_step_insert_position(
+            parent=self.root,
+            current_steps=self.steps_list,
+            step_type_label="步驟",
+            title="➕ 新增步驟 - 選擇插入位置"
+        )
+        if insert_idx is None:
+            return
+        n = insert_idx + 1
         is_img = ("圖片" in self.var_recognition_mode.get())
         self._create_step_widget(
             name=f"步驟 {n}",
             target_type="🖼️ 圖片特徵 (模板比對)" if is_img else "📝 文字辨識 (OCR)",
             action=ACTION_TARGET_IMAGE if is_img else ACTION_TARGET_TEXT,
-            expanded=True
+            expanded=True,
+            insert_index=insert_idx
         )
 
     def on_add_image_step(self):
@@ -2445,7 +2712,8 @@ class BaseballBotGUI:
         task_target_item: str = "",
         task_cooldown: float = 60.0,
         enabled: bool = True,
-        expanded: bool = False
+        expanded: bool = False,
+        insert_index: Optional[int] = None
     ):
         return self._create_step_widget_impl(
             container=self.frame_normal_cards,
@@ -2480,7 +2748,8 @@ class BaseballBotGUI:
             task_cooldown=task_cooldown,
             enabled=enabled,
             expanded=expanded,
-            on_changed=self.auto_save_current_config
+            on_changed=self.auto_save_current_config,
+            insert_index=insert_index
         )
 
     def _create_step_widget_impl(
@@ -2517,7 +2786,8 @@ class BaseballBotGUI:
         task_target_item: str = "",
         task_cooldown: float = 60.0,
         enabled: bool = True,
-        expanded: bool = False
+        expanded: bool = False,
+        insert_index: Optional[int] = None
     ):
         if container is None:
             container = self.frame_normal_cards
@@ -2573,7 +2843,10 @@ class BaseballBotGUI:
             "_lbl_empty": lbl_empty,
             "_on_changed": on_changed,
         }
-        steps_collection.append(s)
+        if insert_index is not None and 0 <= insert_index <= len(steps_collection):
+            steps_collection.insert(insert_index, s)
+        else:
+            steps_collection.append(s)
 
         def _on_s_var_changed(*_):
             if getattr(self, "_is_loading_config", False):
@@ -3081,7 +3354,10 @@ class BaseballBotGUI:
 
         s["expanded"].trace_add("write", refresh)
         refresh()
-        self._renumber_steps(steps_collection, lbl_empty)
+        if insert_index is not None:
+            self._repack_all_steps(steps_collection, lbl_empty)
+        else:
+            self._renumber_steps(steps_collection, lbl_empty)
         return s
 
     # --------------------------------------------------------------------------
@@ -4208,11 +4484,21 @@ class BaseballBotGUI:
             else:
                 self.root.after(0, lambda: self.task_tab.highlight_active_step(-1))
 
+        def _on_priority_hit(hit_idx):
+            if hit_idx >= 0:
+                self.root.after(0, lambda: self.task_tab.highlight_active_step(hit_idx, is_priority=True))
+            else:
+                self.root.after(0, lambda: self.task_tab.highlight_active_step(-1, is_priority=True))
+
+        prio_blocks = self.task_tab._serialize_all_priority_blocks() if hasattr(self.task_tab, "_serialize_all_priority_blocks") else []
+
         ok = self.task_tab.engine.run_sync(
             blocks_data=blocks_to_run,
+            priority_blocks_data=prio_blocks,
             loop_count=1,
             on_step_change=_on_step_change,
-            global_settings=self.task_tab.get_global_settings()
+            global_settings=self.task_tab.get_global_settings(),
+            on_priority_hit=_on_priority_hit
         )
 
         self.root.after(0, lambda: self.task_tab.highlight_active_step(-1))

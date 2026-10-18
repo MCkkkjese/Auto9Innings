@@ -896,33 +896,60 @@ class IPhoneMirrorTab:
     # ➕ 步驟卡片生成與操作
     # ==========================================================================
     def on_add_priority_step(self):
+        insert_idx = self.gui.ask_step_insert_position(
+            parent=self.parent,
+            current_steps=self.priority_steps_list,
+            step_type_label="優先動作",
+            title="⭐ 新增優先動作 - 選擇插入位置"
+        )
+        if insert_idx is None:
+            return
         p = self.gui._create_priority_step_widget_impl(
             container=self.f_priority_list,
             steps_collection=self.priority_steps_list,
             lbl_empty=self.lbl_no_priority,
-            name=f"優先動作 {len(self.priority_steps_list) + 1}",
-            on_changed=self.auto_save_current_config
+            name=f"優先動作 {insert_idx + 1}",
+            on_changed=self.auto_save_current_config,
+            insert_index=insert_idx
         )
         self.auto_save_current_config()
 
     def on_add_task_trigger_step(self):
+        insert_idx = self.gui.ask_step_insert_position(
+            parent=self.parent,
+            current_steps=self.priority_steps_list,
+            step_type_label="任務跳轉",
+            title="⚡ 新增任務跳轉 - 選擇插入位置"
+        )
+        if insert_idx is None:
+            return
         p = self.gui._create_priority_step_widget_impl(
             container=self.f_priority_list,
             steps_collection=self.priority_steps_list,
             lbl_empty=self.lbl_no_priority,
-            name="事件跳轉",
+            name=f"事件跳轉 {insert_idx + 1}",
             action=ACTION_TASK_FLOW,
-            on_changed=self.auto_save_current_config
+            on_changed=self.auto_save_current_config,
+            insert_index=insert_idx
         )
         self.auto_save_current_config()
 
     def on_add_empty_step(self):
+        insert_idx = self.gui.ask_step_insert_position(
+            parent=self.parent,
+            current_steps=self.steps_list,
+            step_type_label="步驟",
+            title="➕ 新增步驟 - 選擇插入位置"
+        )
+        if insert_idx is None:
+            return
         s = self.gui._create_step_widget_impl(
             container=self.f_steps_list,
             steps_collection=self.steps_list,
             lbl_empty=self.lbl_no_steps,
-            name=f"步驟 {len(self.steps_list) + 1}",
-            on_changed=self.auto_save_current_config
+            name=f"步驟 {insert_idx + 1}",
+            on_changed=self.auto_save_current_config,
+            insert_index=insert_idx
         )
         self.auto_save_current_config()
 
