@@ -157,6 +157,7 @@ BLOCK_TYPES = {
             "image_multiscale": False,
             "check_timing": "每輪開始與結束",
             "delay_after": 0.5,
+            "stop_conditions": [],
             "inner_blocks": []
         }
     },
@@ -340,7 +341,7 @@ class TaskEngine:
         if isinstance(val, (list, tuple)):
             res = []
             for item in val:
-                s = str(item).strip()
+                s = str(item).strip().strip('"').strip("'").strip()
                 if s:
                     res.append(s)
             return res
@@ -348,8 +349,54 @@ class TaskEngine:
         if not s_val:
             return []
         normalized = s_val.replace("，", ",").replace(";", ",").replace("；", ",").replace("\n", ",")
-        parts = [p.strip() for p in normalized.split(",") if p.strip()]
-        return parts
+        parts = [p.strip().strip('"').strip("'").strip() for p in normalized.split(",") if p.strip()]
+        return [p for p in parts if p]
+
+    def resolve_image_path(self, p: str) -> Optional[str]:
+        """解析圖片模板路徑，支援絕對路徑、相對路徑、存檔目錄、截圖存檔等"""
+        if not p:
+            return None
+        p = str(p).strip().strip('"').strip("'").strip()
+        if not p:
+            return None
+        if os.path.isabs(p) and os.path.isfile(p):
+            return os.path.abspath(p)
+
+        search_dirs = []
+        for k in ("presets_dir", "storage_dir", "task_presets_dir", "templates_dir", "config_dir"):
+            d = self.global_settings.get(k)
+            if d and os.path.isdir(d) and d not in search_dirs:
+                search_dirs.append(d)
+
+        if self.bot:
+            for attr in ("storage_dir", "task_presets_dir", "templates_dir", "config_dir"):
+                d = getattr(self.bot, attr, None)
+                if d and os.path.isdir(d) and d not in search_dirs:
+                    search_dirs.append(d)
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        for d in [os.getcwd(), base_dir, os.path.join(base_dir, "templates"), os.path.join(base_dir, "configs", "templates")]:
+            if os.path.isdir(d) and d not in search_dirs:
+                search_dirs.append(d)
+
+        candidates = [p]
+        for sd in search_dirs:
+            candidates.append(os.path.join(sd, p))
+            candidates.append(os.path.join(sd, os.path.basename(p)))
+            candidates.append(os.path.join(sd, "截圖存檔", p))
+            candidates.append(os.path.join(sd, "截圖存檔", os.path.basename(p)))
+            candidates.append(os.path.join(sd, "templates", p))
+            candidates.append(os.path.join(sd, "templates", os.path.basename(p)))
+
+        if self.bot and hasattr(self.bot, "resolve_template_path"):
+            b_res = self.bot.resolve_template_path(p)
+            if b_res and os.path.isfile(b_res):
+                return os.path.abspath(b_res)
+
+        for c in candidates:
+            if c and os.path.isfile(c):
+                return os.path.abspath(c)
+        return None
 
     def start(
         self,
@@ -1107,27 +1154,146 @@ class TaskEngine:
         self._sleep_interruptible(delay)
         return True
 
+    def _evaluate_single_condition(
+        self,
+        cond: Dict[str, Any],
+        screen: np.ndarray,
+        screen_gray: Optional[np.ndarray] = None,
+        det_results: Optional[List[Dict[str, Any]]] = None
+    ) -> Tuple[bool, str, Optional[np.ndarray], Optional[List[Dict[str, Any]]]]:
+        """
+        評估單一條件規則在當前畫面幀上是否成立：
+        支援：圖片出現/消失 (支援多圖比對與路徑解析)、文字出現/消失、打勾/叉叉、文字或圖案任一出現/消失
+        回傳: (is_met, desc, screen_gray, det_results)
+        """
+        mode = str(cond.get("mode", cond.get("stop_mode", "偵測到圖片出現"))).strip()
+        if mode in ("依指定次數", "無 (僅點滿次數)"):
+            return False, "", screen_gray, det_results
+
+        is_disappear = ("消失" in mode or "disappear" in mode.lower())
+        is_appear = not is_disappear
+        is_check = ("打勾" in mode or "check" in mode.lower())
+        is_cross = ("叉叉" in mode or "cross" in mode.lower())
+        is_hybrid = ("文字或圖案" in mode or "文字或圖片" in mode or "hybrid" in mode.lower())
+
+        raw_tpl = str(cond.get("template_image", "")).strip()
+        is_image = ("圖片" in mode or "image" in mode.lower() or "模板" in mode or is_hybrid or bool(raw_tpl))
+        is_pure_img = is_image and not is_hybrid and ("文字" not in mode)
+
+        raw_kws = str(cond.get("keywords", cond.get("stop_keywords", ""))).strip()
+        threshold = _safe_float(cond.get("image_threshold", cond.get("threshold", 0.80)), 0.80)
+        multiscale = bool(cond.get("image_multiscale", cond.get("multiscale", False)))
+        disable_ocr = bool(self.global_settings.get("disable_ocr", False))
+
+        img_matched = False
+        matched_img_desc = ""
+        tpl_list = self.parse_template_images_list(raw_tpl) if (is_image or raw_tpl) else []
+
+        # 1. 圖片比對 (支援多圖，依序測試)
+        if tpl_list and hasattr(self.bot, "match_template"):
+            if screen_gray is None:
+                screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+            for single_tpl in tpl_list:
+                resolved = self.resolve_image_path(single_tpl) or single_tpl
+                m_res = self.bot.match_template(
+                    screen_gray,
+                    resolved,
+                    threshold=threshold,
+                    multi_scale=multiscale
+                )
+                if m_res is not None:
+                    img_matched = True
+                    matched_img_desc = f"圖片「{os.path.basename(resolved)}」(相似度 {m_res[2]:.2f})"
+                    break
+
+        # 2. 文字與符號比對 (若非純圖片模式且未關閉 OCR)
+        txt_matched = False
+        matched_txt_desc = ""
+        sym_matched = False
+        matched_sym_desc = ""
+
+        if not is_pure_img and not disable_ocr:
+            kws = [k.strip() for k in raw_kws.replace("，", ",").split(",") if k.strip()]
+            if is_check or is_cross or kws:
+                if det_results is None and hasattr(self.bot, "scan_text"):
+                    det_results = self.bot.scan_text(screen)
+                if det_results:
+                    if is_check or is_cross:
+                        for item in det_results:
+                            sym = item.get("symbol")
+                            txt = item.get("text", "")
+                            if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
+                                sym_matched = True
+                                matched_sym_desc = f"打勾圖案 [{txt}]"
+                                break
+                            if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
+                                sym_matched = True
+                                matched_sym_desc = f"叉叉圖案 [{txt}]"
+                                break
+
+                    if kws:
+                        conf_thresh = self._get_confidence()
+                        for kw in kws:
+                            for item in det_results:
+                                matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
+                                if matched and ratio >= conf_thresh:
+                                    txt_matched = True
+                                    matched_txt_desc = f"關鍵字「{kw}」({item.get('text')})"
+                                    break
+                            if txt_matched:
+                                break
+
+        # 3. 判斷條件達成 (出現 / 消失)
+        if is_appear:
+            if is_hybrid:
+                if img_matched:
+                    return True, f"偵測到{matched_img_desc}出現", screen_gray, det_results
+                if txt_matched:
+                    return True, f"偵測到{matched_txt_desc}出現", screen_gray, det_results
+                if sym_matched:
+                    return True, f"偵測到{matched_sym_desc}出現", screen_gray, det_results
+            elif is_pure_img or ("圖片" in mode and not raw_kws and not is_check and not is_cross):
+                if img_matched:
+                    return True, f"偵測到{matched_img_desc}出現", screen_gray, det_results
+            elif is_check or is_cross:
+                if sym_matched:
+                    return True, f"偵測到{matched_sym_desc}出現", screen_gray, det_results
+            else:
+                if txt_matched:
+                    return True, f"偵測到{matched_txt_desc}出現", screen_gray, det_results
+        else: # is_disappear
+            if is_hybrid:
+                if (tpl_list or raw_kws or is_check or is_cross) and (not tpl_list or not img_matched) and (not raw_kws or not txt_matched) and not sym_matched:
+                    return True, "指定之圖片與文字皆已消失", screen_gray, det_results
+            elif is_pure_img or ("圖片" in mode and not raw_kws):
+                if tpl_list and not img_matched:
+                    all_names = ", ".join([os.path.basename(x) for x in tpl_list])
+                    return True, f"圖片「{all_names}」已消失", screen_gray, det_results
+            elif is_check or is_cross:
+                if not sym_matched:
+                    target_name = "打勾圖案" if is_check else "叉叉圖案"
+                    return True, f"{target_name}已消失", screen_gray, det_results
+            else:
+                if raw_kws and not txt_matched:
+                    return True, f"目標「{raw_kws}」已消失", screen_gray, det_results
+
+        return False, "", screen_gray, det_results
+
     def _check_condition_met(
         self,
         stop_mode: str,
         raw_keywords: str,
         template_image: str = "",
         threshold: float = 0.80,
-        multiscale: bool = False
+        multiscale: bool = False,
+        stop_conditions: Optional[List[Dict[str, Any]]] = None
     ) -> Tuple[bool, str]:
-        """檢測當前畫面是否滿足終止條件 (文字出現/消失、圖片出現/消失、打勾/叉叉符號)"""
+        """檢測當前畫面是否滿足終止條件 (支援單一條件、混合條件、多圖比對、或複數條件清單)"""
         if not self.bot:
             return False, ""
 
         if stop_mode in ("依指定次數", "無 (僅點滿次數)"):
             return False, ""
-
-        is_disappear = ("消失" in stop_mode or "disappear" in stop_mode.lower())
-        is_check = ("打勾" in stop_mode or "check" in stop_mode.lower())
-        is_cross = ("叉叉" in stop_mode or "cross" in stop_mode.lower())
-        is_image = ("圖片" in stop_mode or "image" in stop_mode.lower() or "模板" in stop_mode)
-        is_appear = (not is_disappear)
-        disable_ocr = bool(self.global_settings.get("disable_ocr", False))
 
         screen = None
         try:
@@ -1160,83 +1326,38 @@ class TaskEngine:
                 if screen is None:
                     return False, ""
 
-        # 1. 圖片模板比對條件 (若設定為圖片模式，純粹進行模板比對，未命中直接返回，絕不跑文字 OCR)
-        if is_image:
-            tpl_list = self.parse_template_images_list(template_image)
-            if not tpl_list:
-                return False, ""
-            if screen_gray is None:
-                screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-            matched = False
-            matched_fname = ""
-            score_val = 0.0
-
-            if hasattr(self.bot, "match_template"):
-                for single_tpl in tpl_list:
-                    match_res = self.bot.match_template(
-                        screen_gray,
-                        single_tpl,
-                        threshold=threshold,
-                        multi_scale=multiscale
-                    )
-                    if match_res is not None:
-                        cx, cy, score_val, _ = match_res
-                        matched = True
-                        matched_fname = os.path.basename(single_tpl)
-                        break
-
-            all_fnames = ", ".join([os.path.basename(x) for x in tpl_list])
-            if is_appear and matched:
-                return True, f"偵測到圖片「{matched_fname}」出現 (相似度 {score_val:.2f})"
-            elif is_disappear and not matched:
-                return True, f"圖片「{all_fnames}」已消失"
+        # 1. 複數條件判斷 (若 stop_conditions 存在且非空)
+        is_multi = (stop_mode in ("📋 複數條件 (多條件任一達成即停止)", "📋 複數條件 (多條件任一達成)", "複數條件", "多條件") or bool(stop_conditions))
+        if is_multi and stop_conditions:
+            for c_idx, cond in enumerate(stop_conditions):
+                if not cond.get("enabled", True):
+                    continue
+                c_name = cond.get("name", f"條件 #{c_idx + 1}")
+                met, desc, screen_gray, det_results = self._evaluate_single_condition(
+                    cond=cond,
+                    screen=screen,
+                    screen_gray=screen_gray,
+                    det_results=det_results
+                )
+                if met:
+                    return True, f"[{c_name}] {desc}"
             return False, ""
 
-        # 若全域關閉文字辨識 (純圖片模式 / 0-OCR)，跳過文字與符號檢查
-        if disable_ocr:
-            return False, ""
-
-        # 符號比對
-        if det_results is None and hasattr(self.bot, "scan_text"):
-            det_results = self.bot.scan_text(screen)
-        if det_results is None:
-            det_results = []
-        present = False
-        matched_desc = ""
-
-        if is_check or is_cross:
-            for item in det_results:
-                sym = item.get("symbol")
-                txt = item.get("text", "")
-                if is_check and (sym == "check" or txt in ("[打勾]", "✓", "✔", "√") or (len(txt) == 1 and txt.upper() == "V")):
-                    present = True
-                    matched_desc = f"打勾圖案 [{txt}]"
-                    break
-                if is_cross and (sym == "cross" or txt in ("[叉叉]", "✕", "✖", "×", "X", "x")):
-                    present = True
-                    matched_desc = f"叉叉圖案 [{txt}]"
-                    break
-
-        # 文字比對
-        kws = [k.strip() for k in raw_keywords.replace("，", ",").split(",") if k.strip()]
-        conf_thresh = self._get_confidence()
-        if not present and kws:
-            for kw in kws:
-                for item in det_results:
-                    matched, ratio = self.bot._is_text_matched(kw, item.get("text", ""), similarity_threshold=conf_thresh)
-                    if matched and ratio >= conf_thresh:
-                        present = True
-                        matched_desc = f"關鍵字「{kw}」({item.get('text')})"
-                        break
-                if present:
-                    break
-
-        if is_appear and present:
-            return True, f"偵測到 {matched_desc} 出現"
-        elif is_disappear and not present:
-            return True, f"目標「{raw_keywords}」已消失"
-
-        return False, ""
+        # 2. 單一條件判斷 (相容一般單條件與連續點擊)
+        single_cond = {
+            "mode": stop_mode,
+            "keywords": raw_keywords,
+            "template_image": template_image,
+            "image_threshold": threshold,
+            "image_multiscale": multiscale
+        }
+        met, desc, _, _ = self._evaluate_single_condition(
+            cond=single_cond,
+            screen=screen,
+            screen_gray=screen_gray,
+            det_results=det_results
+        )
+        return met, desc
 
     def _exec_multi_tap(self, p: Dict[str, Any]) -> bool:
         """連續點擊指定座標，支援設定間隔與停止條件"""
@@ -1776,7 +1897,7 @@ class TaskEngine:
         return True
 
     def _exec_loop(self, p: Dict[str, Any], outer_candidates: Optional[List[Dict[str, Any]]] = None) -> bool:
-        """迴圈容器：重複執行內部包含的積木步驟 (支援 While 條件與指定次數)"""
+        """迴圈容器：重複執行內部包含的積木步驟 (支援 While 條件與指定次數，支援單一條件、多圖比對與複數條件清單)"""
         stop_mode = p.get("stop_mode", "依指定次數")
         raw_kws = p.get("keywords", p.get("stop_keywords", ""))
         template_img = p.get("template_image", "").strip()
@@ -1786,15 +1907,37 @@ class TaskEngine:
         check_timing = p.get("check_timing", "每輪開始與結束")
         delay_after = max(0.0, _safe_float(p.get("delay_after", 0.5)))
         inner_blocks = p.get("inner_blocks", [])
+        stop_conditions = p.get("stop_conditions", [])
 
         if not inner_blocks:
             self._log("  🔁 迴圈內無任何積木步驟，跳過執行。")
             return True
 
-        is_cond_mode = (stop_mode != "依指定次數" and "無" not in stop_mode)
+        is_multi_cond = (
+            stop_mode in (
+                "📋 複數條件 (多條件任一達成即停止)",
+                "📋 複數條件 (多條件任一達成)",
+                "複數條件",
+                "多條件"
+            )
+            or bool(stop_conditions and stop_mode != "依指定次數")
+        )
+        is_cond_mode = (stop_mode != "依指定次數" and "無" not in stop_mode) or is_multi_cond
         tot_str = str(count) if count > 0 else "∞"
         if is_cond_mode:
-            target_desc = f"圖片「{os.path.basename(template_img)}」" if template_img else (f"「{raw_kws}」" if raw_kws else stop_mode)
+            if is_multi_cond and stop_conditions:
+                active_cnt = len([c for c in stop_conditions if c.get("enabled", True)])
+                target_desc = f"複數條件 ({active_cnt} 項自訂條件)"
+            elif template_img:
+                tpls = self.parse_template_images_list(template_img)
+                if len(tpls) > 1:
+                    target_desc = f"圖片 ({len(tpls)} 張: {', '.join(os.path.basename(t) for t in tpls)})"
+                elif tpls:
+                    target_desc = f"圖片「{os.path.basename(tpls[0])}」"
+                else:
+                    target_desc = f"圖片「{template_img}」"
+            else:
+                target_desc = f"「{raw_kws}」" if raw_kws else stop_mode
             self._log(f"  🔁 進入 While 條件迴圈 [停止條件: {stop_mode} {target_desc}，上限: {tot_str} 次，內含 {len(inner_blocks)} 個步驟]...")
         else:
             self._log(f"  🔁 進入重複迴圈 [共 {tot_str} 次，內含 {len(inner_blocks)} 個步驟]...")
@@ -1812,7 +1955,8 @@ class TaskEngine:
                     raw_kws,
                     template_image=template_img,
                     threshold=img_thresh,
-                    multiscale=img_multiscale
+                    multiscale=img_multiscale,
+                    stop_conditions=stop_conditions if is_multi_cond else None
                 )
                 if met:
                     self._log(f"  🛑 迴圈終止！在第 {cycle} 輪開始前觸發停止條件 ({desc})")
@@ -1864,7 +2008,8 @@ class TaskEngine:
                         raw_kws,
                         template_image=template_img,
                         threshold=img_thresh,
-                        multiscale=img_multiscale
+                        multiscale=img_multiscale,
+                        stop_conditions=stop_conditions if is_multi_cond else None
                     )
                     if met:
                         self._log(f"  🛑 迴圈終止！在子步驟 [{sb_name}] 執行後觸發停止條件 ({desc})")
@@ -1882,7 +2027,8 @@ class TaskEngine:
                     raw_kws,
                     template_image=template_img,
                     threshold=img_thresh,
-                    multiscale=img_multiscale
+                    multiscale=img_multiscale,
+                    stop_conditions=stop_conditions if is_multi_cond else None
                 )
                 if met:
                     self._log(f"  🛑 迴圈終止！第 {cycle} 輪結束時觸發停止條件 ({desc})")
@@ -4846,6 +4992,31 @@ class TaskFlowTab:
             vp["check_timing"] = tk.StringVar(value=p.get("check_timing", "每輪開始與結束"))
             vp["delay_after"] = tk.DoubleVar(value=_safe_float(p.get("delay_after", 0.5)))
 
+            # 複數停止條件清單
+            raw_stop_conds = p.get("stop_conditions", [])
+            vp["stop_conditions"] = []
+            for sc_idx, sc_data in enumerate(raw_stop_conds):
+                m_var = tk.StringVar(value=sc_data.get("mode", sc_data.get("stop_mode", "偵測到圖片出現")))
+                k_var = tk.StringVar(value=sc_data.get("keywords", sc_data.get("stop_keywords", "")))
+                t_var = tk.StringVar(value=sc_data.get("template_image", ""))
+                th_var = tk.DoubleVar(value=_safe_float(sc_data.get("threshold", sc_data.get("image_threshold", 0.80)), 0.80))
+                ms_var = tk.BooleanVar(value=bool(sc_data.get("multiscale", sc_data.get("image_multiscale", False))))
+                en_var = tk.BooleanVar(value=bool(sc_data.get("enabled", True)))
+                for v in (m_var, k_var, t_var, th_var, ms_var, en_var):
+                    v.trace_add("write", lambda *_: self.auto_save_config())
+                vp["stop_conditions"].append({
+                    "name": sc_data.get("name", f"條件 #{sc_idx + 1}"),
+                    "mode": m_var,
+                    "keywords": k_var,
+                    "template_image": t_var,
+                    "threshold": th_var,
+                    "multiscale": ms_var,
+                    "enabled": en_var
+                })
+
+            for k in ("stop_mode", "count", "keywords", "template_image", "image_threshold", "image_multiscale", "check_timing", "delay_after"):
+                vp[k].trace_add("write", lambda *_: self.auto_save_config())
+
             box_loop_header = ctk.CTkFrame(body, fg_color="transparent")
             box_loop_header.pack(fill="x", pady=(0, 4))
 
@@ -4860,9 +5031,12 @@ class TaskFlowTab:
                 "偵測到圖片出現",
                 "偵測到圖片消失",
                 "偵測到打勾圖案",
-                "偵測到叉叉圖案"
+                "偵測到叉叉圖案",
+                "🔀 文字或圖案 (任一出現)",
+                "🔀 文字或圖案 (任一消失)",
+                "📋 複數條件 (多條件任一達成)"
             ]
-            cbo_mode = ctk.CTkComboBox(row_loop_ctrl, variable=vp["stop_mode"], values=LOOP_MODES, width=130, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
+            cbo_mode = ctk.CTkComboBox(row_loop_ctrl, variable=vp["stop_mode"], values=LOOP_MODES, width=170, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
             cbo_mode.pack(side="left", padx=4)
 
             lbl_cnt_title = ctk.CTkLabel(row_loop_ctrl, text="次數:", font=ctk.CTkFont(size=11), text_color=COLOR_TEXT_MUTED)
@@ -4876,46 +5050,249 @@ class TaskFlowTab:
             ctk.CTkEntry(row_loop_ctrl, textvariable=vp["delay_after"], width=42, height=26, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER).pack(side="left")
             ctk.CTkLabel(row_loop_ctrl, text="s", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM).pack(side="left")
 
-            row_cond_detail = ctk.CTkFrame(box_loop_header, fg_color="transparent")
-
-            lbl_kw_title = ctk.CTkLabel(row_cond_detail, text="停止關鍵字:", font=ctk.CTkFont(size=10, weight="bold"), text_color="#C4B5FD")
-            lbl_kw_title.pack(side="left")
-            ent_kw = ctk.CTkEntry(row_cond_detail, textvariable=vp["keywords"], width=140, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
-            ent_kw.pack(side="left", padx=(2, 6))
-
-            ctk.CTkLabel(row_cond_detail, text="檢查時機:", font=ctk.CTkFont(size=10), text_color="#C4B5FD").pack(side="left")
+            # 檢查時機控制列 (獨立顯示，支援所有條件模式，絕不被圖片模式隱藏)
+            row_timing = ctk.CTkFrame(box_loop_header, fg_color="transparent")
+            ctk.CTkLabel(row_timing, text="檢查時機:", font=ctk.CTkFont(size=10, weight="bold"), text_color="#A5B4FC").pack(side="left")
             TIMINGS = [
                 "每輪開始與結束",
                 "每輪開始前 (While)",
                 "每輪結束後 (Do-While)",
                 "每個子步驟後"
             ]
-            cbo_timing = ctk.CTkComboBox(row_cond_detail, variable=vp["check_timing"], values=TIMINGS, width=130, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
-            cbo_timing.pack(side="left", padx=2)
+            cbo_timing = ctk.CTkComboBox(row_timing, variable=vp["check_timing"], values=TIMINGS, width=145, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER, state="readonly")
+            cbo_timing.pack(side="left", padx=4)
+            lbl_timing_hint = ctk.CTkLabel(row_timing, text="(每輪開始前/結束後檢測，或每執行一個子步驟立即判斷停止)", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM)
+            lbl_timing_hint.pack(side="left", padx=4)
 
+            # 單一條件關鍵字列
+            row_kw = ctk.CTkFrame(box_loop_header, fg_color="transparent")
+            lbl_kw_title = ctk.CTkLabel(row_kw, text="停止關鍵字:", font=ctk.CTkFont(size=10, weight="bold"), text_color="#C4B5FD")
+            lbl_kw_title.pack(side="left")
+            ent_kw = ctk.CTkEntry(row_kw, textvariable=vp["keywords"], placeholder_text="多詞以逗號分隔", width=180, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+            ent_kw.pack(side="left", padx=(4, 6))
+
+            # 單一條件圖片列
             box_loop_img = self._build_image_template_row(box_loop_header, vp, block_dict=block)
+
+            # 複數條件控制區塊
+            box_multi_cond = ctk.CTkFrame(box_loop_header, fg_color="transparent")
+
+            row_multi_hdr = ctk.CTkFrame(box_multi_cond, fg_color="transparent")
+            row_multi_hdr.pack(fill="x", pady=(2, 2))
+
+            ctk.CTkLabel(row_multi_hdr, text="📋 複數停止條件 (任一條件達成即停止迴圈):", font=ctk.CTkFont(size=11, weight="bold"), text_color="#A78BFA").pack(side="left")
+
+            btn_add_cond = ctk.CTkButton(
+                row_multi_hdr,
+                text="＋ 新增停止條件",
+                width=110,
+                height=24,
+                corner_radius=4,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="#6366F1",
+                hover_color="#4F46E5",
+                command=lambda: _add_stop_cond()
+            )
+            btn_add_cond.pack(side="left", padx=(8, 4))
+
+            box_cond_rows = ctk.CTkFrame(box_multi_cond, fg_color="transparent")
+            box_cond_rows.pack(fill="x")
+
+            def _render_stop_cond_rows():
+                for widget in box_cond_rows.winfo_children():
+                    widget.destroy()
+
+                COND_ROW_MODES = [
+                    "偵測到文字出現",
+                    "偵測到文字消失",
+                    "偵測到圖片出現",
+                    "偵測到圖片消失",
+                    "偵測到打勾圖案",
+                    "偵測到叉叉圖案",
+                    "🔀 文字或圖案 (任一出現)",
+                    "🔀 文字或圖案 (任一消失)"
+                ]
+
+                for idx, cond in enumerate(vp["stop_conditions"]):
+                    c_num = idx + 1
+                    cond["name"] = f"條件 #{c_num}"
+
+                    row = ctk.CTkFrame(box_cond_rows, fg_color=COLOR_CARD_ITEM, corner_radius=6, border_width=1, border_color="#313244")
+                    row.pack(fill="x", pady=2, ipady=1)
+
+                    lbl_badge = ctk.CTkLabel(
+                        row,
+                        text=f" 條件 #{c_num} ",
+                        fg_color="#6366F1",
+                        corner_radius=4,
+                        text_color="#FFFFFF",
+                        font=ctk.CTkFont(size=10, weight="bold"),
+                        width=60
+                    )
+                    lbl_badge.pack(side="left", padx=(4, 4), pady=2)
+
+                    cbo_c_mode = ctk.CTkComboBox(
+                        row,
+                        variable=cond["mode"],
+                        values=COND_ROW_MODES,
+                        width=120,
+                        height=24,
+                        corner_radius=4,
+                        fg_color=COLOR_INPUT_BG,
+                        border_color=COLOR_INPUT_BORDER,
+                        state="readonly"
+                    )
+                    cbo_c_mode.pack(side="left", padx=2)
+
+                    sub_f = ctk.CTkFrame(row, fg_color="transparent")
+                    sub_f.pack(side="left", fill="x", expand=True, padx=2)
+
+                    lbl_c_kw = ctk.CTkLabel(sub_f, text="文字:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED)
+                    ent_c_kw = ctk.CTkEntry(sub_f, textvariable=cond["keywords"], width=85, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+
+                    lbl_c_img = ctk.CTkLabel(sub_f, text="圖檔:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED)
+                    ent_c_img = ctk.CTkEntry(sub_f, textvariable=cond["template_image"], placeholder_text="可複選多圖", width=90, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+
+                    btn_c_snip = ctk.CTkButton(
+                        sub_f, text="✂️", width=24, height=22, corner_radius=4, font=ctk.CTkFont(size=10),
+                        fg_color="#0284C7", hover_color="#0369A1",
+                        command=lambda c_ref=cond: self.on_snip_template_dialog(c_ref, initial_name=f"loop_cond_{c_ref['name']}")
+                    )
+                    btn_c_browse = ctk.CTkButton(
+                        sub_f, text="📂", width=24, height=22, corner_radius=4, font=ctk.CTkFont(size=10),
+                        fg_color=COLOR_BTN_DARK, hover_color=COLOR_BTN_DARK_HOVER,
+                        command=lambda c_ref=cond: self.on_browse_template_dialog(c_ref)
+                    )
+                    btn_c_apply = ctk.CTkButton(
+                        sub_f, text="📥", width=24, height=22, corner_radius=4, font=ctk.CTkFont(size=10),
+                        fg_color="#F59E0B", hover_color="#D97706",
+                        command=lambda c_ref=cond: self.on_apply_last_snippet(c_ref)
+                    )
+
+                    lbl_c_th = ctk.CTkLabel(row, text="門檻:", font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_MUTED)
+                    ent_c_th = ctk.CTkEntry(row, textvariable=cond["threshold"], width=38, height=24, corner_radius=4, fg_color=COLOR_INPUT_BG, border_color=COLOR_INPUT_BORDER)
+
+                    def _update_row_fields(*_, m_var=cond["mode"], sf=sub_f, l_kw=lbl_c_kw, e_kw=ent_c_kw, l_im=lbl_c_img, e_im=ent_c_img, b_sn=btn_c_snip, b_br=btn_c_browse, b_ap=btn_c_apply, l_th=lbl_c_th, e_th=ent_c_th):
+                        cur_m = m_var.get()
+                        for w in sf.winfo_children():
+                            w.pack_forget()
+                        if "文字或圖案" in cur_m or "文字或圖片" in cur_m:
+                            l_kw.pack(side="left", padx=1)
+                            e_kw.pack(side="left", padx=1)
+                            l_im.pack(side="left", padx=(2, 1))
+                            e_im.pack(side="left", padx=1, fill="x", expand=True)
+                            b_sn.pack(side="left", padx=1)
+                            b_br.pack(side="left", padx=1)
+                            b_ap.pack(side="left", padx=1)
+                            l_th.pack(side="left", padx=1)
+                            e_th.pack(side="left", padx=1)
+                        elif "圖片" in cur_m:
+                            l_im.pack(side="left", padx=1)
+                            e_im.pack(side="left", padx=1, fill="x", expand=True)
+                            b_sn.pack(side="left", padx=1)
+                            b_br.pack(side="left", padx=1)
+                            b_ap.pack(side="left", padx=1)
+                            l_th.pack(side="left", padx=1)
+                            e_th.pack(side="left", padx=1)
+                        elif "打勾" in cur_m or "叉叉" in cur_m:
+                            l_th.pack_forget()
+                            e_th.pack_forget()
+                        else:  # 文字
+                            l_kw.pack(side="left", padx=1)
+                            e_kw.pack(side="left", padx=1, fill="x", expand=True)
+                            l_th.pack_forget()
+                            e_th.pack_forget()
+
+                    cond["mode"].trace_add("write", _update_row_fields)
+                    _update_row_fields()
+
+                    btn_del_c = ctk.CTkButton(
+                        row, text="✕", width=22, height=22, corner_radius=4,
+                        font=ctk.CTkFont(size=10, weight="bold"),
+                        fg_color="#EF4444", hover_color="#DC2626",
+                        command=lambda target_idx=idx: _remove_stop_cond(target_idx)
+                    )
+                    btn_del_c.pack(side="right", padx=(2, 4))
+
+            def _add_stop_cond(init_dict=None):
+                c_num = len(vp["stop_conditions"]) + 1
+                c_data = init_dict or {}
+                m_var = tk.StringVar(value=c_data.get("mode", "偵測到圖片出現"))
+                k_var = tk.StringVar(value=c_data.get("keywords", ""))
+                t_var = tk.StringVar(value=c_data.get("template_image", ""))
+                th_var = tk.DoubleVar(value=_safe_float(c_data.get("threshold", 0.80), 0.80))
+                ms_var = tk.BooleanVar(value=bool(c_data.get("multiscale", False)))
+                en_var = tk.BooleanVar(value=bool(c_data.get("enabled", True)))
+                for v in (m_var, k_var, t_var, th_var, ms_var, en_var):
+                    v.trace_add("write", lambda *_: self.auto_save_config())
+                vp["stop_conditions"].append({
+                    "name": f"條件 #{c_num}",
+                    "mode": m_var,
+                    "keywords": k_var,
+                    "template_image": t_var,
+                    "threshold": th_var,
+                    "multiscale": ms_var,
+                    "enabled": en_var
+                })
+                _render_stop_cond_rows()
+                self.auto_save_config()
+
+            def _remove_stop_cond(target_idx):
+                if 0 <= target_idx < len(vp["stop_conditions"]):
+                    vp["stop_conditions"].pop(target_idx)
+                    _render_stop_cond_rows()
+                    self.auto_save_config()
 
             def _on_loop_mode_change(*_):
                 mode = vp["stop_mode"].get()
                 if mode == "依指定次數":
-                    row_cond_detail.pack_forget()
+                    row_timing.pack_forget()
+                    row_kw.pack_forget()
                     box_loop_img.pack_forget()
+                    box_multi_cond.pack_forget()
                     lbl_cnt_title.configure(text="重複次數:")
                     lbl_cnt_hint.configure(text="次(0=無限)")
+                elif "複數條件" in mode or "多條件" in mode:
+                    row_timing.pack(fill="x", pady=(2, 2))
+                    row_kw.pack_forget()
+                    box_loop_img.pack_forget()
+                    box_multi_cond.pack(fill="x", pady=(3, 2))
+                    lbl_cnt_title.configure(text="上限次數:")
+                    lbl_cnt_hint.configure(text="次(0=不限)")
+                    if not vp["stop_conditions"]:
+                        _add_stop_cond()
+                    else:
+                        _render_stop_cond_rows()
+                elif "文字或圖案" in mode or "文字或圖片" in mode:
+                    row_timing.pack(fill="x", pady=(2, 2))
+                    box_multi_cond.pack_forget()
+                    row_kw.pack(fill="x", pady=(2, 2))
+                    box_loop_img.pack(fill="x", pady=(2, 2))
+                    ent_kw.configure(state="normal")
+                    lbl_cnt_title.configure(text="上限次數:")
+                    lbl_cnt_hint.configure(text="次(0=不限)")
                 elif "圖片" in mode:
-                    row_cond_detail.pack_forget()
+                    row_timing.pack(fill="x", pady=(2, 2))
+                    box_multi_cond.pack_forget()
+                    row_kw.pack_forget()
                     box_loop_img.pack(fill="x", pady=(2, 2))
                     lbl_cnt_title.configure(text="上限次數:")
                     lbl_cnt_hint.configure(text="次(0=不限)")
-                else:
+                elif "打勾" in mode or "叉叉" in mode:
+                    row_timing.pack(fill="x", pady=(2, 2))
+                    box_multi_cond.pack_forget()
                     box_loop_img.pack_forget()
-                    row_cond_detail.pack(fill="x", pady=(2, 2))
+                    row_kw.pack_forget()
                     lbl_cnt_title.configure(text="上限次數:")
                     lbl_cnt_hint.configure(text="次(0=不限)")
-                    if "符號" in mode or "圖案" in mode or "打勾" in mode or "叉叉" in mode:
-                        ent_kw.configure(state="disabled")
-                    else:
-                        ent_kw.configure(state="normal")
+                else:  # 文字出現 / 文字消失
+                    row_timing.pack(fill="x", pady=(2, 2))
+                    box_multi_cond.pack_forget()
+                    box_loop_img.pack_forget()
+                    row_kw.pack(fill="x", pady=(2, 2))
+                    ent_kw.configure(state="normal")
+                    lbl_cnt_title.configure(text="上限次數:")
+                    lbl_cnt_hint.configure(text="次(0=不限)")
 
             vp["stop_mode"].trace_add("write", _on_loop_mode_change)
             _on_loop_mode_change()
@@ -6055,6 +6432,19 @@ class TaskFlowTab:
                         "y": int(br["y"].get() if hasattr(br.get("y"), "get") else br.get("y", 0))
                     }
                     for br in v
+                ]
+            elif k == "stop_conditions" and isinstance(v, list):
+                p["stop_conditions"] = [
+                    {
+                        "name": str(c.get("name", "條件")),
+                        "mode": str(c["mode"].get() if hasattr(c.get("mode"), "get") else c.get("mode", "偵測到文字出現")),
+                        "keywords": str(c["keywords"].get() if hasattr(c.get("keywords"), "get") else c.get("keywords", "")),
+                        "template_image": str(c["template_image"].get() if hasattr(c.get("template_image"), "get") else c.get("template_image", "")),
+                        "threshold": float(c["threshold"].get() if hasattr(c.get("threshold"), "get") else c.get("threshold", 0.80)),
+                        "multiscale": bool(c["multiscale"].get() if hasattr(c.get("multiscale"), "get") else c.get("multiscale", False)),
+                        "enabled": bool(c["enabled"].get() if hasattr(c.get("enabled"), "get") else c.get("enabled", True)),
+                    }
+                    for c in v
                 ]
             elif hasattr(v, "get"):
                 try:
