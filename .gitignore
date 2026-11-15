@@ -1,20 +1,24 @@
-# Python bytecode and caches
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+venv/
+.venv/
 
-# OS artifacts
+# 系統檔
 .DS_Store
 Thumbs.db
 
-# Runtime sessions & database temp files
+# 執行時暫存
 *.ses
-:memory:.ses
-_memory:.ses
 
-# Local runtime config & autosave files (avoid git push/pull overwrite)
+# 自動存檔（存檔資料夾若設在專案內時避免被提交或被 pull 覆蓋）
+script_emulator_last*.json
+script_mirror_last*.json
+task_flow_last*.json
+# 舊版自動存檔檔名
 autosave_last_config*.json
 baseball_last_config*.json
+iphone_last_config*.json
 tasks_flow*.json
 task_flow_save*.json
-

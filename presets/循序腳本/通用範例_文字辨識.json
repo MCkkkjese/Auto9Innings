@@ -1,0 +1,42 @@
+{
+  "version": "1.0",
+  "title": "通用範例（文字辨識）",
+  "recognition_mode": "文字辨識模式",
+  "interval": 2.5,
+  "confidence": 0.65,
+  "priority_steps": [
+    {
+      "name": "異常連線中斷",
+      "keywords": "連線中斷, 重新連線, 網路異常, 伺服器維護, 請重新登入",
+      "delay": 3.0,
+      "roi": "中央區域",
+      "while_condition": false
+    }
+  ],
+  "steps": [
+    {
+      "name": "結算確認",
+      "keywords": "確認, 確定, 領取, 結算, 結束",
+      "delay": 3.0,
+      "roi": "右下角區域"
+    },
+    {
+      "name": "繼續下一場",
+      "keywords": "繼續, 下一步, 再來一場, 返回",
+      "delay": 2.5,
+      "roi": "右下角區域"
+    },
+    {
+      "name": "準備開始",
+      "keywords": "準備, 挑戰, 出戰, 進入",
+      "delay": 2.5,
+      "roi": "右半側螢幕"
+    },
+    {
+      "name": "開始",
+      "keywords": "開始, 確定開始, 開打",
+      "delay": 4.0,
+      "roi": "右下角區域"
+    }
+  ]
+}
